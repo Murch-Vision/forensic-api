@@ -1,0 +1,10 @@
+{"id":"SAMPLE-OFAC-001","schema":"Person","caption":"Alyaksandr Lukashenka","names":["Alyaksandr Lukashenka","Alexander Lukashenko","Aleksandr Lukashenko"],"country":"by","programs":["OFAC-BELARUS","EU-Belarus"],"birthDate":"1954-08-30"}
+{"id":"SAMPLE-OFAC-002","schema":"Person","caption":"Kim Jong Un","names":["Kim Jong Un","Kim Jong-un","김정은"],"country":"kp","programs":["OFAC-DPRK","UN-1718"],"birthDate":"1984-01-08"}
+{"id":"SAMPLE-OFAC-003","schema":"Person","caption":"Maduro Moros, Nicolas","names":["Nicolas Maduro","Nicolás Maduro Moros"],"country":"ve","programs":["OFAC-VENEZUELA"],"birthDate":"1962-11-23"}
+{"id":"SAMPLE-EU-001","schema":"Organization","caption":"Wagner Group","names":["Wagner Group","ChVK Wagner","ЧВК Вагнер","Group Wagner"],"country":"ru","programs":["EU-Wagner","OFAC-RUSSIA"]}
+{"id":"SAMPLE-UN-001","schema":"Person","caption":"Ramzan Kadyrov","names":["Ramzan Kadyrov","Рамзан Кадыров"],"country":"ru","programs":["EU-Russia","OFAC-RUSSIA","CA-Russia"],"birthDate":"1976-10-05"}
+{"id":"SAMPLE-OFAC-004","schema":"Person","caption":"Yevgeny Prigozhin","names":["Yevgeny Prigozhin","Evgeny Prigozhin","Евгений Пригожин"],"country":"ru","programs":["OFAC-RUSSIA","EU-Russia"],"birthDate":"1961-06-01"}
+{"id":"SAMPLE-OFAC-005","schema":"Person","caption":"Mohammed Issa al-Qadhafi","names":["Mohammed al-Qadhafi","Mohammed al-Gaddafi"],"country":"ly","programs":["UN-1970","OFAC-LIBYA"],"birthDate":"1970-01-01"}
+{"id":"SAMPLE-OFAC-006","schema":"Organization","caption":"Hizballah","names":["Hezbollah","Hizballah","Hizbullah","حزب الله","Party of God"],"country":"lb","programs":["OFAC-SDGT","EU-Terrorism","UK-CT"]}
+{"id":"SAMPLE-DEMO-001","schema":"Person","caption":"Demo Match Subject","names":["Doe John","John Doe","J. Doe"],"country":"mn","programs":["FAW-DEMO"],"birthDate":"1980-01-01"}
+{"id":"SAMPLE-OFAC-007","schema":"Person","caption":"Andriy Derkach","names":["Andriy Derkach","Andrey Derkach","Андрій Деркач"],"country":"ua","programs":["OFAC-RUSSIA","EU-Russia"],"birthDate":"1967-12-19"}

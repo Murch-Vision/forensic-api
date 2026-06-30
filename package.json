@@ -1,0 +1,42 @@
+{
+  "name": "forensic-analyst-backend",
+  "version": "3.2.0-rc4",
+  "description": "Forensic intelligence analysis platform — Node/TS/Knex/GraphQL backend",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc --noEmit",
+    "migrate": "tsx src/db/migrate.ts",
+    "rollback": "tsx src/db/rollback.ts",
+    "seed": "tsx src/db/seed.ts",
+    "build:sidecar": "node desktop/build-sidecar.mjs"
+  },
+  "dependencies": {
+    "@apollo/server": "^4.11.3",
+    "better-sqlite3": "^11.8.1",
+    "docx": "^9.7.1",
+    "exceljs": "^4.4.0",
+    "graphql": "^16.10.0",
+    "graphql-scalars": "^1.24.0",
+    "jszip": "^3.10.1",
+    "knex": "^3.1.0",
+    "pdfkit": "^0.19.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.1",
+    "@types/pdfkit": "^0.17.6",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "@apollo/protobufjs"
+    ]
+  }
+}

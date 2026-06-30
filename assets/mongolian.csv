@@ -1,0 +1,53 @@
+Key,Value
+APP_NAME,Murch AI - Анализ
+APP_SUBTITLE,Анализийн Систем v1.0
+LOAD_DATA,ӨГӨГДӨЛ АЧААЛЛАХ
+INTELLIGENCE,ТАНДАЛТ
+DATA,ӨГӨГДӨЛ
+ANALYSIS,АНАЛИЗ
+REPORTS,ТАЙЛАН
+DASHBOARD,Тандалтын Самбар
+SUBJECTS,Хувийн Мэдээлэл
+LINK_CHART,Холбоо Хамаарал
+TRANSACTIONS,Гүйлгээ
+CALL_RECORDS,Дуудлагын Бүртгэл
+IMPORT,Импорт
+INTEL_BOARD,Ухаалаг Самбар
+TIMELINE,Цаг Хугацааны Хамаарал
+FORENSIC_ANALYSIS,Нарийвчилсан Анализ
+FRAUD_WORKFLOW,Сэжигтэй Үйлдлийн Анализ
+REPORTS_EXPORT,Тайлан & Экспорт
+OFFLINE,OFFLINE
+STATS_SUBJECTS,Хувийн Мэдээлэл
+STATS_TXN,ГҮЙЛГЭЭ
+STATS_CDR,Дуудлага
+STATUS_READY,Бэлэн
+STATUS_LOADING,Мэдээлэл ачааллаж байна
+STATUS_VIEWING,Харж байна
+STATUS_SAMPLE_SUCCESS,Жишээ өгөгдөл амжилттай ачааллаа
+STATUS_SAMPLE_ERROR,Жишээ өгөгдөл үүсгэхэд алдаа гарлаа
+ERROR_TITLE,Алдаа
+NO_ACTIVE_CASE,Идэвхитэй Хэрэг Байхгүй
+SAMPLE_GENERATING,Жишээ өгөгдөл үүсгэж байна
+SAMPLE_COMPLETE,Жишээ өгөгдөл амжилттай ачааллаа
+RISK_CRITICAL,ЭГЗЭГТЭЙ
+RISK_HIGH,ӨНДӨР
+RISK_MEDIUM,ДУНД
+RISK_LOW,БАГА
+RISK_UNKNOWN,ТОДОРХОЙГҮЙ
+STATUS_ACTIVE,ИДЭВХТЭЙ
+CASE_BANNER_TITLE, ХЭРГИЙН МЭДЭЭЛЭЛ
+CASE_BANNER_STATUS,ХЭРГИЙН ТӨЛӨВ ИДЭВХТЭЙ
+CASE_BANNER_UPDATED,СҮҮЛД ШИНЭЧЛЭСЭН
+THREAT_LEVEL,АЮУЛЫН ТҮВШИН
+REFRESH,ШИНЭЧЛЭХ
+LOADING_DATA,Мэдээлэл ачааллаж байна
+NO_ALERTS,Мэдээлэл байхгүй
+RISK_DISTRIBUTION,Аюулын Тархалт
+MONTHLY_VOLUME,Сар бүрийн Гүйлгээний Дүн
+MONEY_FLOW,Мөнгөний Урсгал
+TXN_CATEGORY,Гүйлгээний Ангилал
+TXN_TIMING,Гүйлгээний Цагийн Хуваарь
+CHANNEL_DISTRIBUTION,Сувгийн Тархалт
+SUBJECT_ROSTER,Хувийн Мэдээлэл
+PATTERN_ALERTS,Сэжигтэй Үйлдэл

@@ -1,0 +1,53 @@
+Key,Value
+APP_NAME,Forensic Analyst Workstation
+APP_SUBTITLE,Intelligence Analysis System v2.0
+LOAD_DATA,LOAD SAMPLE DATA
+INTELLIGENCE,INTELLIGENCE
+DATA,DATA
+ANALYSIS,ANALYSIS
+REPORTS,REPORTS
+DASHBOARD,Dashboard
+SUBJECTS,Subject Database
+LINK_CHART,Link Chart
+TRANSACTIONS,Transactions
+CALL_RECORDS,Call Records
+IMPORT,Import Data
+INTEL_BOARD,Intelligence Board
+TIMELINE,Timeline
+FORENSIC_ANALYSIS,Forensic Analysis
+FRAUD_WORKFLOW,Fraud Workflow
+REPORTS_EXPORT,Reports & Export
+STATUS_READY,Ready
+STATUS_LOADING,Loading intelligence data...
+STATUS_VIEWING,Viewing
+STATUS_SAMPLE_SUCCESS,Sample data loaded successfully. Navigate to Dashboard to view.
+STATUS_SAMPLE_ERROR,Error generating sample data
+ERROR_TITLE,Error
+OFFLINE,OFFLINE
+STATS_SUBJECTS,SUBJECTS
+STATS_TXN,TXN
+STATS_CDR,CDR
+NO_ACTIVE_CASE,No Active Case
+SAMPLE_GENERATING,Generating intelligence sample data...
+SAMPLE_COMPLETE,Sample data loaded successfully. Navigate to Dashboard to view.
+RISK_HIGH,HIGH
+RISK_MEDIUM,MEDIUM
+RISK_LOW,LOW
+RISK_UNKNOWN,UNKNOWN
+RISK_CRITICAL,CRITICAL
+STATUS_ACTIVE,ACTIVE
+CASE_BANNER_TITLE,FORENSIC CASE INTELLIGENCE
+CASE_BANNER_STATUS,CASE STATUS: ACTIVE
+CASE_BANNER_UPDATED,LAST UPDATED
+THREAT_LEVEL,THREAT LEVEL
+REFRESH,REFRESH
+LOADING_DATA,Loading intelligence data...
+NO_ALERTS,No pattern alerts
+RISK_DISTRIBUTION,Risk Distribution
+MONTHLY_VOLUME,Monthly Transaction Volume
+MONEY_FLOW,Financial Flow Network (Sankey)
+TXN_CATEGORY,Transaction Category Breakdown
+TXN_TIMING,Transaction Timing Heatmap (Day x Hour)
+CHANNEL_DISTRIBUTION,Channel Distribution
+SUBJECT_ROSTER,Subject Roster
+PATTERN_ALERTS,Pattern Alerts
