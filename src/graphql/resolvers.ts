@@ -78,22 +78,66 @@ function maskedNumber(accountNumber: string): string {
   return accountNumber;
 }
 
+// CASE SCOPE — when the analyst has an active case, the evidence list queries
+// (suspects, bankAccounts, transactions, callRecords, correlations) return
+// only that case's records, chained suspect → account/phone → txn/call.
+// A suspect belongs to a case through a SUSPECT evidence entry (that is what
+// КЕЙСТ ТЭМДЭГЛЭХ on the people page creates — suspects.caseId is legacy and
+// kept only as a fallback). null = no active case = unscoped (all cases).
+async function caseSuspectIds(c: GraphQLContext): Promise<Set<number> | null> {
+  const active = await c.session.getCurrentCase();
+  if (!active) return null;
+  const entries = await c.evidence.getForCase(active.id);
+  const tagged = new Set(
+    entries.filter((e) => e.sourceType === "SUSPECT").map((e) => e.sourceId)
+  );
+  const all = await c.suspects.getAllSuspects();
+  return new Set(
+    all.filter((s) => tagged.has(s.id) || s.caseId === active.caseId)
+      .map((s) => s.id)
+  );
+}
+
+async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
+  const accounts = await c.data.getAllBankAccounts();
+  const scope = await caseSuspectIds(c);
+  if (!scope) return accounts;
+  return accounts.filter((a) => a.suspectId != null && scope.has(a.suspectId));
+}
+
 export const resolvers = {
   Query: {
-    suspects: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.suspects.getAllSuspects(),
+    suspects: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const all = await c.suspects.getAllSuspects();
+      const scope = await caseSuspectIds(c);
+      return scope ? all.filter((s) => scope.has(s.id)) : all;
+    },
     suspect: (_p: unknown, a: {id: number}, c: GraphQLContext) =>
       c.suspects.getSuspectById(a.id),
     dashboardStats: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.data.getDashboardStats(),
     bankAccounts: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.data.getAllBankAccounts(),
-    transactions: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.data.getAllTransactions(),
-    callRecords: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.data.getAllCallRecords(),
-    suspectLinks: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.data.getAllLinks(),
+      scopedAccounts(c),
+    transactions: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const txns = await c.data.getAllTransactions();
+      const scope = await caseSuspectIds(c);
+      if (!scope) return txns;
+      const accountIds = new Set((await scopedAccounts(c)).map((a) => a.id));
+      return txns.filter((t) => accountIds.has(t.bankAccountId));
+    },
+    callRecords: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const calls = await c.data.getAllCallRecords();
+      const scope = await caseSuspectIds(c);
+      if (!scope) return calls;
+      return calls.filter((r) => r.suspectId != null && scope.has(r.suspectId));
+    },
+    suspectLinks: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const links = await c.data.getAllLinks();
+      const scope = await caseSuspectIds(c);
+      if (!scope) return links;
+      return links.filter((l) =>
+        scope.has(l.sourceSuspectId) && scope.has(l.targetSuspectId));
+    },
     caseFiles: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.data.getAllCaseFiles(),
     globalPeople: (_p: unknown, _a: unknown, c: GraphQLContext) =>
@@ -106,8 +150,11 @@ export const resolvers = {
       c.data.getAccessLogEntries(a.suspectId ?? null),
     patterns: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.analysis.detectPatterns(),
-    correlations: (_p: unknown, a: {suspectId?: number}, c: GraphQLContext) =>
-      c.analysis.correlateTimeline(a.suspectId ?? null),
+    correlations: async (_p: unknown, a: {suspectId?: number}, c: GraphQLContext) => {
+      const hits = await c.analysis.correlateTimeline(a.suspectId ?? null);
+      const scope = await caseSuspectIds(c);
+      return scope ? hits.filter((h) => scope.has(h.suspectId)) : hits;
+    },
     accountStatistics: (_p: unknown, a: {bankAccountId: number}, c: GraphQLContext) =>
       c.analysis.getAccountStatistics(a.bankAccountId),
     ruleEngine: (_p: unknown, a: {bankAccountId: number}, c: GraphQLContext) =>

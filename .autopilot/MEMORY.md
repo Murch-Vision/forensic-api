@@ -11,6 +11,11 @@ Dev server runs via `tsx watch` and hot-reloads on save.
 - Schema: src/graphql/schema.ts (SDL string). Resolvers thin, delegate to
   services (src/services/dataService.ts etc.), audit via c.audit.record().
 - Case session: caseSessionService.ts (process-wide active case + pins).
+- CASE SCOPE (resolvers.ts caseSuspectIds/scopedAccounts): with an active
+  case, suspects/bankAccounts/transactions/callRecords/suspectLinks/
+  correlations return ONLY that case's records — membership = SUSPECT
+  evidence_entries (suspects.caseId is a legacy fallback, null in practice),
+  chained suspect → account/phone → txn/call. No active case = all data.
 
 ## Done
 - 2026-07-02: setCaseStatus(caseFileId, status) mutation — stamps/clears
@@ -31,3 +36,11 @@ Dev server runs via `tsx watch` and hot-reloads on save.
   suspect rows into persons (union-find: normalized name, phone last-8,
   nationalId); aggregates cases via SUSPECT evidence_entries, phones,
   accounts, txn/call counts, matchedBy reasons.
+- 2026-07-02: evidence list queries case-scoped server-side (see CASE SCOPE
+  convention above). dashboardStats stays global (command overview).
+
+## Parked (NOT in this run's backlog)
+- Import does not tag suspects into the active case, so freshly imported
+  data is hidden while a case is scoped until the person is tagged
+  (КЕЙСТ ТЭМДЭГЛЭХ). Consider auto-tagging import-touched suspects into
+  the active case at import time.
