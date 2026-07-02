@@ -2,3 +2,4 @@
 - 2026-07-02: bank imports auto-resolve the subject's account (bankAccountId optional).
 - 2026-07-02: mergeCases mutation — fold cases into one, archive the drained sources.
 - 2026-07-02: imports self-attribute rows (phones→suspects, account column→accounts); subject optional.
+- 2026-07-02: globalPeople query — cross-case person grouping for the people database (user wish).

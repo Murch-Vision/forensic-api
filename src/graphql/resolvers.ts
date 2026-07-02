@@ -15,6 +15,7 @@ import type {ImportKind, ImportService} from "../services/importService";
 import type {ReportService} from "../services/reportService";
 import type {AuditLogService} from "../services/auditLogService";
 import type {EvidenceService} from "../services/evidenceService";
+import type {PeopleService} from "../services/peopleService";
 import type {SanctionsService} from "../services/sanctionsService";
 import type {SanctionsRefreshService} from "../services/sanctionsRefreshService";
 import type {FawSettings, SettingsService} from "../services/settingsService";
@@ -40,6 +41,7 @@ export interface GraphQLContext {
   reports  : ReportService;
   audit    : AuditLogService;
   evidence : EvidenceService;
+  people   : PeopleService;
   sanctions : SanctionsService;
   sanctionsRefresh : SanctionsRefreshService;
   settings : SettingsService;
@@ -94,6 +96,8 @@ export const resolvers = {
       c.data.getAllLinks(),
     caseFiles: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.data.getAllCaseFiles(),
+    globalPeople: (_p: unknown, _a: unknown, c: GraphQLContext) =>
+      c.people.getGlobalPeople(),
     analysisResults: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.data.getAllAnalysisResults(),
     auditEvents: (_p: unknown, a: {limit?: number}, c: GraphQLContext) =>

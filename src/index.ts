@@ -19,6 +19,7 @@ import {ImportService} from "./services/importService";
 import {ReportService} from "./services/reportService";
 import {AuditLogService} from "./services/auditLogService";
 import {EvidenceService} from "./services/evidenceService";
+import {PeopleService} from "./services/peopleService";
 import {SanctionsService} from "./services/sanctionsService";
 import {SanctionsRefreshService} from "./services/sanctionsRefreshService";
 import {SettingsService} from "./services/settingsService";
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     reports  : new ReportService(data),
     audit,
     evidence : new EvidenceService(db, audit),
+    people   : new PeopleService(db),
     sanctions,
     sanctionsRefresh : new SanctionsRefreshService(db, sanctions, audit),
     settings,

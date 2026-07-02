@@ -27,3 +27,7 @@ Dev server runs via `tsx watch` and hot-reloads on save.
   findOrCreateAccount (unowned when new); resolveDefaultAccount fallback
   (explicit id → subject's account → ХУУЛГА-ИМПОРТ). subjectSuspectId
   optional. Bank profiles gained account:["Данс","Дансны дугаар"].
+- 2026-07-02: peopleService.getGlobalPeople + `globalPeople` query — groups
+  suspect rows into persons (union-find: normalized name, phone last-8,
+  nationalId); aggregates cases via SUSPECT evidence_entries, phones,
+  accounts, txn/call counts, matchedBy reasons.

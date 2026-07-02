@@ -175,6 +175,34 @@ export const typeDefs = /* GraphQL */ `
     closedAt: String
   }
 
+  "One case a global person is tied to (via a SUSPECT evidence entry)."
+  type PersonCaseRef {
+    caseFile: CaseFile!
+    suspectId: Int!
+    exhibitNumber: Int!
+    severity: AlertSeverity!
+    taggedAtUtc: String!
+  }
+
+  "A human being across every case: suspect records grouped by identity."
+  type GlobalPerson {
+    key: String!
+    fullName: String!
+    aliases: [String!]!
+    riskLevel: RiskLevel!
+    photoData: String
+    occupation: String
+    nationalId: String
+    "Why records were grouped: NAME | PHONE | NATIONAL_ID."
+    matchedBy: [String!]!
+    suspects: [Suspect!]!
+    cases: [PersonCaseRef!]!
+    phoneNumbers: [String!]!
+    accountNumbers: [String!]!
+    transactionCount: Int!
+    callRecordCount: Int!
+  }
+
   type CaseNote {
     id: Int!
     caseFileId: Int
@@ -727,6 +755,7 @@ export const typeDefs = /* GraphQL */ `
     callRecords: [CallRecord!]!
     suspectLinks: [SuspectLink!]!
     caseFiles: [CaseFile!]!
+    globalPeople: [GlobalPerson!]!
     analysisResults: [AnalysisResult!]!
     auditEvents(limit: Int): [AuditEvent!]!
     accessLogEntries(suspectId: Int): [AccessLogEntry!]!
