@@ -45,6 +45,7 @@ const BANK_PROFILES: ImportProfile[] = [
       date: ["Гүйлгээний огноо"], amount: ["Гүйлгээний дүн"],
       description: ["Гүйлгээний утга"], counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр"],
+      account: ["Данс", "Дансны дугаар"],
     },
   },
   {
@@ -56,6 +57,7 @@ const BANK_PROFILES: ImportProfile[] = [
       date: ["Гүйлгээний огноо"], amount: ["Гүйлгээний дүн"],
       description: ["Гүйлгээний утга"], counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр"],
+      account: ["Данс", "Дансны дугаар"],
     },
   },
   {
@@ -66,6 +68,7 @@ const BANK_PROFILES: ImportProfile[] = [
     fieldMap: {
       date: ["tranDate"], amount: ["amount"], description: ["description"],
       balance: ["balance"], counterpartyAccount: ["relatedAccount"],
+      account: ["account", "accountNumber"],
     },
   },
   {
@@ -77,6 +80,7 @@ const BANK_PROFILES: ImportProfile[] = [
       date: ["Гүйлгээний огноо"], credit: ["Орлого"], debit: ["Зарлага"],
       balance: ["Үлдэгдэл"], description: ["Гүйлгээний утга"],
       counterpartyAccount: ["Харьцсан данс"],
+      account: ["Данс", "Дансны дугаар"],
     },
   },
   {
@@ -89,6 +93,7 @@ const BANK_PROFILES: ImportProfile[] = [
       balance: ["Үлдэгдэл"], description: ["Гүйлгээний утга"],
       counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан дансны нэр"],
+      account: ["Данс", "Дансны дугаар"],
     },
   },
 ];

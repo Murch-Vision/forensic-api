@@ -22,3 +22,8 @@ Dev server runs via `tsx watch` and hot-reloads on save.
   mutation — moves evidence (exhibits renumbered after target's, dupes of
   same source dropped) and case_notes; sources archived with pointer note;
   session switches to target when a source was active.
+- 2026-07-02: import row-level attribution — CDR rows match suspects by
+  phone last-8-digit suffix; bank rows route per "Данс"/account column via
+  findOrCreateAccount (unowned when new); resolveDefaultAccount fallback
+  (explicit id → subject's account → ХУУЛГА-ИМПОРТ). subjectSuspectId
+  optional. Bank profiles gained account:["Данс","Дансны дугаар"].

@@ -109,45 +109,73 @@ export class ImportService {
     if (!domain) {
       return empty("Загвар таних боломжгүй — гарын авлагын зураглал шаардлагатай.");
     }
-    // Every import is attributed to a subject (suspect), as in the C# flow.
-    if (opts.subjectSuspectId == null) {
-      return empty("Эзэн (сэжигтэн) сонгоно уу.");
-    }
+    // No subject picker: rows attribute themselves (bank rows via their
+    // account column, calls via known phone numbers); a caller-provided
+    // subject remains an optional fallback for API use.
     const map = mergeMapping(det.proposedMapping, opts.mapping);
     if (domain === "BANK") {
-      const accountId = opts.bankAccountId
-        ?? await this.resolveSubjectAccount(opts.subjectSuspectId);
-      return this.importBank(table, det, accountId, map);
+      return this.importBank(table, det, map, opts);
     }
     if (domain === "CDR") {
-      return this.importCdr(table, det, map, opts.subjectSuspectId);
+      return this.importCdr(table, det, map, opts.subjectSuspectId ?? null);
     }
-    return this.importAccessLog(table, det, map, opts.subjectSuspectId);
+    return this.importAccessLog(
+      table, det, map, opts.subjectSuspectId ?? null);
   }
 
-  // The import screen no longer asks for an account: statements land on the
-  // subject's first bank account, creating a placeholder when they have none.
-  private async resolveSubjectAccount(suspectId: number): Promise<number> {
+  // Find (or create, unowned) the bank account a statement row belongs to.
+  private async findOrCreateAccount(
+    accountNumber: string,
+    cache: Map<string, number>
+  ): Promise<number> {
+    const key = accountNumber.trim();
+    const hit = cache.get(key);
+    if (hit != null) return hit;
     const existing = await this.db("bank_accounts")
-      .where({suspectId}).orderBy("id").first();
-    if (existing) return Number(existing.id);
-    const suspect = await this.db("suspects").where({id: suspectId}).first();
+      .where({accountNumber: key}).first();
+    if (existing) {
+      cache.set(key, Number(existing.id));
+      return Number(existing.id);
+    }
     const [id] = await this.db("bank_accounts").insert({
-      accountNumber: `ХУУЛГА-${suspect?.suspectId ?? suspectId}`,
-      bankName: null, branchCode: null, iban: null,
+      accountNumber: key, bankName: null, branchCode: null, iban: null,
       accountType: "Current", currency: "MNT", currentBalance: 0,
-      status: "ACTIVE", suspectId,
-      accountHolderName: suspect?.fullName ?? null,
+      status: "ACTIVE", suspectId: null, accountHolderName: null,
       createdAt: new Date().toISOString(),
     });
+    cache.set(key, Number(id));
     return Number(id);
+  }
+
+  // Fallback when a statement has no account column: an explicit account,
+  // the (optional) subject's first account, or a shared unattributed bucket.
+  private async resolveDefaultAccount(
+    opts: ImportOptions,
+    cache: Map<string, number>
+  ): Promise<number> {
+    if (opts.bankAccountId != null) return opts.bankAccountId;
+    if (opts.subjectSuspectId != null) {
+      const existing = await this.db("bank_accounts")
+        .where({suspectId: opts.subjectSuspectId}).orderBy("id").first();
+      if (existing) return Number(existing.id);
+      const suspect = await this.db("suspects")
+        .where({id: opts.subjectSuspectId}).first();
+      const id = await this.findOrCreateAccount(
+        `ХУУЛГА-${suspect?.suspectId ?? opts.subjectSuspectId}`, cache);
+      await this.db("bank_accounts").where({id}).update({
+        suspectId: opts.subjectSuspectId,
+        accountHolderName: suspect?.fullName ?? null,
+      });
+      return id;
+    }
+    return this.findOrCreateAccount("ХУУЛГА-ИМПОРТ", cache);
   }
 
   private async importBank(
     table: NormalizedTable,
     det: DetectionResult,
-    bankAccountId: number,
-    map: ColumnMapping
+    map: ColumnMapping,
+    opts: ImportOptions
   ): Promise<ImportSummary> {
     // Style follows the mapped columns so a manual override works even when no
     // profile matched: credit/debit columns ⇒ split, else a single amount.
@@ -156,14 +184,18 @@ export class ImportService {
       : map.amount ? "SIGNED" : det.profile?.amountStyle ?? "SIGNED";
     const res = newSummary(det);
     const rowsToInsert: Record<string, unknown>[] = [];
+    const acctCache = new Map<string, number>();
+    let defaultAccountId: number | null = null;
     // Reference numbers are unique per account — collect existing + in-file
     // ones so a manual reference mapping can't trip the unique index.
     const seenRefs = new Set<string>();
     if (map.reference) {
       const rows = await this.db("bank_transactions")
-        .where({bankAccountId}).whereNotNull("referenceNumber")
-        .select("referenceNumber");
-      for (const r of rows) seenRefs.add(String(r.referenceNumber));
+        .whereNotNull("referenceNumber")
+        .select("bankAccountId", "referenceNumber");
+      for (const r of rows) {
+        seenRefs.add(`${r.bankAccountId}|${r.referenceNumber}`);
+      }
     }
 
     for (const row of table.rows) {
@@ -171,6 +203,11 @@ export class ImportService {
       try {
         const get = (f: string) =>
           map[f] ? cell(table, row, map[f]) : null;
+        const acctRaw = get("account");
+        const bankAccountId = acctRaw
+          ? await this.findOrCreateAccount(acctRaw, acctCache)
+          : (defaultAccountId ??=
+              await this.resolveDefaultAccount(opts, acctCache));
         const dateStr = get("date");
         if (!dateStr) {
           res.skippedRows++;
@@ -188,11 +225,12 @@ export class ImportService {
         }
         const ref = get("reference");
         if (ref) {
-          if (seenRefs.has(ref)) {
+          const refKey = `${bankAccountId}|${ref}`;
+          if (seenRefs.has(refKey)) {
             res.skippedRows++;
             continue;
           }
-          seenRefs.add(ref);
+          seenRefs.add(refKey);
         }
         const txn: Record<string, unknown> = {
           bankAccountId, timestamp: date, description: desc,
@@ -244,11 +282,27 @@ export class ImportService {
     table: NormalizedTable,
     det: DetectionResult,
     map: ColumnMapping,
-    subjectSuspectId: number
+    subjectSuspectId: number | null
   ): Promise<ImportSummary> {
     const unit = det.profile?.durationUnit ?? "SECONDS";
     const res = newSummary(det);
     const rowsToInsert: Record<string, unknown>[] = [];
+
+    // Rows attribute themselves: a caller/called number registered to a
+    // suspect wins; the optional subject is only a fallback.
+    const phoneRows = await this.db("phone_numbers")
+      .whereNotNull("suspectId").select("number", "suspectId");
+    const bySuffix = new Map<string, number>();
+    for (const p of phoneRows) {
+      const digits = String(p.number).replace(/\D/g, "");
+      if (digits) bySuffix.set(digits.slice(-8), Number(p.suspectId));
+    }
+    const matchSuspect = (num: string | null): number | null => {
+      if (!num) return null;
+      const digits = num.replace(/\D/g, "");
+      if (digits.length < 8) return null;
+      return bySuffix.get(digits.slice(-8)) ?? null;
+    };
 
     for (const row of table.rows) {
       res.totalRows++;
@@ -275,12 +329,14 @@ export class ImportService {
               ? Math.round(d * 60) : Math.round(d);
           }
         }
+        const callerNumber = unwrapCallerId(caller);
+        const calledNumber = unwrapCallerId(called);
         rowsToInsert.push({
-          callerNumber: unwrapCallerId(caller),
-          calledNumber: unwrapCallerId(called),
+          callerNumber, calledNumber,
           startTime: dt, durationSeconds, callType: "Voice",
           direction: get("direction") ?? "Outgoing",
-          suspectId: subjectSuspectId,
+          suspectId: matchSuspect(callerNumber)
+            ?? matchSuspect(calledNumber) ?? subjectSuspectId,
         });
         res.importedRows++;
       } catch {
@@ -297,7 +353,7 @@ export class ImportService {
     table: NormalizedTable,
     det: DetectionResult,
     map: ColumnMapping,
-    subjectSuspectId: number
+    subjectSuspectId: number | null
   ): Promise<ImportSummary> {
     const source = det.profile?.id === "Device-Log" ? "DeviceLog" : "WebAccessLog";
     const res = newSummary(det);
