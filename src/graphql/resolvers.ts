@@ -80,37 +80,53 @@ function maskedNumber(accountNumber: string): string {
 
 // CASE SCOPE — when the analyst has an active case, the evidence list queries
 // (suspects, bankAccounts, transactions, callRecords, correlations) return
-// only that case's records, chained suspect → account/phone → txn/call.
-// A suspect belongs to a case through a SUSPECT evidence entry (that is what
-// КЕЙСТ ТЭМДЭГЛЭХ on the people page creates — suspects.caseId is legacy and
-// kept only as a fallback). null = no active case = unscoped (all cases).
-async function caseSuspectIds(c: GraphQLContext): Promise<Set<number> | null> {
+// only that case's records. Membership comes from evidence_entries:
+// SUSPECT entries (КЕЙСТ ТЭМДЭГЛЭХ; suspects.caseId is a legacy fallback)
+// chain suspect → accounts/phones → txns/calls, and imports link their data
+// directly with BANK_ACCOUNT / CALL_RECORD entries so freshly imported rows
+// are visible in the case they were imported into. null = no active case.
+interface CaseScope {
+  suspectIds : Set<number>;
+  accountIds : Set<number>;
+  txnIds     : Set<number>;
+  callIds    : Set<number>;
+}
+
+async function caseScope(c: GraphQLContext): Promise<CaseScope | null> {
   const active = await c.session.getCurrentCase();
   if (!active) return null;
   const entries = await c.evidence.getForCase(active.id);
-  const tagged = new Set(
-    entries.filter((e) => e.sourceType === "SUSPECT").map((e) => e.sourceId)
-  );
+  const by = (t: string) => new Set(
+    entries.filter((e) => e.sourceType === t).map((e) => e.sourceId));
+  const tagged = by("SUSPECT");
   const all = await c.suspects.getAllSuspects();
-  return new Set(
+  const suspectIds = new Set(
     all.filter((s) => tagged.has(s.id) || s.caseId === active.caseId)
       .map((s) => s.id)
   );
+  return {
+    suspectIds,
+    accountIds: by("BANK_ACCOUNT"),
+    txnIds: by("TRANSACTION"),
+    callIds: by("CALL_RECORD"),
+  };
 }
 
 async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
   const accounts = await c.data.getAllBankAccounts();
-  const scope = await caseSuspectIds(c);
+  const scope = await caseScope(c);
   if (!scope) return accounts;
-  return accounts.filter((a) => a.suspectId != null && scope.has(a.suspectId));
+  return accounts.filter((a) =>
+    (a.suspectId != null && scope.suspectIds.has(a.suspectId))
+    || scope.accountIds.has(a.id));
 }
 
 export const resolvers = {
   Query: {
     suspects: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const all = await c.suspects.getAllSuspects();
-      const scope = await caseSuspectIds(c);
-      return scope ? all.filter((s) => scope.has(s.id)) : all;
+      const scope = await caseScope(c);
+      return scope ? all.filter((s) => scope.suspectIds.has(s.id)) : all;
     },
     suspect: (_p: unknown, a: {id: number}, c: GraphQLContext) =>
       c.suspects.getSuspectById(a.id),
@@ -120,23 +136,27 @@ export const resolvers = {
       scopedAccounts(c),
     transactions: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const txns = await c.data.getAllTransactions();
-      const scope = await caseSuspectIds(c);
+      const scope = await caseScope(c);
       if (!scope) return txns;
       const accountIds = new Set((await scopedAccounts(c)).map((a) => a.id));
-      return txns.filter((t) => accountIds.has(t.bankAccountId));
+      return txns.filter((t) =>
+        accountIds.has(t.bankAccountId) || scope.txnIds.has(t.id));
     },
     callRecords: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const calls = await c.data.getAllCallRecords();
-      const scope = await caseSuspectIds(c);
+      const scope = await caseScope(c);
       if (!scope) return calls;
-      return calls.filter((r) => r.suspectId != null && scope.has(r.suspectId));
+      return calls.filter((r) =>
+        (r.suspectId != null && scope.suspectIds.has(r.suspectId))
+        || scope.callIds.has(r.id));
     },
     suspectLinks: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const links = await c.data.getAllLinks();
-      const scope = await caseSuspectIds(c);
+      const scope = await caseScope(c);
       if (!scope) return links;
       return links.filter((l) =>
-        scope.has(l.sourceSuspectId) && scope.has(l.targetSuspectId));
+        scope.suspectIds.has(l.sourceSuspectId)
+        && scope.suspectIds.has(l.targetSuspectId));
     },
     caseFiles: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.data.getAllCaseFiles(),
@@ -152,8 +172,9 @@ export const resolvers = {
       c.analysis.detectPatterns(),
     correlations: async (_p: unknown, a: {suspectId?: number}, c: GraphQLContext) => {
       const hits = await c.analysis.correlateTimeline(a.suspectId ?? null);
-      const scope = await caseSuspectIds(c);
-      return scope ? hits.filter((h) => scope.has(h.suspectId)) : hits;
+      const scope = await caseScope(c);
+      return scope
+        ? hits.filter((h) => scope.suspectIds.has(h.suspectId)) : hits;
     },
     accountStatistics: (_p: unknown, a: {bankAccountId: number}, c: GraphQLContext) =>
       c.analysis.getAccountStatistics(a.bankAccountId),
@@ -383,6 +404,25 @@ export const resolvers = {
       });
       await c.audit.record("Import.Run", sum.domain,
         `${sum.importedRows}/${sum.totalRows} rows`);
+      // Imported data belongs to the case the analyst is working in: link
+      // touched accounts / matched suspects / new calls as evidence so the
+      // scoped data pages show the import immediately.
+      const active = await c.session.getCurrentCase();
+      if (active && sum.importedRows > 0) {
+        const src = a.filename ?? "импорт";
+        for (const id of sum.touchedSuspectIds ?? []) {
+          await c.evidence.tag(active.id, "SUSPECT", id,
+            `Импорт: ${src}`).catch(() => undefined);
+        }
+        for (const id of sum.touchedAccountIds ?? []) {
+          await c.evidence.tag(active.id, "BANK_ACCOUNT", id,
+            `Импорт: ${src}`).catch(() => undefined);
+        }
+        for (const id of sum.newCallRecordIds ?? []) {
+          await c.evidence.tag(active.id, "CALL_RECORD", id,
+            `Импорт: ${src}`).catch(() => undefined);
+        }
+      }
       return sum;
     },
     tagEvidence: (
@@ -490,11 +530,6 @@ export const resolvers = {
       const id = await c.data.addCaseNote(a.input);
       await c.audit.record("CaseNote.Add", `CaseNote:${id}`);
       return id;
-    },
-    clearAllData: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      await c.data.clearAllData();
-      await c.audit.record("Database.Clear", null, "all operational tables", "HIGH");
-      return true;
     },
   },
 

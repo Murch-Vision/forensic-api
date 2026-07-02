@@ -56,6 +56,11 @@ export interface ImportSummary {
   messages: string[];
   detectedProfile: string | null;
   domain: string | null;
+  // Internal (not in the GraphQL type): what the import touched, so the
+  // resolver can link it into the active case as evidence entries.
+  touchedAccountIds?: number[];
+  touchedSuspectIds?: number[];
+  newCallRecordIds?: number[];
 }
 
 export class ImportService {
@@ -265,6 +270,17 @@ export class ImportService {
         if (balRaw != null) {
           const bal = parseFloat(cleanAmount(balRaw));
           if (!Number.isNaN(bal)) txn.runningBalance = bal;
+        } else {
+          // Some statements only carry the balance BEFORE the transaction.
+          const beforeRaw = get("balanceBefore");
+          if (beforeRaw != null) {
+            const before = parseFloat(cleanAmount(beforeRaw));
+            if (!Number.isNaN(before)) {
+              txn.runningBalance = txn.type === "credit"
+                ? before + (txn.amount as number)
+                : before - (txn.amount as number);
+            }
+          }
         }
         rowsToInsert.push(txn);
         res.importedRows++;
@@ -274,6 +290,14 @@ export class ImportService {
     }
     if (rowsToInsert.length > 0) {
       await this.db.batchInsert("bank_transactions", rowsToInsert, 200);
+    }
+    const accountIds = new Set<number>(acctCache.values());
+    if (defaultAccountId != null) accountIds.add(defaultAccountId);
+    res.touchedAccountIds = [...accountIds];
+    if (accountIds.size > 0) {
+      res.touchedSuspectIds = (await this.db("bank_accounts")
+        .whereIn("id", [...accountIds]).whereNotNull("suspectId")
+        .pluck("suspectId")).map(Number);
     }
     return res;
   }
@@ -344,7 +368,14 @@ export class ImportService {
       }
     }
     if (rowsToInsert.length > 0) {
+      const beforeRow = await this.db("call_records").max({m: "id"}).first();
+      const beforeMax = Number(beforeRow?.m ?? 0);
       await this.db.batchInsert("call_records", rowsToInsert, 200);
+      res.newCallRecordIds = (await this.db("call_records")
+        .where("id", ">", beforeMax).pluck("id")).map(Number);
+      res.touchedSuspectIds = [...new Set(rowsToInsert
+        .map((r) => r.suspectId).filter((v): v is number => v != null)
+        .map(Number))];
     }
     return res;
   }

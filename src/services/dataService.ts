@@ -375,20 +375,6 @@ export class DataService {
     return Number(id);
   }
 
-  // Truncate every operational table inside one transaction (mirrors
-  // ClearAllDataAsync). FK order: children before parents.
-  async clearAllData(): Promise<void> {
-    await this.db.transaction(async (trx) => {
-      for (const t of ["evidence_entries", "bank_transactions", "call_records",
-        "case_notes", "analysis_results", "suspect_links", "suspect_tags",
-        "timeline_events", "chart_links", "chart_events", "chart_entities",
-        "access_log_entries", "bank_accounts", "phone_numbers", "case_files",
-        "suspects"]) {
-        await trx(t).del();
-      }
-    });
-  }
-
   // === analysis results ===================================================
   async getAllAnalysisResults(): Promise<AnalysisResult[]> {
     const rows = await this.db<AnalysisResult>("analysis_results")

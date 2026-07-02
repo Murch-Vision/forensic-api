@@ -42,8 +42,18 @@ Dev server runs via `tsx watch` and hot-reloads on save.
   caseName/description/priority/leadInvestigator; caseId is immutable
   (legacy suspect.caseId links match by string), status via setCaseStatus.
 
+- 2026-07-03: IMPORT → CASE linkage (user wish "import not working") —
+  importData resolver tags what an import touched into the ACTIVE case:
+  accounts → BANK_ACCOUNT evidence, matched suspects → SUSPECT, new calls →
+  CALL_RECORD (ImportSummary gained internal touchedAccountIds/
+  touchedSuspectIds/newCallRecordIds). caseScope() (resolvers) now includes
+  evidence-tagged accounts/txns/calls, not just suspect chains.
+- 2026-07-03: bank import formats — Mn-Generic-Signed fallback profile
+  (needs only Гүйлгээний огноо + Гүйлгээний дүн; signed +credit/−debit) and
+  balanceBefore field (Гүйлгээний өмнөх үлдэгдэл → runningBalance = before
+  ± amount) on signed profiles.
+- 2026-07-03: clearAllData REMOVED everywhere (schema, resolver,
+  dataService) — user: too dangerous.
+
 ## Parked (NOT in this run's backlog)
-- Import does not tag suspects into the active case, so freshly imported
-  data is hidden while a case is scoped until the person is tagged
-  (КЕЙСТ ТЭМДЭГЛЭХ). Consider auto-tagging import-touched suspects into
-  the active case at import time.
+(import auto-tagging shipped 2026-07-03 — nothing parked)

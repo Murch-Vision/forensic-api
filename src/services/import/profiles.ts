@@ -46,6 +46,8 @@ const BANK_PROFILES: ImportProfile[] = [
       description: ["Гүйлгээний утга"], counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр"],
       account: ["Данс", "Дансны дугаар"],
+      balance: ["Үлдэгдэл", "Дансны үлдэгдэл", "Гүйлгээний дараах үлдэгдэл"],
+      balanceBefore: ["Гүйлгээний өмнөх үлдэгдэл", "Өмнөх үлдэгдэл"],
     },
   },
   {
@@ -58,6 +60,8 @@ const BANK_PROFILES: ImportProfile[] = [
       description: ["Гүйлгээний утга"], counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр"],
       account: ["Данс", "Дансны дугаар"],
+      balance: ["Үлдэгдэл", "Дансны үлдэгдэл", "Гүйлгээний дараах үлдэгдэл"],
+      balanceBefore: ["Гүйлгээний өмнөх үлдэгдэл", "Өмнөх үлдэгдэл"],
     },
   },
   {
@@ -94,6 +98,24 @@ const BANK_PROFILES: ImportProfile[] = [
       counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан дансны нэр"],
       account: ["Данс", "Дансны дугаар"],
+    },
+  },
+  {
+    id: "Mn-Generic-Signed", displayName: "Дансны хуулга (ерөнхий)",
+    domain: "BANK", amountStyle: "SIGNED",
+    requiredHeaders: ["Гүйлгээний огноо", "Гүйлгээний дүн"],
+    optionalHeaders: ["Гүйлгээний утга", "Үлдэгдэл",
+      "Гүйлгээний өмнөх үлдэгдэл"],
+    fieldMap: {
+      date: ["Гүйлгээний огноо", "Огноо"],
+      amount: ["Гүйлгээний дүн", "Дүн"],
+      description: ["Гүйлгээний утга", "Утга", "Тайлбар"],
+      balance: ["Үлдэгдэл", "Дансны үлдэгдэл", "Гүйлгээний дараах үлдэгдэл"],
+      balanceBefore: ["Гүйлгээний өмнөх үлдэгдэл", "Өмнөх үлдэгдэл"],
+      counterpartyAccount: ["Харьцсан данс"],
+      counterpartyName: ["Харьцсан харилцагчийн нэр", "Харьцсан дансны нэр"],
+      account: ["Данс", "Дансны дугаар"],
+      reference: ["Гүйлгээний дугаар", "Лавлагааны дугаар"],
     },
   },
 ];

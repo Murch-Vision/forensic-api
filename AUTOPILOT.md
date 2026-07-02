@@ -5,3 +5,4 @@
 - 2026-07-02: globalPeople query — cross-case person grouping for the people database (user wish).
 - 2026-07-02: evidence list queries scoped to the active case via SUSPECT evidence entries (no case = all data).
 - 2026-07-03: updateCaseFile mutation — edit caseName/description/priority/leadInvestigator (caseId + status stay managed elsewhere).
+- 2026-07-03: imports link into the active case (evidence entries); generic signed + balance-before bank formats; clearAllData mutation deleted.

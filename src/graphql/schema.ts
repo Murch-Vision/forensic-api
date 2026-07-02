@@ -845,6 +845,5 @@ export const typeDefs = /* GraphQL */ `
     setCaseStatus(caseFileId: Int!, status: CaseStatus!): CaseFile!
     mergeCases(sourceCaseFileIds: [Int!]!, targetCaseFileId: Int!): CaseFile!
     addCaseNote(input: CaseNoteInput!): Int!
-    clearAllData: Boolean!
   }
 `;
