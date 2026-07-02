@@ -395,6 +395,16 @@ export const resolvers = {
       await c.audit.record("CaseFile.Create", `CaseFile:${cf.id}`, cf.caseId);
       return cf;
     },
+    setCaseStatus: async (
+      _p: unknown,
+      a: {caseFileId: number; status: string},
+      c: GraphQLContext
+    ) => {
+      const cf = await c.data.setCaseStatus(a.caseFileId, a.status);
+      await c.audit.record(
+        "CaseFile.SetStatus", `CaseFile:${cf.id}`, a.status);
+      return cf;
+    },
     addCaseNote: async (
       _p: unknown,
       a: {input: {caseFileId?: number; suspectId?: number; content: string;

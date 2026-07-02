@@ -284,6 +284,19 @@ export class DataService {
     return (await this.db<CaseFile>("case_files").where({id: Number(id)}).first())!;
   }
 
+  // Status lifecycle: closedAt stamps when a case leaves the active pipeline
+  // (CLOSED / ARCHIVED) and clears again if the case is reopened.
+  async setCaseStatus(caseFileId: number, status: string): Promise<CaseFile> {
+    const now = new Date().toISOString();
+    const closedAt = status === "CLOSED" || status === "ARCHIVED" ? now : null;
+    await this.db("case_files").where({id: caseFileId})
+      .update({status, closedAt, updatedAt: now});
+    const row = await this.db<CaseFile>("case_files")
+      .where({id: caseFileId}).first();
+    if (!row) throw new Error(`CaseFile ${caseFileId} not found`);
+    return row;
+  }
+
   async addCaseNote(input: {
     caseFileId?: number | null; suspectId?: number | null; content: string;
     noteType?: string; author?: string | null;

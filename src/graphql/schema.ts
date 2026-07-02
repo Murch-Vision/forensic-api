@@ -805,6 +805,7 @@ export const typeDefs = /* GraphQL */ `
     createBankAccount(input: BankAccountInput!): BankAccount!
     createPhoneNumber(input: PhoneNumberInput!): PhoneNumber!
     createCaseFile(input: CaseFileInput!): CaseFile!
+    setCaseStatus(caseFileId: Int!, status: CaseStatus!): CaseFile!
     addCaseNote(input: CaseNoteInput!): Int!
     clearAllData: Boolean!
   }

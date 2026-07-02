@@ -1,0 +1,1 @@
+- 2026-07-02: setCaseStatus mutation for the global case status control.
