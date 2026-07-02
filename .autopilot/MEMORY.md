@@ -15,3 +15,6 @@ Dev server runs via `tsx watch` and hot-reloads on save.
 ## Done
 - 2026-07-02: setCaseStatus(caseFileId, status) mutation — stamps/clears
   closedAt on CLOSED/ARCHIVED, audit-logged.
+- 2026-07-02: importService.resolveSubjectAccount — BANK imports no longer
+  require bankAccountId; subject's first account is used or a placeholder
+  (ХУУЛГА-<suspectId>) is created.

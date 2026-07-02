@@ -115,15 +115,32 @@ export class ImportService {
     }
     const map = mergeMapping(det.proposedMapping, opts.mapping);
     if (domain === "BANK") {
-      if (opts.bankAccountId == null) {
-        return empty("Банкны импортод данс сонгох шаардлагатай.");
-      }
-      return this.importBank(table, det, opts.bankAccountId, map);
+      const accountId = opts.bankAccountId
+        ?? await this.resolveSubjectAccount(opts.subjectSuspectId);
+      return this.importBank(table, det, accountId, map);
     }
     if (domain === "CDR") {
       return this.importCdr(table, det, map, opts.subjectSuspectId);
     }
     return this.importAccessLog(table, det, map, opts.subjectSuspectId);
+  }
+
+  // The import screen no longer asks for an account: statements land on the
+  // subject's first bank account, creating a placeholder when they have none.
+  private async resolveSubjectAccount(suspectId: number): Promise<number> {
+    const existing = await this.db("bank_accounts")
+      .where({suspectId}).orderBy("id").first();
+    if (existing) return Number(existing.id);
+    const suspect = await this.db("suspects").where({id: suspectId}).first();
+    const [id] = await this.db("bank_accounts").insert({
+      accountNumber: `ХУУЛГА-${suspect?.suspectId ?? suspectId}`,
+      bankName: null, branchCode: null, iban: null,
+      accountType: "Current", currency: "MNT", currentBalance: 0,
+      status: "ACTIVE", suspectId,
+      accountHolderName: suspect?.fullName ?? null,
+      createdAt: new Date().toISOString(),
+    });
+    return Number(id);
   }
 
   private async importBank(

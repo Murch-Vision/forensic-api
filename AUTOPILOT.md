@@ -1,1 +1,2 @@
 - 2026-07-02: setCaseStatus mutation for the global case status control.
+- 2026-07-02: bank imports auto-resolve the subject's account (bankAccountId optional).
