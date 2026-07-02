@@ -806,6 +806,7 @@ export const typeDefs = /* GraphQL */ `
     createPhoneNumber(input: PhoneNumberInput!): PhoneNumber!
     createCaseFile(input: CaseFileInput!): CaseFile!
     setCaseStatus(caseFileId: Int!, status: CaseStatus!): CaseFile!
+    mergeCases(sourceCaseFileIds: [Int!]!, targetCaseFileId: Int!): CaseFile!
     addCaseNote(input: CaseNoteInput!): Int!
     clearAllData: Boolean!
   }

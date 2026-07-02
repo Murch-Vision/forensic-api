@@ -297,6 +297,55 @@ export class DataService {
     return row;
   }
 
+  // Merge: evidence and notes move to the target (exhibits renumbered after
+  // the target's own, entries for an already-tagged source dropped); the
+  // drained source cases are archived with a pointer to the target.
+  async mergeCases(sourceIds: number[], targetId: number): Promise<CaseFile> {
+    const sources = [...new Set(sourceIds)].filter((id) => id !== targetId);
+    const target = await this.db<CaseFile>("case_files")
+      .where({id: targetId}).first();
+    if (!target) throw new Error(`CaseFile ${targetId} not found`);
+    if (sources.length === 0) return target;
+    const now = new Date().toISOString();
+    await this.db.transaction(async (trx) => {
+      const targetEv = await trx("evidence_entries")
+        .where({caseFileId: targetId});
+      const seen = new Set(
+        targetEv.map((e) => `${e.sourceType}:${e.sourceId}`));
+      let next = targetEv.reduce(
+        (m, e) => Math.max(m, Number(e.exhibitNumber)), 0);
+      const rows = await trx("evidence_entries")
+        .whereIn("caseFileId", sources)
+        .orderBy(["caseFileId", "exhibitNumber"]);
+      for (const row of rows) {
+        const key = `${row.sourceType}:${row.sourceId}`;
+        if (seen.has(key)) {
+          await trx("evidence_entries").where({id: row.id}).delete();
+        } else {
+          seen.add(key);
+          next += 1;
+          await trx("evidence_entries").where({id: row.id})
+            .update({caseFileId: targetId, exhibitNumber: next});
+        }
+      }
+      await trx("case_notes").whereIn("caseFileId", sources)
+        .update({caseFileId: targetId});
+      for (const id of sources) {
+        const src = await trx<CaseFile>("case_files").where({id}).first();
+        if (!src) continue;
+        const note = `Нэгтгэсэн → ${target.caseId}`;
+        await trx("case_files").where({id}).update({
+          status: "ARCHIVED", closedAt: now, updatedAt: now,
+          description: src.description
+            ? `${src.description}\n${note}` : note,
+        });
+      }
+      await trx("case_files").where({id: targetId}).update({updatedAt: now});
+    });
+    return (await this.db<CaseFile>("case_files")
+      .where({id: targetId}).first())!;
+  }
+
   async addCaseNote(input: {
     caseFileId?: number | null; suspectId?: number | null; content: string;
     noteType?: string; author?: string | null;

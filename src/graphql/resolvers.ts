@@ -405,6 +405,21 @@ export const resolvers = {
         "CaseFile.SetStatus", `CaseFile:${cf.id}`, a.status);
       return cf;
     },
+    mergeCases: async (
+      _p: unknown,
+      a: {sourceCaseFileIds: number[]; targetCaseFileId: number},
+      c: GraphQLContext
+    ) => {
+      const cf = await c.data.mergeCases(
+        a.sourceCaseFileIds, a.targetCaseFileId);
+      const current = await c.session.getCurrentCase();
+      if (current && a.sourceCaseFileIds.includes(current.id)) {
+        await c.session.setCurrentCase(cf.id);
+      }
+      await c.audit.record("CaseFile.Merge", `CaseFile:${cf.id}`,
+        `sources=[${a.sourceCaseFileIds.join(",")}]`);
+      return cf;
+    },
     addCaseNote: async (
       _p: unknown,
       a: {input: {caseFileId?: number; suspectId?: number; content: string;

@@ -18,3 +18,7 @@ Dev server runs via `tsx watch` and hot-reloads on save.
 - 2026-07-02: importService.resolveSubjectAccount — BANK imports no longer
   require bankAccountId; subject's first account is used or a placeholder
   (ХУУЛГА-<suspectId>) is created.
+- 2026-07-02: dataService.mergeCases(sourceIds, targetId) + mergeCases
+  mutation — moves evidence (exhibits renumbered after target's, dupes of
+  same source dropped) and case_notes; sources archived with pointer note;
+  session switches to target when a source was active.
