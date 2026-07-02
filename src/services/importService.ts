@@ -152,6 +152,41 @@ export class ImportService {
     return Number(id);
   }
 
+  // Statements carry the account owner's registry number: reuse the person
+  // that already has that Регистрийн дугаар or create one, then attach the
+  // (unowned) account to them. Keeps people deduplicated across imports.
+  private async ensureOwner(
+    bankAccountId: number,
+    nationalIdRaw: string,
+    ownerName: string | null,
+    cache: Map<string, number>
+  ): Promise<number | null> {
+    const nationalId = nationalIdRaw.trim().toUpperCase();
+    if (!nationalId) return null;
+    let suspectId = cache.get(nationalId) ?? null;
+    if (suspectId == null) {
+      const existing = await this.db("suspects")
+        .whereRaw("UPPER(nationalId) = ?", [nationalId]).first();
+      if (existing) {
+        suspectId = Number(existing.id);
+      } else {
+        const now = new Date().toISOString();
+        const [id] = await this.db("suspects").insert({
+          suspectId: `IMP-${nationalId}`,
+          fullName: ownerName?.trim() || nationalId,
+          nationalId, riskLevel: "UNKNOWN", status: "ACTIVE",
+          createdAt: now, updatedAt: now,
+        });
+        suspectId = Number(id);
+      }
+      cache.set(nationalId, suspectId);
+    }
+    await this.db("bank_accounts")
+      .where({id: bankAccountId}).whereNull("suspectId")
+      .update({suspectId, accountHolderName: ownerName?.trim() || null});
+    return suspectId;
+  }
+
   // Fallback when a statement has no account column: an explicit account,
   // the (optional) subject's first account, or a shared unattributed bucket.
   private async resolveDefaultAccount(
@@ -190,6 +225,8 @@ export class ImportService {
     const res = newSummary(det);
     const rowsToInsert: Record<string, unknown>[] = [];
     const acctCache = new Map<string, number>();
+    const ownerCache = new Map<string, number>();
+    const ownerIds = new Set<number>();
     let defaultAccountId: number | null = null;
     // Reference numbers are unique per account — collect existing + in-file
     // ones so a manual reference mapping can't trip the unique index.
@@ -213,6 +250,14 @@ export class ImportService {
           ? await this.findOrCreateAccount(acctRaw, acctCache)
           : (defaultAccountId ??=
               await this.resolveDefaultAccount(opts, acctCache));
+        // The statement names its owner: find-or-create the person by
+        // Регистрийн дугаар (dedupes people) and attach the account.
+        const natId = get("nationalId");
+        if (natId) {
+          const sid = await this.ensureOwner(
+            bankAccountId, natId, get("ownerName"), ownerCache);
+          if (sid != null) ownerIds.add(sid);
+        }
         const dateStr = get("date");
         if (!dateStr) {
           res.skippedRows++;
@@ -237,12 +282,14 @@ export class ImportService {
           }
           seenRefs.add(refKey);
         }
+        const currencyRaw = get("currency");
         const txn: Record<string, unknown> = {
           bankAccountId, timestamp: date, description: desc,
           flagStatus: "NORMAL", counterpartyAccount: get("counterpartyAccount"),
           counterpartyName: get("counterpartyName"), runningBalance: 0,
           referenceNumber: ref || null, category: get("category"),
           channel: get("channel"),
+          currency: currencyRaw ? currencyRaw.trim().toUpperCase() : "MNT",
         };
         if (style === "SPLIT_CREDIT_DEBIT") {
           const cr = parseFloat(cleanAmount(get("credit")));
@@ -294,11 +341,15 @@ export class ImportService {
     const accountIds = new Set<number>(acctCache.values());
     if (defaultAccountId != null) accountIds.add(defaultAccountId);
     res.touchedAccountIds = [...accountIds];
+    const suspectIds = new Set<number>(ownerIds);
     if (accountIds.size > 0) {
-      res.touchedSuspectIds = (await this.db("bank_accounts")
+      for (const sid of await this.db("bank_accounts")
         .whereIn("id", [...accountIds]).whereNotNull("suspectId")
-        .pluck("suspectId")).map(Number);
+        .pluck("suspectId")) {
+        suspectIds.add(Number(sid));
+      }
     }
+    res.touchedSuspectIds = [...suspectIds];
     return res;
   }
 

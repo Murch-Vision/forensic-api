@@ -55,5 +55,12 @@ Dev server runs via `tsx watch` and hot-reloads on save.
 - 2026-07-03: clearAllData REMOVED everywhere (schema, resolver,
   dataService) — user: too dangerous.
 
+- 2026-07-03 (WRITTEN WITH THE OWNER'S OWN UNCOMMITTED CODE — he now edits
+  the repos directly; ALWAYS check `git status` before resetting!): txn
+  `currency` column (migration 20260703000000, default MNT, import maps
+  Валют/Currency), importService.ensureOwner — bank imports find-or-create
+  the person by Регистрийн дугаар (dedup, account attached, auto-tagged
+  into the case), setCaseStatus CLOSED/ARCHIVED unselects the active case.
+
 ## Parked (NOT in this run's backlog)
 (import auto-tagging shipped 2026-07-03 — nothing parked)

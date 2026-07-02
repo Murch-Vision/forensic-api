@@ -126,6 +126,7 @@ export const typeDefs = /* GraphQL */ `
     channel: String
     location: String
     runningBalance: Float!
+    currency: String!
     flagStatus: FlagStatus!
   }
 

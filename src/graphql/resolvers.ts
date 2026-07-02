@@ -504,6 +504,12 @@ export const resolvers = {
       const cf = await c.data.setCaseStatus(a.caseFileId, a.status);
       await c.audit.record(
         "CaseFile.SetStatus", `CaseFile:${cf.id}`, a.status);
+      // Closing/archiving the case the analyst is working in unselects it —
+      // finished cases are not a workspace.
+      if (a.status === "CLOSED" || a.status === "ARCHIVED") {
+        const active = await c.session.getCurrentCase();
+        if (active?.id === cf.id) await c.session.setCurrentCase(null);
+      }
       return cf;
     },
     mergeCases: async (
