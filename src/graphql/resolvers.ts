@@ -446,6 +446,16 @@ export const resolvers = {
       await c.audit.record("CaseFile.Create", `CaseFile:${cf.id}`, cf.caseId);
       return cf;
     },
+    updateCaseFile: async (
+      _p: unknown,
+      a: {caseFileId: number; input: Record<string, unknown>},
+      c: GraphQLContext
+    ) => {
+      const cf = await c.data.updateCaseFile(a.caseFileId, a.input);
+      if (!cf) throw new Error(`CaseFile ${a.caseFileId} not found`);
+      await c.audit.record("CaseFile.Update", `CaseFile:${cf.id}`, cf.caseId);
+      return cf;
+    },
     setCaseStatus: async (
       _p: unknown,
       a: {caseFileId: number; status: string},

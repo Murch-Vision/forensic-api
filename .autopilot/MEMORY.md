@@ -38,6 +38,9 @@ Dev server runs via `tsx watch` and hot-reloads on save.
   accounts, txn/call counts, matchedBy reasons.
 - 2026-07-02: evidence list queries case-scoped server-side (see CASE SCOPE
   convention above). dashboardStats stays global (command overview).
+- 2026-07-03: updateCaseFile(caseFileId, CaseFileUpdateInput) — edits
+  caseName/description/priority/leadInvestigator; caseId is immutable
+  (legacy suspect.caseId links match by string), status via setCaseStatus.
 
 ## Parked (NOT in this run's backlog)
 - Import does not tag suspects into the active case, so freshly imported

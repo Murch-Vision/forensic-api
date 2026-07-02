@@ -284,6 +284,22 @@ export class DataService {
     return (await this.db<CaseFile>("case_files").where({id: Number(id)}).first())!;
   }
 
+  // Edit the case's descriptive fields; caseId (identifier) and status
+  // (setCaseStatus) are managed elsewhere on purpose.
+  async updateCaseFile(
+    id: number,
+    input: Partial<CaseFile>
+  ): Promise<CaseFile | null> {
+    await this.db("case_files").where({id}).update({
+      caseName: input.caseName,
+      description: input.description ?? null,
+      priority: input.priority,
+      leadInvestigator: input.leadInvestigator ?? null,
+      updatedAt: new Date().toISOString(),
+    });
+    return (await this.db<CaseFile>("case_files").where({id}).first()) ?? null;
+  }
+
   // Status lifecycle: closedAt stamps when a case leaves the active pipeline
   // (CLOSED / ARCHIVED) and clears again if the case is reopened.
   async setCaseStatus(caseFileId: number, status: string): Promise<CaseFile> {

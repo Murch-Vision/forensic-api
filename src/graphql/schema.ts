@@ -718,6 +718,13 @@ export const typeDefs = /* GraphQL */ `
     caseType: String
   }
 
+  input CaseFileUpdateInput {
+    caseName: String!
+    description: String
+    priority: CasePriority
+    leadInvestigator: String
+  }
+
   input CaseNoteInput {
     caseFileId: Int
     suspectId: Int
@@ -834,6 +841,7 @@ export const typeDefs = /* GraphQL */ `
     createBankAccount(input: BankAccountInput!): BankAccount!
     createPhoneNumber(input: PhoneNumberInput!): PhoneNumber!
     createCaseFile(input: CaseFileInput!): CaseFile!
+    updateCaseFile(caseFileId: Int!, input: CaseFileUpdateInput!): CaseFile!
     setCaseStatus(caseFileId: Int!, status: CaseStatus!): CaseFile!
     mergeCases(sourceCaseFileIds: [Int!]!, targetCaseFileId: Int!): CaseFile!
     addCaseNote(input: CaseNoteInput!): Int!
