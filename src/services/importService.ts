@@ -45,6 +45,7 @@ export interface ImportOptions {
   sheetName?        : string | null;
   bankAccountId?    : number | null;
   subjectSuspectId? : number | null;
+  subjectNumber?    : string | null;
   mapping?          : ColumnMapping | null;
 }
 
@@ -122,7 +123,8 @@ export class ImportService {
       return this.importBank(table, det, map, opts);
     }
     if (domain === "CDR") {
-      return this.importCdr(table, det, map, opts.subjectSuspectId ?? null);
+      return this.importCdr(table, det, map, opts.subjectSuspectId ?? null,
+        opts.subjectNumber ?? null);
     }
     return this.importAccessLog(
       table, det, map, opts.subjectSuspectId ?? null);
@@ -152,13 +154,14 @@ export class ImportService {
     return Number(id);
   }
 
-  // Statements carry the account owner's registry number: reuse the person
-  // that already has that Регистрийн дугаар or create one, then attach the
-  // (unowned) account to them. Keeps people deduplicated across imports.
-  private async ensureOwner(
-    bankAccountId: number,
+  // A Регистрийн дугаар names a real person: reuse the person that already
+  // has it or create one. A statement that carries only the registry number
+  // still yields a person — an anonymous placeholder until a later row (or
+  // the analyst) supplies the real name. Keeps people deduplicated across
+  // imports.
+  private async ensurePerson(
     nationalIdRaw: string,
-    ownerName: string | null,
+    personName: string | null,
     cache: Map<string, number>
   ): Promise<number | null> {
     const nationalId = nationalIdRaw.trim().toUpperCase();
@@ -169,11 +172,20 @@ export class ImportService {
         .whereRaw("UPPER(nationalId) = ?", [nationalId]).first();
       if (existing) {
         suspectId = Number(existing.id);
+        // Upgrade an anonymous placeholder once a row finally names them.
+        const anon = String(existing.fullName ?? "");
+        if (personName?.trim()
+          && (anon.startsWith("Тодорхойгүй") || anon === nationalId)) {
+          await this.db("suspects").where({id: suspectId}).update({
+            fullName: personName.trim(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
       } else {
         const now = new Date().toISOString();
         const [id] = await this.db("suspects").insert({
           suspectId: `IMP-${nationalId}`,
-          fullName: ownerName?.trim() || nationalId,
+          fullName: personName?.trim() || `Тодорхойгүй (${nationalId})`,
           nationalId, riskLevel: "UNKNOWN", status: "ACTIVE",
           createdAt: now, updatedAt: now,
         });
@@ -181,10 +193,18 @@ export class ImportService {
       }
       cache.set(nationalId, suspectId);
     }
+    return suspectId;
+  }
+
+  // Attach a still-unowned account to its person.
+  private async attachAccountOwner(
+    bankAccountId: number,
+    suspectId: number,
+    holderName: string | null
+  ): Promise<void> {
     await this.db("bank_accounts")
       .where({id: bankAccountId}).whereNull("suspectId")
-      .update({suspectId, accountHolderName: ownerName?.trim() || null});
-    return suspectId;
+      .update({suspectId, accountHolderName: holderName?.trim() || null});
   }
 
   // Fallback when a statement has no account column: an explicit account,
@@ -227,6 +247,8 @@ export class ImportService {
     const acctCache = new Map<string, number>();
     const ownerCache = new Map<string, number>();
     const ownerIds = new Set<number>();
+    // One attach attempt per (account, person) pair — not one per row.
+    const attachTried = new Set<string>();
     let defaultAccountId: number | null = null;
     // Reference numbers are unique per account — collect existing + in-file
     // ones so a manual reference mapping can't trip the unique index.
@@ -254,9 +276,40 @@ export class ImportService {
         // Регистрийн дугаар (dedupes people) and attach the account.
         const natId = get("nationalId");
         if (natId) {
-          const sid = await this.ensureOwner(
-            bankAccountId, natId, get("ownerName"), ownerCache);
-          if (sid != null) ownerIds.add(sid);
+          const sid = await this.ensurePerson(
+            natId, get("ownerName"), ownerCache);
+          if (sid != null) {
+            ownerIds.add(sid);
+            const attachKey = `${bankAccountId}|${sid}`;
+            if (!attachTried.has(attachKey)) {
+              attachTried.add(attachKey);
+              await this.attachAccountOwner(
+                bankAccountId, sid, get("ownerName"));
+            }
+          }
+        }
+        // The counterparty's registry number names a real person too:
+        // find-or-create them (anonymous when unnamed) and, when the row
+        // names their account, create/attach it — this is what lets link
+        // generation connect statement owners to their counterparties.
+        const cpNatId = get("counterpartyNationalId");
+        if (cpNatId) {
+          const cpSid = await this.ensurePerson(
+            cpNatId, get("counterpartyName"), ownerCache);
+          if (cpSid != null) {
+            ownerIds.add(cpSid);
+            const cpAcctRaw = get("counterpartyAccount");
+            if (cpAcctRaw) {
+              const cpAcctId =
+                await this.findOrCreateAccount(cpAcctRaw, acctCache);
+              const attachKey = `${cpAcctId}|${cpSid}`;
+              if (!attachTried.has(attachKey)) {
+                attachTried.add(attachKey);
+                await this.attachAccountOwner(
+                  cpAcctId, cpSid, get("counterpartyName"));
+              }
+            }
+          }
         }
         const dateStr = get("date");
         if (!dateStr) {
@@ -287,6 +340,8 @@ export class ImportService {
           bankAccountId, timestamp: date, description: desc,
           flagStatus: "NORMAL", counterpartyAccount: get("counterpartyAccount"),
           counterpartyName: get("counterpartyName"), runningBalance: 0,
+          counterpartyNationalId: cpNatId
+            ? cpNatId.trim().toUpperCase() : null,
           referenceNumber: ref || null, category: get("category"),
           channel: get("channel"),
           currency: currencyRaw ? currencyRaw.trim().toUpperCase() : "MNT",
@@ -357,7 +412,8 @@ export class ImportService {
     table: NormalizedTable,
     det: DetectionResult,
     map: ColumnMapping,
-    subjectSuspectId: number | null
+    subjectSuspectId: number | null,
+    subjectNumberArg: string | null
   ): Promise<ImportSummary> {
     const unit = det.profile?.durationUnit ?? "SECONDS";
     const res = newSummary(det);
@@ -379,22 +435,84 @@ export class ImportService {
       return bySuffix.get(digits.slice(-8)) ?? null;
     };
 
+    // The subject is the person these records belong to. Contact-frequency
+    // exports list only the OTHER party, so the subject's own number becomes
+    // the caller for every row that has no explicit caller column.
+    // Subject number: the analyst-entered number wins; otherwise fall back to
+    // whatever phone the subject already has registered.
+    let subjectNumber = subjectNumberArg
+      ? unwrapCallerId(subjectNumberArg) : null;
+    if (!subjectNumber && subjectSuspectId != null) {
+      const subj = await this.db("phone_numbers")
+        .where({suspectId: subjectSuspectId}).first();
+      subjectNumber = subj ? unwrapCallerId(String(subj.number)) : null;
+    }
+    // Register the subject's number to them so it is theirs going forward
+    // (suspects rarely have a phone on file yet).
+    if (subjectNumber && subjectSuspectId != null) {
+      const ex = await this.db("phone_numbers")
+        .where({number: subjectNumber}).first();
+      if (!ex) {
+        await this.db("phone_numbers").insert({
+          number: subjectNumber, suspectId: subjectSuspectId,
+          phoneType: "Mobile", status: "ACTIVE",
+        });
+      } else if (ex.suspectId == null) {
+        await this.db("phone_numbers").where({id: ex.id})
+          .update({suspectId: subjectSuspectId});
+      }
+    }
+    // If the file carries no caller column, the caller identity has to come
+    // from the subject. Without a subject number there is nothing to put in the
+    // (required) caller field, so stop with a clear message.
+    if (!map["caller"] && !subjectNumber) {
+      res.errors.push(subjectSuspectId != null
+        ? "Сэжигтний утасны дугаараа оруулна уу (дуудлагын эзний дугаар)."
+        : "Дуудагчийн багана алга — сэжигтэн сонгоод дугаарыг нь оруулна уу "
+          + "эсвэл “Дуудсан дугаар” баганаа заана уу.");
+      return res;
+    }
+
+    // When a name column is mapped, match each row's name against known people
+    // so a newly-seen number can be attached to that person's phone list.
+    const nameToSuspect = new Map<string, number>();
+    if (map["name"]) {
+      for (const s of await this.db("suspects").select("id", "fullName")) {
+        const n = String(s.fullName ?? "").trim().toLowerCase();
+        if (n) nameToSuspect.set(n, Number(s.id));
+      }
+    }
+    const phonesToAttach = new Map<string, number>(); // number -> suspectId
+
+    // No timestamp in the export → stamp every row with the import moment so
+    // the required startTime is satisfied (time-based charts won't be meaningful
+    // for such data, but the contact/frequency analysis will be).
+    const importDate = new Date().toISOString();
+    // Frequency expansion can multiply rows explosively; keep one import from
+    // ever ballooning the table / stalling. Once the ceiling is hit each
+    // remaining contact is still recorded once, just not multiplied.
+    const MAX_CALLS = 200000;
+    const PER_ROW_CAP = 500;
+    let capped = false;
+
     for (const row of table.rows) {
       res.totalRows++;
       try {
         const get = (f: string) =>
           map[f] ? cell(table, row, map[f]) : null;
-        const caller = get("caller");
         const called = get("called");
-        if (!caller || !called) {
+        if (!called) {
           res.skippedRows++;
           continue;
         }
-        const dt = tryParseDateOrSerial(get("datetime") ?? "");
-        if (!dt) {
+        // Caller: an explicit column wins; otherwise the chosen subject.
+        const callerRaw = get("caller") ?? subjectNumber;
+        if (!callerRaw) {
           res.skippedRows++;
           continue;
         }
+        // Datetime is optional — fall back to the import moment.
+        const dt = tryParseDateOrSerial(get("datetime") ?? "") ?? importDate;
         let durationSeconds = 0;
         const durRaw = get("duration");
         if (durRaw) {
@@ -404,30 +522,81 @@ export class ImportService {
               ? Math.round(d * 60) : Math.round(d);
           }
         }
-        const callerNumber = unwrapCallerId(caller);
+        // Frequency: a "called N times" row expands into N call records so the
+        // top-contact / frequency views reflect it (capped to avoid blow-ups).
+        let times = 1;
+        const freqRaw = get("frequency");
+        if (freqRaw) {
+          const f = parseInt(freqRaw.replace(/\D/g, ""), 10);
+          if (!Number.isNaN(f) && f > 0) times = Math.min(f, PER_ROW_CAP);
+        }
+        // Never blow past the per-import ceiling: still record the contact once.
+        if (rowsToInsert.length + times > MAX_CALLS) {
+          times = 1;
+          capped = true;
+        }
+        const callerNumber = unwrapCallerId(callerRaw);
         const calledNumber = unwrapCallerId(called);
-        rowsToInsert.push({
-          callerNumber, calledNumber,
-          startTime: dt, durationSeconds, callType: "Voice",
-          direction: get("direction") ?? "Outgoing",
-          suspectId: matchSuspect(callerNumber)
-            ?? matchSuspect(calledNumber) ?? subjectSuspectId,
-        });
-        res.importedRows++;
+        const suspectId = matchSuspect(callerNumber)
+          ?? matchSuspect(calledNumber) ?? subjectSuspectId;
+        for (let i = 0; i < times; i++) {
+          rowsToInsert.push({
+            callerNumber, calledNumber,
+            startTime: dt, durationSeconds, callType: "Voice",
+            direction: "Outgoing", suspectId,
+          });
+        }
+        // Name → person → remember the number for attachment.
+        const nameRaw = get("name");
+        if (nameRaw) {
+          const hit = nameToSuspect.get(nameRaw.trim().toLowerCase());
+          if (hit != null && calledNumber) phonesToAttach.set(calledNumber, hit);
+        }
+        res.importedRows += times;
       } catch {
         res.skippedRows++;
       }
     }
+
+    // Attach matched numbers to their people: claim an unowned existing row or
+    // insert a new phone number; never steal a number already owned by someone.
+    let attached = 0;
+    for (const [number, sid] of phonesToAttach) {
+      const existing = await this.db("phone_numbers").where({number}).first();
+      if (existing) {
+        if (existing.suspectId == null) {
+          await this.db("phone_numbers").where({id: existing.id})
+            .update({suspectId: sid});
+          attached++;
+        }
+      } else {
+        await this.db("phone_numbers").insert({
+          number, suspectId: sid, phoneType: "Mobile", status: "ACTIVE",
+        });
+        attached++;
+      }
+    }
+    if (attached > 0) res.messages.push(`${attached} дугаар хүнд холбогдлоо.`);
+    if (capped) {
+      res.messages.push(`Давтамжаар үржүүлэхэд хэт олон бичлэг үүсэх тул `
+        + `${MAX_CALLS.toLocaleString()} дуудлагаар хязгаарлав.`);
+    }
+    // Everyone the import touched — call owners plus people who gained a phone —
+    // so the resolver links them all to the active case.
+    const touched = new Set<number>();
+    for (const [, sid] of phonesToAttach) touched.add(sid);
+    if (subjectSuspectId != null) touched.add(subjectSuspectId);
     if (rowsToInsert.length > 0) {
       const beforeRow = await this.db("call_records").max({m: "id"}).first();
       const beforeMax = Number(beforeRow?.m ?? 0);
       await this.db.batchInsert("call_records", rowsToInsert, 200);
       res.newCallRecordIds = (await this.db("call_records")
         .where("id", ">", beforeMax).pluck("id")).map(Number);
-      res.touchedSuspectIds = [...new Set(rowsToInsert
-        .map((r) => r.suspectId).filter((v): v is number => v != null)
-        .map(Number))];
+      for (const r of rowsToInsert) {
+        if (r.suspectId != null) touched.add(Number(r.suspectId));
+      }
     }
+    res.touchedSuspectIds = [...touched];
     return res;
   }
 

@@ -679,24 +679,38 @@ export class AnalysisService {
   }
 
   // === TIMELINE CORRELATION =============================================
-  async correlateTimeline(suspectId?: number | null): Promise<CorrelationHit[]> {
+  async correlateTimeline(
+    suspectId?: number | null, ignoredTxnIds?: Set<number>
+  ): Promise<CorrelationHit[]> {
     const suspects = await this.db.getSuspectsWithRelations();
     const targets = suspectId != null
       ? suspects.filter((s) => s.id === suspectId) : suspects;
     const hits: CorrelationHit[] = [];
     if (targets.length === 0) return hits;
 
-    const allTxns = await this.db.getAllTransactions();
+    // Noise the analyst removed must not resurface as correlations.
+    const allTxnsRaw = await this.db.getAllTransactions();
+    const allTxns = ignoredTxnIds?.size
+      ? allTxnsRaw.filter((t) => !ignoredTxnIds.has(t.id)) : allTxnsRaw;
     const allCalls = await this.db.getAllCallRecords();
     const txnsByAccount = groupBy(allTxns, (t) => String(t.bankAccountId));
     const callsByPhone = groupBy(allCalls.filter((c) => c.phoneNumberId != null),
       (c) => String(c.phoneNumberId));
+    // Imported / demo calls attribute themselves by suspectId and leave
+    // phoneNumberId null, so match on that too — otherwise every such call is
+    // invisible to the correlation and the panel stays empty.
+    const callsBySuspect = groupBy(allCalls.filter((c) => c.suspectId != null),
+      (c) => String(c.suspectId));
 
     for (const suspect of targets) {
       const acctIds = suspect.bankAccounts.map((a) => a.id);
       const phoneIds = suspect.phoneNumbers.map((p) => p.id);
       const txns = acctIds.flatMap((id) => txnsByAccount.get(String(id)) ?? []);
-      const calls = phoneIds.flatMap((id) => callsByPhone.get(String(id)) ?? []);
+      // Calls owned by this suspect by phone OR by direct suspectId (deduped).
+      const calls = [...new Map([
+        ...phoneIds.flatMap((id) => callsByPhone.get(String(id)) ?? []),
+        ...(callsBySuspect.get(String(suspect.id)) ?? []),
+      ].map((c) => [c.id, c])).values()];
       if (txns.length === 0 || calls.length === 0) continue;
 
       const txnByDate = groupBy(txns, (t) => t.timestamp.slice(0, 10));
@@ -738,9 +752,12 @@ export class AnalysisService {
   }
 
   // === LINK GENERATION ==================================================
-  async generateLinks(): Promise<SuspectLink[]> {
+  async generateLinks(ignoredTxnIds?: Set<number>): Promise<SuspectLink[]> {
     const suspects = await this.db.getSuspectsWithRelations();
-    const allTxns = await this.db.getAllTransactions();
+    const allTxnsRaw = await this.db.getAllTransactions();
+    // Money links must ignore transactions the analyst removed as noise.
+    const allTxns = ignoredTxnIds?.size
+      ? allTxnsRaw.filter((t) => !ignoredTxnIds.has(t.id)) : allTxnsRaw;
     const allCalls = await this.db.getAllCallRecords();
     const accounts = await this.db.getAllBankAccounts();
     const cfg = AmlThresholds.current;
@@ -754,6 +771,29 @@ export class AnalysisService {
       const list = txnByAccount.get(num) ?? [];
       list.push(t);
       txnByAccount.set(num, list);
+    }
+    // Statements rarely carry a counterparty account we also hold a statement
+    // for — most rows only NAME the counterparty. So a transaction counts as
+    // evidence between two people when its counterparty matches the other
+    // side's account number OR their (normalized) name/alias.
+    const normName = (s: string | null | undefined) =>
+      (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+    const nameKeysBySuspect = new Map<number, Set<string>>();
+    const natIdBySuspect = new Map<number, string>();
+    for (const s of suspects) {
+      const keys = new Set<string>();
+      if (normName(s.fullName)) keys.add(normName(s.fullName));
+      for (const alias of (s.aliases ?? "").split(/[,;]/)) {
+        if (normName(alias)) keys.add(normName(alias));
+      }
+      for (const a of s.bankAccounts) {
+        if (normName(a.accountHolderName)) {
+          keys.add(normName(a.accountHolderName));
+        }
+      }
+      nameKeysBySuspect.set(s.id, keys);
+      const natId = (s.nationalId ?? "").trim().toUpperCase();
+      if (natId) natIdBySuspect.set(s.id, natId);
     }
     const callByPhone = new Map<string, CallRecord[]>();
     for (const c of allCalls) {
@@ -770,16 +810,28 @@ export class AnalysisService {
         const s2 = suspects[j];
         const s1Accts = new Set(s1.bankAccounts.map((a) => a.accountNumber));
         const s2Accts = new Set(s2.bankAccounts.map((a) => a.accountNumber));
+        const s1Names = nameKeysBySuspect.get(s1.id) ?? new Set<string>();
+        const s2Names = nameKeysBySuspect.get(s2.id) ?? new Set<string>();
 
+        const cpMatches = (t: BankTransaction, accts: Set<string>,
+          names: Set<string>, natId: string | undefined) =>
+          accts.has(t.counterpartyAccount?.trim() ?? "")
+          || (!!t.counterpartyName && names.has(normName(t.counterpartyName)))
+          || (!!natId && !!t.counterpartyNationalId
+            && t.counterpartyNationalId.trim().toUpperCase() === natId);
         const fin = new Map<number, BankTransaction>();
         for (const acct of s1Accts) {
           for (const t of txnByAccount.get(acct) ?? []) {
-            if (s2Accts.has(t.counterpartyAccount ?? "")) fin.set(t.id, t);
+            if (cpMatches(t, s2Accts, s2Names, natIdBySuspect.get(s2.id))) {
+              fin.set(t.id, t);
+            }
           }
         }
         for (const acct of s2Accts) {
           for (const t of txnByAccount.get(acct) ?? []) {
-            if (s1Accts.has(t.counterpartyAccount ?? "")) fin.set(t.id, t);
+            if (cpMatches(t, s1Accts, s1Names, natIdBySuspect.get(s1.id))) {
+              fin.set(t.id, t);
+            }
           }
         }
         const finTxns = [...fin.values()];
@@ -793,6 +845,9 @@ export class AnalysisService {
             firstContact: times[0], lastContact: times[times.length - 1],
             description: `${finTxns.length} transactions totaling ${money(cfg, sum)}`,
             confidenceLevel: finTxns.length > 5 ? "HIGH" : "MEDIUM",
+            // Remember the backing txns so the client can re-total this link
+            // under the active noise filter (matches the graph's filtered view).
+            contributingTxnIds: JSON.stringify(finTxns.map((t) => t.id)),
           });
         }
 

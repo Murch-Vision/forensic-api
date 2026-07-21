@@ -7,6 +7,7 @@
  * Description :
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import fs from "fs";
+import path from "path";
 import {createHash} from "crypto";
 import PDFDocument from "pdfkit";
 import ExcelJS from "exceljs";
@@ -22,6 +23,7 @@ import {
 } from "docx";
 import type {DataService} from "./dataService";
 import type {AuditChainVerdict} from "./auditLogService";
+import type {BankAccount, BankTransaction, Suspect} from "../models/types";
 import {formatDateLike} from "./reportFormat";
 
 // Ported from Services/ReportService.cs — the PDF (was QuestPDF) and Excel
@@ -30,15 +32,61 @@ import {formatDateLike} from "./reportFormat";
 
 const DARK_BLUE = "#0A1628";
 const ACCENT_CYAN = "#00B8D0";
+// Redesigned-report palette.
+const INK = "#1F2937";
+const MUTED = "#6B7280";
+const GREEN = "#167C4A";
+const RED = "#C0202A";
+const ZEBRA = "#F3F6FA";
+const TABLE_HEAD = "#16324F";
+const GREEN_TINT = "#EAF5EE";
+const RED_TINT = "#FBEBEC";
+const BLUE_TINT = "#EAF1F8";
+// A4 content geometry (margin 40).
+const ML = 40;
+const CW = 515;
+
+// Mongolian risk labels + swatches for the report.
+const RISK_MN: Record<string, string> = {
+  UNKNOWN: "Тодорхойгүй", LOW: "Бага", MEDIUM: "Дунд",
+  HIGH: "Өндөр", CRITICAL: "Ноцтой",
+};
+const RISK_HEX: Record<string, string> = {
+  UNKNOWN: "#6B7280", LOW: "#167C4A", MEDIUM: "#B7791F",
+  HIGH: "#C0202A", CRITICAL: "#8B1A1A",
+};
+
+interface LedgerCol {
+  label: string;
+  x: number;
+  w: number;
+  align: "left" | "right";
+}
+const LEDGER_COLS: LedgerCol[] = [
+  {label: "Огноо", x: 40, w: 66, align: "left"},
+  {label: "Төрөл", x: 106, w: 40, align: "left"},
+  {label: "Харьцсан тал", x: 146, w: 104, align: "left"},
+  {label: "Гүйлгээний утга", x: 250, w: 128, align: "left"},
+  {label: "Дүн", x: 378, w: 88, align: "right"},
+  {label: "Үлдэгдэл", x: 466, w: 89, align: "right"},
+];
 
 // A Unicode TTF is required for Cyrillic; pdfkit's built-in Helvetica is
 // WinAnsi-only. Try common system fonts, else fall back to Helvetica (Latin).
 const FONT_CANDIDATES = [
   process.env.REPORT_FONT,
+  // Bundled with the repo — the only reliably-present Cyrillic font, since the
+  // server container has no system Unicode fonts.
+  path.join(__dirname, "../../assets/fonts/ReportSans.ttf"),
+  path.join(process.cwd(), "assets/fonts/ReportSans.ttf"),
   "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
   "/Library/Fonts/Arial Unicode.ttf",
   "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
   "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+  // Present on the (Debian) server and carry Cyrillic — without one of these
+  // pdfkit falls back to Latin-only Helvetica and Mongolian text turns to mojibake.
+  "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+  "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
 ].filter((p): p is string => !!p);
 
 function resolveFont(): string | null {
@@ -110,65 +158,203 @@ export class ReportService {
         .text(v).fillColor("#333333");
     }
 
-    section(doc, "SUBJECT PROFILES");
-    for (const s of suspects) {
-      doc.moveDown(0.4);
-      doc.fontSize(11).fillColor(DARK_BLUE)
-        .text(`${s.suspectId} — ${s.fullName}  [${s.riskLevel}]`);
-      doc.fontSize(9).fillColor("#555555").text(
-        `${s.occupation ?? ""} | ${s.organization ?? ""} | ` +
-        `${s.city ?? ""}, ${s.country ?? ""}`);
-      doc.text(`Phone: ${s.primaryPhone ?? "—"} | Accounts: ` +
-        `${s.bankAccounts.length} | DOB: ${formatDateLike(s.dateOfBirth)}`);
-      if (s.notes) doc.fontSize(8).fillColor("#666666").text(s.notes);
+    // Keep the brief SHORT: only the highest-risk subjects and strongest
+    // connections, never a dump of every record (that produced a 10+ page mess).
+    const RISK_ORDER: Record<string, number> = {
+      CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, UNKNOWN: 0,
+    };
+    const topSuspects = [...suspects]
+      .sort((a, b) =>
+        (RISK_ORDER[b.riskLevel] ?? 0) - (RISK_ORDER[a.riskLevel] ?? 0))
+      .slice(0, 8);
+    section(doc, "TOP SUBJECTS OF INTEREST");
+    for (const s of topSuspects) {
+      doc.moveDown(0.3);
+      doc.fontSize(10).fillColor(DARK_BLUE)
+        .text(`${s.fullName}  [${s.riskLevel}]`);
+      doc.fontSize(8).fillColor("#555555").text(
+        `${[s.occupation, s.organization, s.city].filter(Boolean).join(" · ")
+          || "—"} · ${s.bankAccounts.length} данс · ` +
+        `${s.phoneNumbers.length} утас`);
     }
 
-    if (results.length > 0) {
-      section(doc, "FORENSIC ANALYSIS RESULTS");
+    const flagged = results
+      .filter((r) => r.riskLevel === "HIGH" || r.riskLevel === "CRITICAL")
+      .slice(0, 10);
+    if (flagged.length > 0) {
+      section(doc, "KEY ANALYSIS FLAGS");
       doc.fontSize(8).fillColor("#333333");
-      for (const r of results) {
-        doc.text(
-          `${acctById.get(r.bankAccountId) ?? "N/A"} | ${r.riskLevel} | ` +
-          `Benford ${r.benfordPasses ? "PASS" : "FAIL"} | ` +
-          `Near ${r.nearThresholdPercentage.toFixed(1)}% | ` +
-          `Round ${r.roundNumberPercentage.toFixed(1)}% | ` +
-          `OffHours ${r.offHoursPercentage.toFixed(1)}% | ${r.verdict ?? ""}`);
+      for (const r of flagged) {
+        doc.text(`${acctById.get(r.bankAccountId) ?? "N/A"} · ` +
+          `${r.riskLevel} · ${r.verdict ?? ""}`);
       }
     }
 
     if (links.length > 0) {
-      section(doc, "NETWORK CONNECTIONS");
-      doc.fontSize(9).fillColor("#333333");
-      for (const l of links) {
+      section(doc, `TOP CONNECTIONS (${links.length} нийт)`);
+      doc.fontSize(8).fillColor("#333333");
+      const topLinks = [...links]
+        .sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0)).slice(0, 12);
+      for (const l of topLinks) {
         doc.text(
-          `${nameById.get(l.sourceSuspectId) ?? l.sourceSuspectId} ` +
-          `<-> ${nameById.get(l.targetSuspectId) ?? l.targetSuspectId}  ` +
-          `[${l.linkType}]  ${l.description ?? ""}`);
+          `${nameById.get(l.sourceSuspectId) ?? l.sourceSuspectId} ↔ ` +
+          `${nameById.get(l.targetSuspectId) ?? l.targetSuspectId} · ` +
+          `[${l.linkType}]`);
       }
     }
 
-    doc.addPage();
-    doc.font(FONT);
-    section(doc, "CHAIN OF CUSTODY — AUDIT LOG");
+    section(doc, "CHAIN OF CUSTODY");
     if (verdict) {
-      doc.fontSize(10);
-      if (verdict.valid) {
-        doc.fillColor("#1B7A3D").text(
-          `HASH CHAIN INTEGRITY: VERIFIED (${audit.length} events, ` +
-          "SHA-256 chain intact)");
-      } else {
-        doc.fillColor("#B00020").text(
-          `HASH CHAIN INTEGRITY: BROKEN (chain breaks at row id ${verdict.brokenAt})`);
-      }
-      doc.moveDown(0.4);
-    }
-    doc.fontSize(8).fillColor("#333333");
-    for (const ev of audit) {
-      doc.text(
-        `${formatDateLike(ev.timestampUtc, true)} | ${ev.actor} | ` +
-        `${ev.action} | ${ev.target ?? "—"} | ${ev.severity}`);
+      doc.fontSize(9).fillColor(verdict.valid ? "#1B7A3D" : "#B00020").text(
+        verdict.valid
+          ? `Audit hash chain VERIFIED — ${audit.length} events, `
+            + "SHA-256 intact."
+          : `Audit hash chain BROKEN at row ${verdict.brokenAt}.`);
     }
 
+    doc.end();
+    return done;
+  }
+
+  // Per-suspect financial report (Mongolian): the subject's profile, totals
+  // cards, per-account summary and the full transaction ledger.
+  async generateSuspectPdf(
+    suspectId: number, minAmount = 0
+  ): Promise<Buffer> {
+    const suspect = await this.db.getSuspectById(suspectId);
+    if (!suspect) throw new Error(`Suspect ${suspectId} not found`);
+    const accounts = (await this.db.getAllBankAccounts())
+      .filter((a) => a.suspectId === suspectId);
+    const txns = (await this.db.getTransactionsForSuspect(suspectId))
+      .filter((t) => t.amount >= minAmount);
+
+    const {doc, done} = startDoc();
+    formalHeader(doc, "Дансанд үзлэг хийсэн тухай тайлан");
+    renderSuspect(doc, {...suspect, bankAccounts: accounts}, txns);
+    drawFooters(doc);
+    doc.end();
+    return done;
+  }
+
+  // Marked-suspects report (Mongolian): every person flagged
+  // UNDER_INVESTIGATION. Only transactions BETWEEN the marked suspects are
+  // listed (ordered by time), with per-suspect totals, counts and date spans
+  // and a cover breakdown table.
+  async generateMarkedSuspectsPdf(minAmount = 0): Promise<Buffer> {
+    const marked = (await this.db.getSuspectsWithRelations())
+      .filter((s) => s.status === "UNDER_INVESTIGATION");
+    if (marked.length === 0) {
+      throw new Error(
+        "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
+    }
+
+    // Cross-reference index: which account numbers / national-ids / names
+    // belong to a marked suspect, so a transaction's counterparty can be
+    // resolved back to another marked suspect.
+    const markedIds = new Set(marked.map((s) => s.id));
+    const ownerByAccount = new Map<string, number>();
+    for (const a of await this.db.getAllBankAccounts()) {
+      if (a.suspectId != null && markedIds.has(a.suspectId)) {
+        ownerByAccount.set(a.accountNumber, a.suspectId);
+      }
+    }
+    const natIdToSuspect = new Map<string, number>();
+    const nameToSuspect = new Map<string, number>();
+    for (const s of marked) {
+      if (s.nationalId) natIdToSuspect.set(s.nationalId, s.id);
+      nameToSuspect.set(normName(s.fullName), s.id);
+    }
+    // A transaction is "between suspects" when its counterparty resolves to a
+    // DIFFERENT marked suspect (by account, national-id or name).
+    const counterpartySuspect = (t: BankTransaction, selfId: number): number
+      | null => {
+      if (t.counterpartyAccount) {
+        const o = ownerByAccount.get(t.counterpartyAccount);
+        if (o != null && o !== selfId) return o;
+      }
+      if (t.counterpartyNationalId) {
+        const o = natIdToSuspect.get(t.counterpartyNationalId);
+        if (o != null && o !== selfId) return o;
+      }
+      const byName = nameToSuspect.get(normName(t.counterpartyName));
+      if (byName != null && byName !== selfId) return byName;
+      return null;
+    };
+
+    // Per suspect: only inter-suspect transactions at/above the threshold,
+    // kept ascending by time.
+    const blocks = await Promise.all(marked.map(async (s) => {
+      const all = await this.db.getTransactionsForSuspect(s.id);
+      const txns = all.filter((t) =>
+        t.amount >= minAmount && counterpartySuspect(t, s.id) != null);
+      const {income, outgoing} = totals(txns);
+      return {suspect: s, txns, income, outgoing, range: dateRange(txns)};
+    }));
+
+    const {doc, done} = startDoc();
+    formalHeader(doc, "Дансанд үзлэг хийсэн тухай тайлан");
+
+    // Report-level totals line (count + overall date span + threshold).
+    const totalTxns = blocks.reduce((a, b) => a + b.txns.length, 0);
+    const stamps = blocks.flatMap((b) => b.txns).map((t) => t.timestamp).sort();
+    const span = stamps.length
+      ? `${formatDateLike(stamps[0])} — ${formatDateLike(stamps[stamps.length - 1])}`
+      : "—";
+    const thresholdNote = minAmount > 0 ? `      Босго: ≥ ${mnt(minAmount)}` : "";
+    doc.fontSize(9.5).fillColor(INK).text(
+      `Тэмдэглэсэн сэжигтэн: ${marked.length}      ` +
+      `Нийт хоорондын гүйлгээ: ${totalTxns}      Хугацаа: ${span}${thresholdNote}`,
+      ML, doc.y, {width: CW, align: "center", lineBreak: false});
+    doc.y += 20;
+
+    // Cover breakdown table (no combined cards, no net — per request). Now
+    // carries a bank-account count column.
+    sectionBar(doc, `СЭЖИГТНҮҮД (${blocks.length})`);
+    const summaryCols: LedgerCol[] = [
+      {label: "Сэжигтэн", x: 40, w: 128, align: "left"},
+      {label: "Данс", x: 168, w: 34, align: "right"},
+      {label: "Гүйлгээ", x: 202, w: 40, align: "right"},
+      {label: "Эхэлсэн", x: 242, w: 70, align: "left"},
+      {label: "Дуусан", x: 312, w: 70, align: "left"},
+      {label: "Орлого", x: 382, w: 87, align: "right"},
+      {label: "Зарлага", x: 469, w: 86, align: "right"},
+    ];
+    drawTableHead(doc, summaryCols);
+    blocks.forEach((b, i) => {
+      const y = ensureRow(doc, summaryCols);
+      if (i % 2 === 1) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA);
+      cell(doc, b.suspect.fullName, summaryCols[0], y, INK);
+      cell(doc, String(b.suspect.bankAccounts.length), summaryCols[1], y, INK);
+      cell(doc, String(b.txns.length), summaryCols[2], y, INK);
+      cell(doc, b.range.from, summaryCols[3], y, MUTED);
+      cell(doc, b.range.to, summaryCols[4], y, MUTED);
+      cell(doc, mnt(b.income), summaryCols[5], y, GREEN);
+      cell(doc, mnt(b.outgoing), summaryCols[6], y, RED);
+      doc.y = y + 13;
+    });
+    // Grand-total row.
+    const ty = ensureRow(doc, summaryCols);
+    doc.moveTo(ML, ty - 2).lineTo(ML + CW, ty - 2).lineWidth(0.5)
+      .strokeColor("#CBD5E1").stroke();
+    cell(doc, "НИЙТ", summaryCols[0], ty, DARK_BLUE);
+    cell(doc, String(blocks.reduce((a, b) => a + b.suspect.bankAccounts.length,
+      0)), summaryCols[1], ty, DARK_BLUE);
+    cell(doc, String(totalTxns), summaryCols[2], ty, DARK_BLUE);
+    cell(doc, mnt(blocks.reduce((a, b) => a + b.income, 0)), summaryCols[5],
+      ty, GREEN);
+    cell(doc, mnt(blocks.reduce((a, b) => a + b.outgoing, 0)), summaryCols[6],
+      ty, RED);
+    doc.y = ty + 14;
+
+    // One full section per suspect, each starting on a fresh page.
+    for (const b of blocks) {
+      doc.addPage();
+      doc.y = 48;
+      renderSuspect(doc, b.suspect, b.txns,
+        {ledgerLabel: "СЭЖИГТНҮҮД ХООРОНДЫН ГҮЙЛГЭЭ"});
+    }
+
+    drawFooters(doc);
     doc.end();
     return done;
   }
@@ -332,6 +518,325 @@ function heading(text: string, pt: number): Paragraph {
     children: [new TextRun({text, bold: true, size: pt * 2, color: "00E5FF",
       font: "Arial"})],
   });
+}
+
+// Group-format an amount as tugrik. The bundled report font DOES carry the ₮
+// glyph (U+20AE), so use the proper symbol.
+function mnt(amount: number): string {
+  return `${Math.round(amount).toLocaleString("en-US")} ₮`;
+}
+
+// Status → Mongolian label for the profile block.
+const STATUS_MN: Record<string, string> = {
+  UNKNOWN: "Тодорхойгүй", ACTIVE: "Идэвхтэй",
+  UNDER_INVESTIGATION: "Сэжигтэн (хянагдаж буй)",
+  CLOSED: "Хаагдсан", CLEARED: "Цагаатгасан",
+};
+
+function totals(txns: BankTransaction[]): {income: number; outgoing: number} {
+  let income = 0;
+  let outgoing = 0;
+  for (const t of txns) {
+    if (t.type.toLowerCase() === "credit") income += t.amount;
+    else outgoing += t.amount;
+  }
+  return {income, outgoing};
+}
+
+// A4 doc with the Cyrillic font and buffered pages (so footers can number them).
+function startDoc(): {doc: PDFKit.PDFDocument; done: Promise<Buffer>} {
+  const doc = new PDFDocument({size: "A4", margin: 40, bufferPages: true});
+  const font = resolveFont();
+  if (font) doc.registerFont("Body", font);
+  doc.font(font ? "Body" : "Helvetica");
+  const chunks: Buffer[] = [];
+  doc.on("data", (c: Buffer) => chunks.push(c));
+  const done = new Promise<Buffer>((resolve) => {
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+  return {doc, done};
+}
+
+// Dark title band with the report title + subtitle.
+// Where the report is issued — shown top-right of the formal header. Override
+// with the REPORT_LOCATION env var (e.g. a different aimag/city).
+const REPORT_LOCATION = process.env.REPORT_LOCATION || "Улаанбаатар хот";
+
+// Current date in the formal Mongolian two-line form the template uses, e.g.
+// "2026 оны 03 дугаар" / "Сарын 22-ны өдөр".
+function mnDateLines(iso: string): [string, string] {
+  const d = new Date(iso);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return [`${y} оны ${m} дугаар`, `Сарын ${d.getDate()}-ны өдөр`];
+}
+
+// Chronological span of an (asc-sorted) ledger as date-only strings.
+function dateRange(txns: BankTransaction[]): {from: string; to: string} {
+  if (txns.length === 0) return {from: "—", to: "—"};
+  return {
+    from: formatDateLike(txns[0].timestamp),
+    to: formatDateLike(txns[txns.length - 1].timestamp),
+  };
+}
+
+// Normalise a name for cross-referencing counterparties to suspects.
+function normName(s: string | null | undefined): string {
+  return (s ?? "").trim().toUpperCase().replace(/\s+/g, " ");
+}
+
+// Formal official-document header: centred title, then a three-column row of
+// date (left) · number (centre) · location (right), matching the Mongolian
+// протокол/тэмдэглэл template.
+function formalHeader(
+  doc: PDFKit.PDFDocument, title: string,
+  opts: {number?: string; location?: string} = {}
+): void {
+  const number = opts.number ?? ".......";
+  const location = opts.location ?? REPORT_LOCATION;
+
+  // Title (centred, may wrap to two lines). Rendered as given — no forced
+  // upper-casing, so sentence-case titles stay sentence-case.
+  doc.fillColor("#111111").fontSize(15).text(title, ML, 46,
+    {width: CW, align: "center", characterSpacing: 0.4});
+
+  const y = doc.y + 16;
+  const [d1, d2] = mnDateLines(new Date().toISOString());
+  // Left — date.
+  doc.fontSize(10.5).fillColor("#111111");
+  doc.text(d1, ML, y, {width: 190, align: "left", lineBreak: false});
+  doc.text(d2, ML, y + 15, {width: 190, align: "left", lineBreak: false});
+  // Centre — document number.
+  doc.text(`Дугаар ${number}`, ML, y + 7,
+    {width: CW, align: "center", lineBreak: false});
+  // Right — location (city name over "хот"/suffix).
+  const parts = location.split(" ");
+  const locTop = parts.length > 1 ? parts.slice(0, -1).join(" ") : location;
+  const locBot = parts.length > 1 ? parts[parts.length - 1] : "";
+  doc.text(locTop, ML, y, {width: CW, align: "right", lineBreak: false});
+  if (locBot) {
+    doc.text(locBot, ML, y + 15, {width: CW, align: "right", lineBreak: false});
+  }
+
+  const ry = y + 36;
+  doc.moveTo(ML, ry).lineTo(ML + CW, ry).lineWidth(1)
+    .strokeColor("#111111").stroke();
+  doc.x = ML;
+  doc.y = ry + 12;
+  doc.fillColor(INK);
+}
+
+// Cyan-tab section heading.
+function sectionBar(doc: PDFKit.PDFDocument, title: string): void {
+  if (doc.y > doc.page.height - 110) {
+    doc.addPage();
+    doc.y = 48;
+  }
+  const y = doc.y + 6;
+  doc.rect(ML, y, 4, 13).fill(ACCENT_CYAN);
+  doc.fillColor(DARK_BLUE).fontSize(12)
+    .text(title, ML + 10, y - 1, {lineBreak: false});
+  doc.y = y + 22;
+  doc.fillColor(INK);
+}
+
+// Two tinted summary cards: income / outgoing (net dropped per request).
+function totalsCards(
+  doc: PDFKit.PDFDocument, income: number, outgoing: number
+): void {
+  const gap = 12;
+  const cw = (CW - gap) / 2;
+  const h = 50;
+  const y = doc.y;
+  const cards = [
+    {label: "Нийт орлого", value: mnt(income), fg: GREEN, bg: GREEN_TINT},
+    {label: "Нийт зарлага", value: mnt(outgoing), fg: RED, bg: RED_TINT},
+  ];
+  cards.forEach((c, i) => {
+    const x = ML + i * (cw + gap);
+    doc.roundedRect(x, y, cw, h, 6).fill(c.bg);
+    doc.fillColor(MUTED).fontSize(8.5)
+      .text(c.label, x + 12, y + 10, {width: cw - 20, lineBreak: false});
+    doc.fillColor(c.fg).fontSize(15)
+      .text(c.value, x + 12, y + 26,
+        {width: cw - 20, lineBreak: false, ellipsis: true});
+  });
+  doc.y = y + h + 10;
+  doc.fillColor(INK);
+}
+
+// A coloured rounded pill (risk badge).
+function pill(
+  doc: PDFKit.PDFDocument, x: number, y: number, text: string, bg: string
+): void {
+  doc.fontSize(8);
+  const w = doc.widthOfString(text) + 14;
+  doc.roundedRect(x, y, w, 14, 7).fill(bg);
+  doc.fillColor("#FFFFFF").fontSize(8).text(text, x + 7, y + 3.4,
+    {lineBreak: false});
+}
+
+// One ledger cell with 6px padding on the aligned side.
+function cell(
+  doc: PDFKit.PDFDocument, text: string, c: LedgerCol, y: number, color: string
+): void {
+  const pad = 6;
+  const x = c.align === "right" ? c.x : c.x + pad;
+  doc.fontSize(7.6).fillColor(color).text(text, x, y,
+    {width: c.w - pad, align: c.align, lineBreak: false, ellipsis: true});
+}
+
+// Filled table header band.
+function drawTableHead(doc: PDFKit.PDFDocument, cols: LedgerCol[]): void {
+  const y = doc.y;
+  doc.rect(ML, y, CW, 17).fill(TABLE_HEAD);
+  for (const c of cols) {
+    const pad = 6;
+    const x = c.align === "right" ? c.x : c.x + pad;
+    doc.fillColor("#FFFFFF").fontSize(8).text(c.label, x, y + 5,
+      {width: c.w - pad, align: c.align, lineBreak: false});
+  }
+  doc.y = y + 20;
+}
+
+// Page-break guard for a table row; repeats the header on the new page.
+function ensureRow(doc: PDFKit.PDFDocument, cols: LedgerCol[]): number {
+  if (doc.y + 13 > doc.page.height - 46) {
+    doc.addPage();
+    doc.y = 48;
+    drawTableHead(doc, cols);
+  }
+  return doc.y;
+}
+
+// A full per-suspect section: identity, profile, totals cards, accounts and the
+// paginating transaction ledger. Assumes doc.y is positioned to start.
+function renderSuspect(
+  doc: PDFKit.PDFDocument,
+  suspect: Suspect & {bankAccounts: BankAccount[]},
+  txns: BankTransaction[],
+  opts: {ledgerLabel?: string} = {}
+): void {
+  const {income, outgoing} = totals(txns);
+  const {from, to} = dateRange(txns);
+  const ledgerLabel = opts.ledgerLabel ?? "ГҮЙЛГЭЭ";
+
+  // Name + risk pill (the pill is omitted for UNKNOWN risk so no
+  // "Тодорхойгүй" label is shown).
+  const nameY = doc.y;
+  doc.fontSize(15).fillColor(DARK_BLUE)
+    .text(suspect.fullName, ML, nameY, {lineBreak: false});
+  if (suspect.riskLevel && suspect.riskLevel !== "UNKNOWN") {
+    const nameW = doc.widthOfString(suspect.fullName);
+    pill(doc, ML + nameW + 10, nameY + 2, RISK_MN[suspect.riskLevel]
+      ?? suspect.riskLevel, RISK_HEX[suspect.riskLevel] ?? MUTED);
+  }
+  doc.y = nameY + 22;
+
+  // Identity line — national id (labelled) + phone; the internal suspect code
+  // is intentionally omitted.
+  const idBits = [
+    suspect.nationalId ? `Регистрийн дугаар: ${suspect.nationalId}` : null,
+    suspect.primaryPhone,
+  ].filter(Boolean).join("  ·  ");
+  doc.fontSize(8.5).fillColor(MUTED)
+    .text(idBits || "—", ML, doc.y, {width: CW, lineBreak: false,
+      ellipsis: true});
+  doc.y += 18;
+
+  // Profile grid (two columns).
+  const profile: [string, string][] = [];
+  const add = (l: string, v: string | null | undefined) => {
+    if (v) profile.push([l, v]);
+  };
+  add("Ажил", suspect.occupation);
+  add("Байгууллага", suspect.organization);
+  add("Хаяг", [suspect.address, suspect.city].filter(Boolean).join(", "));
+  add("И-мэйл", suspect.email);
+  add("Төлөв", STATUS_MN[suspect.status] ?? suspect.status);
+  if (profile.length > 0) {
+    const colW = CW / 2;
+    const lineH = 15;
+    const startY = doc.y;
+    profile.forEach(([label, val], i) => {
+      const x = ML + (i % 2) * colW;
+      const y = startY + Math.floor(i / 2) * lineH;
+      doc.fontSize(8.5).fillColor(MUTED)
+        .text(`${label}:`, x, y, {width: 74, lineBreak: false});
+      doc.fillColor(INK).text(val, x + 78, y,
+        {width: colW - 84, lineBreak: false, ellipsis: true});
+    });
+    doc.y = startY + Math.ceil(profile.length / 2) * lineH + 4;
+  }
+
+  // Totals.
+  sectionBar(doc, "САНХҮҮГИЙН ДҮН");
+  totalsCards(doc, income, outgoing);
+  doc.fontSize(8.5).fillColor(MUTED).text(
+    `Нийт гүйлгээ: ${txns.length}      Хугацаа: ${from} — ${to}` +
+    `      Данс: ${suspect.bankAccounts.length}`,
+    ML, doc.y, {lineBreak: false});
+  doc.y += 14;
+
+  // Accounts (account number + bank + currency — balance omitted).
+  if (suspect.bankAccounts.length > 0) {
+    sectionBar(doc, "ДАНС");
+    for (const a of suspect.bankAccounts) {
+      doc.fontSize(8.5).fillColor(INK).text(
+        `•  ${a.accountNumber}${a.bankName ? `  ·  ${a.bankName}` : ""}` +
+        `  ·  ${a.currency || "MNT"}`,
+        ML, doc.y, {width: CW, lineBreak: false, ellipsis: true});
+      doc.y += 14;
+    }
+  }
+
+  // Transaction ledger (ascending by time — as loaded).
+  sectionBar(doc, `${ledgerLabel} (${txns.length})`);
+  drawTableHead(doc, LEDGER_COLS);
+  if (txns.length === 0) {
+    doc.fontSize(8.5).fillColor(MUTED).text("Гүйлгээ алга", ML + 6, doc.y);
+    doc.y += 14;
+    return;
+  }
+  txns.forEach((t, i) => {
+    const y = ensureRow(doc, LEDGER_COLS);
+    if (i % 2 === 1) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA);
+    const credit = t.type.toLowerCase() === "credit";
+    cell(doc, formatDateLike(t.timestamp, true), LEDGER_COLS[0], y, INK);
+    cell(doc, credit ? "Орлого" : "Зарлага", LEDGER_COLS[1], y,
+      credit ? GREEN : RED);
+    cell(doc, t.counterpartyName || t.counterpartyAccount || "—",
+      LEDGER_COLS[2], y, INK);
+    cell(doc, t.description || t.category || "—", LEDGER_COLS[3], y, MUTED);
+    cell(doc, `${credit ? "+" : "−"}${mnt(t.amount)}`, LEDGER_COLS[4], y,
+      credit ? GREEN : RED);
+    cell(doc, mnt(t.runningBalance), LEDGER_COLS[5], y, MUTED);
+    doc.y = y + 13;
+  });
+}
+
+// Numbered footer on every buffered page. The footer sits in the bottom
+// margin; pdfkit would otherwise auto-append a blank page whenever text is
+// written below the page's max-Y, so we temporarily drop the bottom margin to
+// zero on each page while writing (this was the cause of trailing blank pages).
+function drawFooters(doc: PDFKit.PDFDocument): void {
+  const range = doc.bufferedPageRange();
+  const ts = formatDateLike(new Date().toISOString(), true);
+  for (let i = range.start; i < range.start + range.count; i++) {
+    doc.switchToPage(i);
+    const savedBottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    const y = doc.page.height - 30;
+    doc.moveTo(ML, y - 6).lineTo(ML + CW, y - 6).lineWidth(0.5)
+      .strokeColor("#E2E8F0").stroke();
+    doc.fontSize(7).fillColor(MUTED).text(
+      `Forensic Analyst Workstation  ·  НУУЦ  ·  ${ts}`, ML, y,
+      {width: 360, align: "left", lineBreak: false});
+    doc.fontSize(7).fillColor(MUTED).text(
+      `Хуудас ${i + 1} / ${range.count}`, ML, y,
+      {width: CW, align: "right", lineBreak: false});
+    doc.page.margins.bottom = savedBottom;
+  }
 }
 
 function section(doc: PDFKit.PDFDocument, title: string): void {

@@ -55,6 +55,170 @@ export class DataService {
     this.db = db;
   }
 
+  // === demo / sample data ===============================================
+  // Populate the given (case-scoped) suspects with a lifelike call + device
+  // network so the analytics charts and the connection graph become
+  // meaningful. This FABRICATES values (spread-out times, durations, extra
+  // calls between people) purely for demonstration — it is an explicit analyst
+  // action, never automatic, and only touches degenerate/zero-duration rows.
+  async generateSampleData(suspectIds: number[]): Promise<{
+    enrichedCalls: number; networkCalls: number; phonesEnsured: number;
+  }> {
+    const rnd = (n: number) => Math.floor(Math.random() * n);
+    const isSqlite = String(
+      (this.db.client as {config?: {client?: string}}).config?.client ?? "")
+      .includes("sqlite");
+    if (suspectIds.length === 0) {
+      return {enrichedCalls: 0, networkCalls: 0, phonesEnsured: 0};
+    }
+
+    // Pin the fabricated calls to the SAME time window as this case's bank
+    // transactions, so the call charts line up with the money timeline and
+    // call→transaction correlation is possible (falls back to the last 60 days
+    // when the case has no transactions).
+    const acctIds = await this.db("bank_accounts")
+      .whereIn("suspectId", suspectIds).pluck("id");
+    let minMs = Date.now() - 60 * 86400 * 1000;
+    let maxMs = Date.now();
+    if (acctIds.length) {
+      const span = await this.db("bank_transactions")
+        .whereIn("bankAccountId", acctIds)
+        .min({mn: "timestamp"}).max({mx: "timestamp"}).first();
+      const mn = span?.mn ? new Date(String(span.mn)).getTime() : NaN;
+      const mx = span?.mx ? new Date(String(span.mx)).getTime() : NaN;
+      if (!Number.isNaN(mn) && !Number.isNaN(mx) && mx > mn) {
+        minMs = mn; maxMs = mx;
+      }
+    }
+    const randTime = () => new Date(minMs + rnd(maxMs - minMs + 1)).toISOString();
+    const minEpoch = Math.floor(minMs / 1000);
+    const rangeSec = Math.max(1, Math.floor((maxMs - minMs) / 1000));
+
+    // Re-running is idempotent: drop the calls a previous run fabricated
+    // (flagStatus='SAMPLE') before making new ones.
+    await this.db("call_records").whereIn("suspectId", suspectIds)
+      .where({flagStatus: "SAMPLE"}).del();
+
+    // 1. Re-spread ALL of the case's real calls across that window with real
+    //    durations so the time & duration charts come alive. All Voice — the
+    //    source CDR data has no SMS.
+    const cnt = await this.db("call_records")
+      .whereIn("suspectId", suspectIds).count({c: "*"}).first();
+    const enrichedCalls = Number(cnt?.c ?? 0);
+    const ph = suspectIds.map(() => "?").join(",");
+    if (isSqlite) {
+      await this.db.raw(
+        `UPDATE call_records SET
+           startTime = strftime('%Y-%m-%dT%H:%M:%SZ', ?, 'unixepoch',
+             '+' || (abs(random()) % ?) || ' seconds'),
+           durationSeconds = (abs(random()) % 1140) + 20,
+           callType = 'Voice',
+           direction = CASE WHEN abs(random()) % 2 = 0 THEN 'Outgoing'
+             ELSE 'Incoming' END
+         WHERE suspectId IN (${ph})`,
+        [minEpoch, rangeSec, ...suspectIds]);
+    } else {
+      const ids = await this.db("call_records")
+        .whereIn("suspectId", suspectIds).pluck("id");
+      for (const id of ids) {
+        await this.db("call_records").where({id}).update({
+          startTime: randTime(), durationSeconds: rnd(1140) + 20,
+          callType: "Voice",
+          direction: rnd(2) === 0 ? "Outgoing" : "Incoming",
+        });
+      }
+    }
+
+    // 2. Give up to a dozen of the case's people a phone number so calls can
+    //    run BETWEEN them (that is what the connection graph links on).
+    const pick = suspectIds.slice(0, 12);
+    const phoneOf = new Map<number, string>();
+    let phonesEnsured = 0;
+    for (const sid of pick) {
+      const existing = await this.db("phone_numbers")
+        .where({suspectId: sid}).first();
+      if (existing) { phoneOf.set(sid, String(existing.number)); continue; }
+      let num = "";
+      for (let t = 0; t < 6 && !num; t++) {
+        const cand = "9" + String(10000000 + rnd(89999999)).slice(-7);
+        const clash = await this.db("phone_numbers")
+          .where({number: cand}).first();
+        if (!clash) num = cand;
+      }
+      if (!num) continue;
+      await this.db("phone_numbers").insert({
+        number: num, suspectId: sid, phoneType: "Mobile", status: "ACTIVE"});
+      phoneOf.set(sid, num);
+      phonesEnsured++;
+    }
+
+    // 3. A shared handset between one pair → a SHARED_DEVICE link for variety.
+    const picks = [...phoneOf.keys()];
+    if (picks.length >= 2) {
+      const imei = "35" + String(rnd(1e12)).padStart(13, "0");
+      await this.db("phone_numbers").where({suspectId: picks[0]})
+        .update({imei});
+      await this.db("phone_numbers").where({suspectId: picks[1]})
+        .update({imei});
+    }
+
+    // 4. Weave calls between those people (a realistic partial mesh, not a
+    //    complete graph) so PHONE_CONTACT links form a legible network.
+    const nums = picks.map((sid) => ({sid, num: phoneOf.get(sid)!}));
+    const rows: Record<string, unknown>[] = [];
+    for (let i = 0; i < nums.length; i++) {
+      for (let j = i + 1; j < nums.length; j++) {
+        if (rnd(10) < 4) continue; // ~60% of pairs are connected
+        const k = 1 + rnd(12);
+        for (let c = 0; c < k; c++) {
+          const out = rnd(2) === 0;
+          const a = out ? nums[i] : nums[j];
+          const b = out ? nums[j] : nums[i];
+          rows.push({
+            callerNumber: a.num, calledNumber: b.num,
+            startTime: randTime(), durationSeconds: rnd(1140) + 20,
+            callType: "Voice", direction: "Outgoing", suspectId: a.sid,
+            flagStatus: "SAMPLE",
+          });
+        }
+      }
+    }
+
+    // 5. Plant a call a few minutes BEFORE some of the picked people's real
+    //    transactions so the "Дуудлагын дараах гүйлгээ" (post-call money) panel
+    //    has genuine hits (a call shortly before money moves).
+    if (nums.length >= 2) {
+      const pickAccts = await this.db("bank_accounts")
+        .whereIn("suspectId", picks).select("id", "suspectId");
+      const acctToSid = new Map(
+        pickAccts.map((a) => [Number(a.id), Number(a.suspectId)]));
+      const txns = acctToSid.size
+        ? await this.db("bank_transactions")
+          .whereIn("bankAccountId", [...acctToSid.keys()])
+          .select("bankAccountId", "timestamp").limit(400)
+        : [];
+      for (const t of txns) {
+        if (rnd(2) === 0) continue; // roughly half get a preceding call
+        const sid = acctToSid.get(Number(t.bankAccountId));
+        const caller = sid != null ? phoneOf.get(sid) : undefined;
+        if (sid == null || !caller) continue;
+        const others = nums.filter((n) => n.sid !== sid);
+        if (!others.length) continue;
+        const b = others[rnd(others.length)];
+        const before = new Date(new Date(String(t.timestamp)).getTime()
+          - (5 + rnd(20)) * 60000).toISOString();
+        rows.push({
+          callerNumber: caller, calledNumber: b.num, startTime: before,
+          durationSeconds: rnd(600) + 30, callType: "Voice",
+          direction: "Outgoing", suspectId: sid, flagStatus: "SAMPLE",
+        });
+      }
+    }
+
+    if (rows.length) await this.db.batchInsert("call_records", rows, 200);
+    return {enrichedCalls, networkCalls: rows.length, phonesEnsured};
+  }
+
   // === suspects (with nav, for analysis) =================================
   async getSuspectsWithRelations(): Promise<SuspectWithRelations[]> {
     const suspects = await this.db<Suspect>("suspects").orderBy("fullName");
@@ -259,10 +423,44 @@ export class DataService {
     return created!;
   }
 
+  // Edit an existing link (used for analyst-curated MANUAL connections —
+  // relabel the relationship or change its confidence).
+  async updateLink(
+    id: number, patch: Partial<SuspectLink>
+  ): Promise<SuspectLink> {
+    await this.db("suspect_links").where({id}).update(patch);
+    const updated = await this.db<SuspectLink>("suspect_links")
+      .where({id}).first();
+    if (!updated) throw new Error(`Link ${id} not found`);
+    return updated;
+  }
+
+  // Delete a single link by id (MANUAL connection removal). Returns whether a
+  // row was actually removed.
+  async deleteLink(id: number): Promise<boolean> {
+    const n = await this.db("suspect_links").where({id}).del();
+    return n > 0;
+  }
+
   async deleteAutoGeneratedLinks(
     linkTypes: SuspectLinkType[]
   ): Promise<number> {
     return this.db("suspect_links").whereIn("linkType", linkTypes).del();
+  }
+
+  // Adopt every unassigned (default-view) MANUAL connection into a board — used
+  // when the analyst saves the current graph as a new board.
+  async claimUnassignedManualLinks(caseGraphId: number): Promise<number> {
+    return this.db("suspect_links")
+      .where({linkType: "MANUAL", caseGraphId: null})
+      .update({caseGraphId});
+  }
+
+  // Remove the MANUAL connections owned by a board (called when it's deleted).
+  async deleteManualLinksForGraph(caseGraphId: number): Promise<number> {
+    return this.db("suspect_links")
+      .where({linkType: "MANUAL", caseGraphId})
+      .del();
   }
 
   // === cases ==============================================================
@@ -279,6 +477,7 @@ export class DataService {
       leadInvestigator: input.leadInvestigator ?? null,
       caseType: input.caseType ?? null, createdAt: now, updatedAt: now,
       closedAt: null,
+      ownerUserId: input.ownerUserId ?? null,
     };
     const [id] = await this.db("case_files").insert(row);
     return (await this.db<CaseFile>("case_files").where({id: Number(id)}).first())!;

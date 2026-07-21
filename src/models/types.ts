@@ -69,6 +69,14 @@ export interface SuspectLink {
   lastContact             : string | null;
   createdAt               : string;
   confidenceLevel         : LinkConfidence;
+  // JSON array (as stored) of the bank_transactions ids that back a
+  // FINANCIAL_TRANSFER link, so the client can re-total it under the active
+  // noise filter. Null for non-financial links. Exposed as [Int!] in GraphQL.
+  contributingTxnIds      : string | null;
+  // The saved board (case_graphs.id) an analyst-drawn MANUAL link belongs to,
+  // so connections don't leak across boards. NULL = unsaved/default view, and
+  // always NULL for auto-generated evidence links.
+  caseGraphId             : number | null;
 }
 
 export interface BankAccount {
@@ -97,6 +105,7 @@ export interface BankTransaction {
   referenceNumber     : string | null;
   counterpartyAccount : string | null;
   counterpartyName    : string | null;
+  counterpartyNationalId : string | null;
   channel             : string | null;
   location            : string | null;
   runningBalance      : number;
@@ -148,6 +157,38 @@ export interface CaseFile {
   createdAt        : string;
   updatedAt        : string;
   closedAt         : string | null;
+  // The detective who created/owns this case (null for legacy cases). The
+  // ADMIN boss sees every case regardless of ownership.
+  ownerUserId      : number | null;
+}
+
+export type UserRole = "ADMIN" | "DETECTIVE";
+
+export interface User {
+  id           : number;
+  username     : string;
+  fullName     : string | null;
+  passwordHash : string;
+  role         : UserRole;
+  active       : boolean;
+  activeCaseId : number | null;
+  createdAt    : string;
+  updatedAt    : string;
+}
+
+export interface Session {
+  id        : number;
+  token     : string;
+  userId    : number;
+  createdAt : string;
+  expiresAt : string;
+}
+
+export interface CaseMember {
+  id         : number;
+  caseFileId : number;
+  userId     : number;
+  createdAt  : string;
 }
 
 export interface CaseNote {

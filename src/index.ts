@@ -28,6 +28,10 @@ import {CaseSessionService} from "./services/caseSessionService";
 import {AnbService} from "./services/anbService";
 import {LocalizationService} from "./services/localizationService";
 import {TelemetryService} from "./services/telemetryService";
+import {NoiseFilterService} from "./services/noiseFilterService";
+import {CaseGraphService} from "./services/caseGraphService";
+import {AuthService} from "./services/authService";
+import {UpdateService} from "./services/updateService";
 
 async function main(): Promise<void> {
   const server = new ApolloServer<GraphQLContext>({typeDefs, resolvers});
@@ -38,28 +42,44 @@ async function main(): Promise<void> {
   const sanctions = new SanctionsService();
   const geo = new GeospatialService();
   const settings = new SettingsService();
-  const session = new CaseSessionService(db);
+  const auth = new AuthService(db);
   const i18n = new LocalizationService();
   const telemetry = new TelemetryService(settings);
-  const context = async (): Promise<GraphQLContext> => ({
-    suspects : new SuspectService(db),
-    data,
-    analysis : new AnalysisService(data),
-    geo,
-    imports  : new ImportService(db),
-    reports  : new ReportService(data),
-    audit,
-    evidence : new EvidenceService(db, audit),
-    people   : new PeopleService(db),
-    sanctions,
-    sanctionsRefresh : new SanctionsRefreshService(db, sanctions, audit),
-    settings,
-    travel   : new TravelCorrelationService(data, geo),
-    session,
-    anb      : new AnbService(db),
-    i18n,
-    telemetry,
-  });
+  const update = new UpdateService();
+  // Per-request context: resolve the caller from the Authorization: Bearer
+  // token so every resolver knows who's asking (and which cases they may see).
+  const context = async ({req}: {req?: {headers: Record<string, unknown>}}):
+    Promise<GraphQLContext> => {
+    const header = String(req?.headers?.authorization ?? "");
+    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+    const user = await auth.userForToken(token);
+    return {
+      suspects : new SuspectService(db),
+      data,
+      analysis : new AnalysisService(data),
+      geo,
+      imports  : new ImportService(db),
+      reports  : new ReportService(data),
+      audit,
+      evidence : new EvidenceService(db, audit),
+      people   : new PeopleService(db),
+      sanctions,
+      sanctionsRefresh : new SanctionsRefreshService(db, sanctions, audit),
+      settings,
+      travel   : new TravelCorrelationService(data, geo),
+      // Active case is per-user now, so the session binds to the caller.
+      session  : new CaseSessionService(db, user?.id ?? null),
+      anb      : new AnbService(db),
+      i18n,
+      telemetry,
+      noise    : new NoiseFilterService(db),
+      graphs   : new CaseGraphService(db),
+      auth,
+      update,
+      user,
+      token,
+    };
+  };
 
   const {url} = await startStandaloneServer(server, {
     listen: {port},

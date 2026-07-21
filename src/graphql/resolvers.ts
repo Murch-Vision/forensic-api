@@ -12,6 +12,9 @@ import type {AnalysisService} from "../services/analysisService";
 import {computeBenfordObserved} from "../services/analysisService";
 import type {GeospatialService} from "../services/geospatialService";
 import type {ImportKind, ImportService} from "../services/importService";
+import {
+  uploadStart, uploadAppend, uploadContent, uploadRelease,
+} from "../services/import/uploadBuffer";
 import type {ReportService} from "../services/reportService";
 import type {AuditLogService} from "../services/auditLogService";
 import type {EvidenceService} from "../services/evidenceService";
@@ -24,6 +27,11 @@ import type {CaseSessionService} from "../services/caseSessionService";
 import type {AnbService} from "../services/anbService";
 import type {LocalizationService} from "../services/localizationService";
 import type {TelemetryService} from "../services/telemetryService";
+import type {NoiseFilter, NoiseFilterService}
+  from "../services/noiseFilterService";
+import type {CaseGraphService} from "../services/caseGraphService";
+import type {AuthService, AuthUser} from "../services/authService";
+import type {UpdateService} from "../services/updateService";
 import type {AlertSeverity, EvidenceSourceType} from "../models/enums";
 import {
   AmlThresholds,
@@ -50,6 +58,27 @@ export interface GraphQLContext {
   anb      : AnbService;
   i18n     : LocalizationService;
   telemetry : TelemetryService;
+  noise    : NoiseFilterService;
+  graphs   : CaseGraphService;
+  auth     : AuthService;
+  update   : UpdateService;
+  // The authenticated caller (null when the request carries no valid token).
+  user     : AuthUser | null;
+  // The raw bearer token, so logout can revoke exactly this session.
+  token    : string | null;
+}
+
+// Require any logged-in user, or throw a clean auth error.
+function requireUser(c: GraphQLContext): AuthUser {
+  if (!c.user) throw new Error("Нэвтрэх шаардлагатай");
+  return c.user;
+}
+
+// Require the ADMIN (department boss) role.
+function requireAdmin(c: GraphQLContext): AuthUser {
+  const u = requireUser(c);
+  if (u.role !== "ADMIN") throw new Error("Зөвхөн админ энэ үйлдлийг хийнэ");
+  return u;
 }
 
 // Computed [NotMapped] Suspect.Initials — first letter of the first name part.
@@ -121,6 +150,45 @@ async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
     || scope.accountIds.has(a.id));
 }
 
+function matchesDescRules(
+  description: string | null, rules: {mode: string; text: string}[]
+): boolean {
+  if (!rules.length) return false;
+  const d = (description ?? "").toLowerCase();
+  return rules.some((r) => {
+    const t = r.text.toLowerCase();
+    return r.mode === "starts" ? d.startsWith(t)
+      : r.mode === "ends" ? d.endsWith(t) : d.includes(t);
+  });
+}
+
+// Every transaction id the analyst marked "unimportant" for the active case —
+// individual ids, sub-threshold amounts, description rules and pair removals
+// combined. Applied to EVERY analysis (timeline, correlations, links, charts)
+// so removed noise never resurfaces anywhere, not just on the Transactions page.
+async function ignoredTxnIds(c: GraphQLContext): Promise<Set<number>> {
+  const active = await c.session.getCurrentCase();
+  if (!active) return new Set();
+  const nf = await c.noise.getForCase(active.id);
+  const ignored = new Set<number>(nf.ignoredTxns);
+  const hasRules = nf.descRules.length > 0;
+  const hasPairs = nf.ignoredPairs.length > 0;
+  if (nf.minAmount <= 0 && !hasRules && !hasPairs) return ignored;
+  const pairs = new Set(nf.ignoredPairs);
+  for (const t of await c.data.getAllTransactions()) {
+    if (ignored.has(t.id)) continue;
+    if (nf.minAmount > 0 && t.amount < nf.minAmount) { ignored.add(t.id); continue; }
+    if (hasRules && matchesDescRules(t.description, nf.descRules)) {
+      ignored.add(t.id); continue;
+    }
+    if (hasPairs) {
+      const cp = t.counterpartyAccount?.trim();
+      if (cp && pairs.has(`${t.bankAccountId}→${cp}`)) ignored.add(t.id);
+    }
+  }
+  return ignored;
+}
+
 export const resolvers = {
   Query: {
     suspects: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
@@ -132,15 +200,28 @@ export const resolvers = {
       c.suspects.getSuspectById(a.id),
     dashboardStats: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.data.getDashboardStats(),
+    appVersion: (_p: unknown, _a: unknown, c: GraphQLContext) =>
+      c.update.version(),
     bankAccounts: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       scopedAccounts(c),
-    transactions: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+    transactions: async (
+      _p: unknown, a: {includeRemoved?: boolean}, c: GraphQLContext
+    ) => {
       const txns = await c.data.getAllTransactions();
       const scope = await caseScope(c);
-      if (!scope) return txns;
-      const accountIds = new Set((await scopedAccounts(c)).map((a) => a.id));
-      return txns.filter((t) =>
-        accountIds.has(t.bankAccountId) || scope.txnIds.has(t.id));
+      let scoped = txns;
+      if (scope) {
+        const accountIds = new Set((await scopedAccounts(c)).map((x) => x.id));
+        scoped = txns.filter((t) =>
+          accountIds.has(t.bankAccountId) || scope.txnIds.has(t.id));
+      }
+      // Removed-as-noise transactions are hidden EVERYWHERE by default; only
+      // the Transactions page asks for them (includeRemoved) so it can manage /
+      // restore them.
+      if (a.includeRemoved) return scoped;
+      const ignored = await ignoredTxnIds(c);
+      return ignored.size
+        ? scoped.filter((t) => !ignored.has(t.id)) : scoped;
     },
     callRecords: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const calls = await c.data.getAllCallRecords();
@@ -158,8 +239,28 @@ export const resolvers = {
         scope.suspectIds.has(l.sourceSuspectId)
         && scope.suspectIds.has(l.targetSuspectId));
     },
-    caseFiles: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.data.getAllCaseFiles(),
+    caseFiles: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const all = await c.data.getAllCaseFiles();
+      const user = c.user;
+      // Unauthenticated → nothing. ADMIN → every case. DETECTIVE → only the
+      // cases they own or were granted access to.
+      if (!user) return [];
+      const ids = await c.auth.accessibleCaseIds(user);
+      return ids === null ? all : all.filter((cf) => ids.has(cf.id));
+    },
+    // The logged-in account (null when unauthenticated) — the frontend uses
+    // this to gate the app behind login and to show admin-only UI.
+    me: (_p: unknown, _a: unknown, c: GraphQLContext) => c.user,
+    // All accounts — the boss's user-management list. Admin only.
+    users: (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireAdmin(c);
+      return c.auth.listUsers();
+    },
+    // Detectives explicitly granted access to a case (admin only).
+    caseMembers: (_p: unknown, a: {caseFileId: number}, c: GraphQLContext) => {
+      requireAdmin(c);
+      return c.auth.caseMembers(a.caseFileId);
+    },
     globalPeople: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.people.getGlobalPeople(),
     analysisResults: (_p: unknown, _a: unknown, c: GraphQLContext) =>
@@ -171,7 +272,9 @@ export const resolvers = {
     patterns: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.analysis.detectPatterns(),
     correlations: async (_p: unknown, a: {suspectId?: number}, c: GraphQLContext) => {
-      const hits = await c.analysis.correlateTimeline(a.suspectId ?? null);
+      const ignored = await ignoredTxnIds(c);
+      const hits = await c.analysis.correlateTimeline(a.suspectId ?? null,
+        ignored);
       const scope = await caseScope(c);
       return scope
         ? hits.filter((h) => scope.suspectIds.has(h.suspectId)) : hits;
@@ -197,14 +300,18 @@ export const resolvers = {
     amlConfig: () => AmlThresholds.current,
     previewImport: (
       _p: unknown,
-      a: {content: string; filename?: string; sheetName?: string},
+      a: {content: string; filename?: string; sheetName?: string;
+        uploadId?: string},
       c: GraphQLContext
-    ) => c.imports.preview(a.content, a.filename ?? null, a.sheetName ?? null),
+    ) => c.imports.preview(
+      a.uploadId ? uploadContent(a.uploadId) : a.content,
+      a.filename ?? null, a.sheetName ?? null),
     excelSheets: (
       _p: unknown,
-      a: {content: string; filename: string},
+      a: {content: string; filename: string; uploadId?: string},
       c: GraphQLContext
-    ) => c.imports.excelSheets(a.content, a.filename),
+    ) => c.imports.excelSheets(
+      a.uploadId ? uploadContent(a.uploadId) : a.content, a.filename),
     reportPdf: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const verdict = await c.audit.verify();
       const buf = await c.reports.generatePdf(verdict);
@@ -214,6 +321,31 @@ export const resolvers = {
         mimeType: "application/pdf",
         base64: buf.toString("base64"),
       };
+    },
+    reportSuspectPdf: async (
+      _p: unknown, a: {suspectId: number}, c: GraphQLContext
+    ) => {
+      const suspect = await c.suspects.getSuspectById(a.suspectId);
+      const buf = await c.reports.generateSuspectPdf(a.suspectId);
+      const safe = (suspect?.suspectId ?? `Suspect-${a.suspectId}`)
+        .replace(/[^A-Za-z0-9_-]/g, "");
+      const filename = `Suspect-${safe}.pdf`;
+      await c.audit.record("Report.Generated", `File:${filename}`,
+        suspect?.fullName ?? null);
+      return {
+        filename,
+        mimeType: "application/pdf",
+        base64: buf.toString("base64"),
+      };
+    },
+    reportMarkedSuspectsPdf: async (
+      _p: unknown, _a: unknown, c: GraphQLContext
+    ) => {
+      const buf = await c.reports.generateMarkedSuspectsPdf();
+      const filename = "MarkedSuspects-Transactions.pdf";
+      await c.audit.record("Report.Generated", `File:${filename}`,
+        "Marked suspects transaction report");
+      return {filename, mimeType: "application/pdf", base64: buf.toString("base64")};
     },
     reportExcel: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const buf = await c.reports.generateExcel();
@@ -268,6 +400,17 @@ export const resolvers = {
     },
     activeCase: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.session.getCurrentCase(),
+    caseNoiseFilter: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const active = await c.session.getCurrentCase();
+      if (!active) {
+        return {minAmount: 0, ignoredPairs: [], ignoredTxns: [], descRules: []};
+      }
+      return c.noise.getForCase(active.id);
+    },
+    caseGraphs: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const active = await c.session.getCurrentCase();
+      return active ? c.graphs.listForCase(active.id) : [];
+    },
     pinnedSuspectIds: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.session.pinnedSuspectIds(),
     associationMatrix: (_p: unknown, _a: unknown, c: GraphQLContext) =>
@@ -336,6 +479,17 @@ export const resolvers = {
   },
 
   Mutation: {
+    selfUpdate: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireAdmin(c);
+      const r = await c.update.selfUpdate();
+      await c.audit.record(
+        "System.SelfUpdate",
+        `${r.previousCommit}→${r.newCommit}`,
+        r.message,
+        r.updated ? "HIGH" : "INFO"
+      );
+      return r;
+    },
     createSuspect: async (
       _p: unknown,
       a: {input: SuspectInput},
@@ -343,6 +497,16 @@ export const resolvers = {
     ) => {
       const s = await c.suspects.createSuspect(a.input);
       await c.audit.record("Suspect.Create", `Suspect:${s.id}`, s.fullName);
+      return s;
+    },
+    markAsSuspect: async (
+      _p: unknown, a: {id: number; marked: boolean}, c: GraphQLContext
+    ) => {
+      const status = a.marked ? "UNDER_INVESTIGATION" : "ACTIVE";
+      const s = await c.suspects.setStatus(a.id, status);
+      await c.audit.record(
+        a.marked ? "Suspect.Marked" : "Suspect.Unmarked",
+        `Suspect:${s.id}`, s.fullName, a.marked ? "HIGH" : "INFO");
       return s;
     },
     updateSuspect: async (
@@ -354,15 +518,141 @@ export const resolvers = {
       await c.audit.record("Suspect.Update", `Suspect:${a.id}`, s.fullName);
       return s;
     },
+    setSuspectPhoto: async (
+      _p: unknown,
+      a: {id: number; photoData?: string | null},
+      c: GraphQLContext
+    ) => {
+      const s = await c.suspects.setPhoto(a.id, a.photoData ?? null);
+      await c.audit.record("Suspect.Photo", `Suspect:${a.id}`,
+        a.photoData ? "set" : "cleared");
+      return s;
+    },
     deleteSuspect: async (_p: unknown, a: {id: number}, c: GraphQLContext) => {
       const ok = await c.suspects.deleteSuspect(a.id);
       if (ok) await c.audit.record("Suspect.Delete", `Suspect:${a.id}`);
       return ok;
     },
     generateLinks: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const links = await c.analysis.generateLinks();
+      const links = await c.analysis.generateLinks(await ignoredTxnIds(c));
       await c.audit.record("Link.Generate", null, `${links.length} links`);
       return links;
+    },
+    generateSampleData: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const active = await c.session.getCurrentCase();
+      if (!active) throw new Error("Эхлээд кейс сонгоно уу.");
+      const scope = await caseScope(c);
+      const ids = scope ? [...scope.suspectIds] : [];
+      if (ids.length < 2) {
+        throw new Error("Кейст хангалттай хүн алга — эхлээд өгөгдөл оруулна уу.");
+      }
+      const r = await c.data.generateSampleData(ids);
+      // NOTE: never touch the analyst's noise filter here — clearing it wipes
+      // their manually-marked "unimportant" transactions. Left untouched.
+      // Rebuild the link network so the new calls/devices become connections.
+      const links = await c.analysis.generateLinks(await ignoredTxnIds(c));
+      await c.audit.record("Data.Sample", null,
+        `+${r.networkCalls} calls, ~${r.enrichedCalls} enriched`);
+      return {...r, linksCreated: links.length};
+    },
+    createManualLink: async (
+      _p: unknown,
+      a: {input: {sourceSuspectId: number; targetSuspectId: number;
+        description: string; confidenceLevel?: string; caseGraphId?: number}},
+      c: GraphQLContext
+    ) => {
+      const {sourceSuspectId, targetSuspectId, description} = a.input;
+      if (sourceSuspectId === targetSuspectId) {
+        throw new Error("Cannot connect a suspect to themselves");
+      }
+      if (!description?.trim()) throw new Error("Relationship label is required");
+      const link = await c.data.createLink({
+        sourceSuspectId,
+        targetSuspectId,
+        linkType: "MANUAL",
+        description: description.trim(),
+        strength: 3,
+        confidenceLevel: (a.input.confidenceLevel as never) ?? "HIGH",
+        // The board this connection belongs to (null = default/unsaved view).
+        caseGraphId: a.input.caseGraphId ?? null,
+      });
+      await c.audit.record("Connection.Create", `Link:${link.id}`,
+        `${sourceSuspectId}↔${targetSuspectId}: ${description.trim()}`);
+      return link;
+    },
+    updateManualLink: async (
+      _p: unknown,
+      a: {id: number; description: string; confidenceLevel?: string},
+      c: GraphQLContext
+    ) => {
+      if (!a.description?.trim()) throw new Error("Relationship label is required");
+      const link = await c.data.updateLink(a.id, {
+        description: a.description.trim(),
+        ...(a.confidenceLevel
+          ? {confidenceLevel: a.confidenceLevel as never} : {}),
+      });
+      await c.audit.record("Connection.Update", `Link:${a.id}`,
+        a.description.trim());
+      return link;
+    },
+    deleteManualLink: async (
+      _p: unknown,
+      a: {id: number},
+      c: GraphQLContext
+    ) => {
+      const ok = await c.data.deleteLink(a.id);
+      if (ok) await c.audit.record("Connection.Delete", `Link:${a.id}`);
+      return ok;
+    },
+    saveCaseNoiseFilter: async (
+      _p: unknown,
+      a: {input: NoiseFilter},
+      c: GraphQLContext
+    ) => {
+      const active = await c.session.getCurrentCase();
+      if (!active) throw new Error("No active case");
+      const saved = await c.noise.saveForCase(active.id, a.input);
+      await c.audit.record("NoiseFilter.Save", `Case:${active.id}`,
+        `floor=${saved.minAmount} pairs=${saved.ignoredPairs.length} `
+        + `txns=${saved.ignoredTxns.length} rules=${saved.descRules.length}`);
+      return saved;
+    },
+    createCaseGraph: async (
+      _p: unknown,
+      a: {name: string; state: string; claimUnassignedLinks?: boolean},
+      c: GraphQLContext
+    ) => {
+      const active = await c.session.getCurrentCase();
+      if (!active) throw new Error("No active case");
+      const g = await c.graphs.create(active.id, a.name, a.state);
+      // "Save current graph" from the default (no-board) view: adopt the manual
+      // connections drawn there into this new board so they travel with it.
+      if (a.claimUnassignedLinks) {
+        await c.data.claimUnassignedManualLinks(g.id);
+      }
+      await c.audit.record("Graph.Create", `Graph:${g.id}`, g.name);
+      return g;
+    },
+    updateCaseGraph: async (
+      _p: unknown,
+      a: {id: number; name?: string; state?: string},
+      c: GraphQLContext
+    ) => {
+      const g = await c.graphs.update(a.id, {name: a.name, state: a.state});
+      await c.audit.record("Graph.Update", `Graph:${a.id}`, g.name);
+      return g;
+    },
+    deleteCaseGraph: async (
+      _p: unknown,
+      a: {id: number},
+      c: GraphQLContext
+    ) => {
+      // Deleting a board also removes the manual connections that belong to it,
+      // so they don't linger as orphans that show in no view.
+      await c.data.deleteManualLinksForGraph(a.id);
+      const ok = await c.graphs.remove(a.id);
+      if (ok) await c.audit.record("Graph.Delete", `Graph:${a.id}`);
+      return ok;
     },
     runAccountAnalysis: async (
       _p: unknown,
@@ -390,25 +680,37 @@ export const resolvers = {
       _p: unknown,
       a: {content: string; kind: ImportKind; bankAccountId?: number;
         filename?: string; sheetName?: string; subjectSuspectId?: number;
-        mapping?: {field: string; column: string}[]},
+        subjectNumber?: string;
+        mapping?: {field: string; column: string}[]; uploadId?: string},
       c: GraphQLContext
     ) => {
+      // Imported data ALWAYS belongs to a case — there is no such thing as a
+      // caseless import. Refuse before touching the file so nothing can land
+      // unscoped in the database.
+      const active = await c.session.getCurrentCase();
+      if (!active) {
+        if (a.uploadId) uploadRelease(a.uploadId);
+        throw new Error("Импорт хийхийн өмнө кейс сонгоно уу.");
+      }
       const mapping = a.mapping
         ? Object.fromEntries(a.mapping.map((m) => [m.field, m.column]))
         : null;
+      const content = a.uploadId ? uploadContent(a.uploadId) : a.content;
       const sum = await c.imports.importData({
-        content: a.content, kind: a.kind,
+        content, kind: a.kind,
         bankAccountId: a.bankAccountId ?? null,
         filename: a.filename ?? null, sheetName: a.sheetName ?? null,
-        subjectSuspectId: a.subjectSuspectId ?? null, mapping,
+        subjectSuspectId: a.subjectSuspectId ?? null,
+        subjectNumber: a.subjectNumber ?? null, mapping,
       });
       await c.audit.record("Import.Run", sum.domain,
         `${sum.importedRows}/${sum.totalRows} rows`);
-      // Imported data belongs to the case the analyst is working in: link
-      // touched accounts / matched suspects / new calls as evidence so the
-      // scoped data pages show the import immediately.
-      const active = await c.session.getCurrentCase();
-      if (active && sum.importedRows > 0) {
+      // Link the import to the active case by tagging its OWNERS — suspects and
+      // accounts (a bounded handful). Their transactions and call records scope
+      // into the case through that ownership, so we never tag the potentially
+      // thousands of individual rows (that turned a CDR import into ~5 DB writes
+      // per call → gateway timeout).
+      if (sum.importedRows > 0) {
         const src = a.filename ?? "импорт";
         for (const id of sum.touchedSuspectIds ?? []) {
           await c.evidence.tag(active.id, "SUSPECT", id,
@@ -418,13 +720,17 @@ export const resolvers = {
           await c.evidence.tag(active.id, "BANK_ACCOUNT", id,
             `Импорт: ${src}`).catch(() => undefined);
         }
-        for (const id of sum.newCallRecordIds ?? []) {
-          await c.evidence.tag(active.id, "CALL_RECORD", id,
-            `Импорт: ${src}`).catch(() => undefined);
-        }
       }
+      // A chunked upload has served its purpose once the import runs; free it
+      // so the staging buffer does not linger until the TTL sweep.
+      if (a.uploadId) uploadRelease(a.uploadId);
       return sum;
     },
+    uploadStart: () => uploadStart(),
+    uploadAppend: (
+      _p: unknown,
+      a: {uploadId: string; chunk: string}
+    ) => uploadAppend(a.uploadId, a.chunk),
     tagEvidence: (
       _p: unknown,
       a: {caseFileId: number; sourceType: EvidenceSourceType; sourceId: number;
@@ -448,8 +754,17 @@ export const resolvers = {
         `language=${saved.language} currency=${saved.aml.currencySymbol}`);
       return saved;
     },
-    setActiveCase: (_p: unknown, a: {caseFileId?: number}, c: GraphQLContext) =>
-      c.session.setCurrentCase(a.caseFileId ?? null),
+    setActiveCase: async (
+      _p: unknown, a: {caseFileId?: number}, c: GraphQLContext
+    ) => {
+      const user = requireUser(c);
+      const id = a.caseFileId ?? null;
+      // A detective may only open a case they have access to.
+      if (id != null && !(await c.auth.canAccessCase(user, id))) {
+        throw new Error("Энэ кейс рүү хандах эрхгүй байна");
+      }
+      return c.session.setCurrentCase(id);
+    },
     togglePin: (_p: unknown, a: {suspectId: number}, c: GraphQLContext) =>
       c.session.togglePin(a.suspectId),
     generateAnbChart: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
@@ -482,7 +797,10 @@ export const resolvers = {
       a: {input: Record<string, unknown>},
       c: GraphQLContext
     ) => {
-      const cf = await c.data.createCaseFile(a.input);
+      const user = requireUser(c);
+      // Stamp the creator as owner so a detective's own cases stay scoped to
+      // them without needing an explicit membership grant.
+      const cf = await c.data.createCaseFile({...a.input, ownerUserId: user.id});
       await c.audit.record("CaseFile.Create", `CaseFile:${cf.id}`, cf.caseId);
       return cf;
     },
@@ -517,6 +835,9 @@ export const resolvers = {
       a: {sourceCaseFileIds: number[]; targetCaseFileId: number},
       c: GraphQLContext
     ) => {
+      // Merging detectives' cases (and their data) into one big case is a
+      // boss-only power.
+      requireAdmin(c);
       const cf = await c.data.mergeCases(
         a.sourceCaseFileIds, a.targetCaseFileId);
       const current = await c.session.getCurrentCase();
@@ -526,6 +847,79 @@ export const resolvers = {
       await c.audit.record("CaseFile.Merge", `CaseFile:${cf.id}`,
         `sources=[${a.sourceCaseFileIds.join(",")}]`);
       return cf;
+    },
+    // --- Auth & accounts --------------------------------------------------
+    login: async (
+      _p: unknown,
+      a: {username: string; password: string; deviceId?: string},
+      c: GraphQLContext
+    ) => {
+      const res = await c.auth.login(a.username, a.password, a.deviceId ?? null);
+      await c.audit.record("Auth.Login", `User:${res.user.id}`,
+        res.user.username);
+      return res;
+    },
+    logout: (_p: unknown, _a: unknown, c: GraphQLContext) =>
+      c.auth.logout(c.token),
+    createUser: async (
+      _p: unknown,
+      a: {input: {username: string; password: string; fullName?: string;
+        role?: "ADMIN" | "DETECTIVE"}},
+      c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const u = await c.auth.createUser(a.input);
+      await c.audit.record("User.Create", `User:${u.id}`,
+        `${u.username} (${u.role})`);
+      return u;
+    },
+    setUserActive: async (
+      _p: unknown, a: {userId: number; active: boolean}, c: GraphQLContext
+    ) => {
+      const admin = requireAdmin(c);
+      if (a.userId === admin.id) {
+        throw new Error("Өөрийн бүртгэлээ идэвхгүй болгож болохгүй");
+      }
+      const u = await c.auth.setActive(a.userId, a.active);
+      await c.audit.record("User.SetActive", `User:${u.id}`,
+        a.active ? "activated" : "deactivated");
+      return u;
+    },
+    resetUserPassword: async (
+      _p: unknown, a: {userId: number; password: string}, c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const ok = await c.auth.resetPassword(a.userId, a.password);
+      await c.audit.record("User.ResetPassword", `User:${a.userId}`, "");
+      return ok;
+    },
+    // Boss forgets a detective's device binding so they can log in from a new
+    // computer (which re-registers on first login).
+    resetUserDevice: async (
+      _p: unknown, a: {userId: number}, c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const ok = await c.auth.resetDevices(a.userId);
+      await c.audit.record("User.ResetDevice", `User:${a.userId}`, "");
+      return ok;
+    },
+    grantCaseAccess: async (
+      _p: unknown, a: {caseFileId: number; userId: number}, c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const ok = await c.auth.grantAccess(a.caseFileId, a.userId);
+      await c.audit.record("CaseFile.GrantAccess",
+        `CaseFile:${a.caseFileId}`, `User:${a.userId}`);
+      return ok;
+    },
+    revokeCaseAccess: async (
+      _p: unknown, a: {caseFileId: number; userId: number}, c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const ok = await c.auth.revokeAccess(a.caseFileId, a.userId);
+      await c.audit.record("CaseFile.RevokeAccess",
+        `CaseFile:${a.caseFileId}`, `User:${a.userId}`);
+      return ok;
     },
     addCaseNote: async (
       _p: unknown,
@@ -537,6 +931,13 @@ export const resolvers = {
       await c.audit.record("CaseNote.Add", `CaseNote:${id}`);
       return id;
     },
+  },
+
+  User: {
+    // Whether this account is currently locked to a device (admin UI shows a
+    // reset button when true). Only meaningful for detectives.
+    deviceBound: (u: {id: number}, _a: unknown, c: GraphQLContext) =>
+      c.auth.hasBoundDevice(u.id),
   },
 
   Suspect: {
@@ -558,5 +959,19 @@ export const resolvers = {
 
   BankAccount: {
     maskedNumber: (a: BankAccount) => maskedNumber(a.accountNumber),
+  },
+
+  SuspectLink: {
+    // The DB stores contributing txn ids as a JSON string; expose a real list
+    // so the client can re-total the link under the active noise filter.
+    contributingTxnIds: (l: {contributingTxnIds: string | null}) => {
+      if (typeof l.contributingTxnIds !== "string") return [];
+      try {
+        const v = JSON.parse(l.contributingTxnIds);
+        return Array.isArray(v) ? v.filter((n) => Number.isFinite(n)) : [];
+      } catch {
+        return [];
+      }
+    },
   },
 };
