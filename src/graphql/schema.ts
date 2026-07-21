@@ -851,7 +851,7 @@ export const typeDefs = /* GraphQL */ `
     dirty: Boolean!
   }
 
-  "Running build identity — shown in Settings. The top-level fields describe the backend; repos covers every checkout."
+  "Running build identity — shown in Settings. Top-level fields describe the backend; \`repos\` covers every checkout."
   type VersionInfo {
     version: String!
     commit: String!
