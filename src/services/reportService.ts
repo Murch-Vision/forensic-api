@@ -312,15 +312,13 @@ export class ReportService {
       });
     }
 
-    // Flagged people are always in. Above a threshold, so is anyone else who
-    // actually cleared it — that is the whole point of setting one.
-    const candidates = everyone.filter((s) =>
-      isMarked(s) || (minAmount > 0 && (bySuspect.get(s.id)?.length ?? 0) > 0));
+    // ONLY the flagged suspects get a section. Their counterparties are already
+    // named on every ledger row — giving each one its own section as well was
+    // hundreds of pages of noise.
+    const candidates = everyone.filter(isMarked);
     if (candidates.length === 0) {
-      throw new Error(minAmount > 0
-        ? `Сэжигтэнтэй холбоотой, ${mnt(minAmount)}-с дээш гүйлгээ олдсонгүй. `
-          + "Босгоо бууруулна уу."
-        : "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
+      throw new Error(
+        "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
     }
 
     const blocks = candidates.map((s) => {
@@ -328,16 +326,11 @@ export class ReportService {
         .slice()
         .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
       const {income, outgoing} = totals(txns);
-      return {
-        suspect: s, txns, income, outgoing, range: dateRange(txns),
-        marked: isMarked(s),
-      };
+      return {suspect: s, txns, income, outgoing, range: dateRange(txns)};
     });
-    // Flagged subjects first, then the biggest movers — the reason a threshold
-    // was set is to surface those.
+    // Biggest movers first.
     blocks.sort((a, b) =>
-      Number(b.marked) - Number(a.marked)
-      || (b.income + b.outgoing) - (a.income + a.outgoing)
+      (b.income + b.outgoing) - (a.income + a.outgoing)
       || a.suspect.fullName.localeCompare(b.suspect.fullName));
 
     const {doc, done} = startDoc();
@@ -349,23 +342,16 @@ export class ReportService {
     const span = stamps.length
       ? `${formatDateLike(stamps[0])} — ${formatDateLike(stamps[stamps.length - 1])}`
       : "—";
-    const markedCount = blocks.filter((b) => b.marked).length;
     const thresholdNote = minAmount > 0 ? `      Босго: ≥ ${mnt(minAmount)}` : "";
-    const who = minAmount > 0
-      ? `Сэжигтэн: ${markedCount}      `
-        + `Харьцсан этгээд: ${blocks.length - markedCount}`
-      : `Тэмдэглэсэн сэжигтэн: ${markedCount}`;
     doc.fontSize(9.5).fillColor(INK).text(
-      `${who}      ` +
+      `Тэмдэглэсэн сэжигтэн: ${blocks.length}      ` +
       `Нийт гүйлгээ: ${totalTxns}      Хугацаа: ${span}${thresholdNote}`,
       ML, doc.y, {width: CW, align: "center", lineBreak: false});
     doc.y += 20;
 
     // Cover breakdown table (no combined cards, no net — per request). Now
     // carries a bank-account count column.
-    sectionBar(doc, minAmount > 0
-      ? `СЭЖИГТЭН БОЛОН ХАРЬЦСАН ЭТГЭЭД (${blocks.length})`
-      : `СЭЖИГТНҮҮД (${blocks.length})`);
+    sectionBar(doc, `СЭЖИГТНҮҮД (${blocks.length})`);
     const summaryCols: LedgerCol[] = [
       {label: "Сэжигтэн", x: 40, w: 128, align: "left"},
       {label: "Данс", x: 168, w: 34, align: "right"},
@@ -379,10 +365,7 @@ export class ReportService {
     blocks.forEach((b, i) => {
       const y = ensureRow(doc, summaryCols);
       if (i % 2 === 1) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA);
-      // "*" marks the flagged suspects once non-suspects join the report.
-      cell(doc, b.marked && minAmount > 0
-        ? `* ${b.suspect.fullName}` : b.suspect.fullName,
-      summaryCols[0], y, INK);
+      cell(doc, b.suspect.fullName, summaryCols[0], y, INK);
       cell(doc, String(b.suspect.bankAccounts.length), summaryCols[1], y, INK);
       cell(doc, String(b.txns.length), summaryCols[2], y, INK);
       cell(doc, b.range.from, summaryCols[3], y, MUTED);
