@@ -1,0 +1,86 @@
+# Proves the API installs on Windows without a C++ toolchain.
+#
+# better-sqlite3 is a native addon: `prebuild-install` fetches a binary matching
+# the Node ABI, and only falls back to `node-gyp rebuild` when none is published.
+# That fallback is the failure we are guarding against — v11 had no ABI 147
+# (Node 26) prebuild, so it tried to compile and died on V8 APIs removed in
+# Node 26. A source build can also *succeed* on a GitHub runner (MSVC is
+# preinstalled) and silently mask a missing prebuild, so passing the install is
+# not enough: we assert the addon arrived as a prebuilt binary.
+name: windows-build
+
+on:
+  push:
+    branches: [windows]
+
+jobs:
+  install:
+    name: node ${{ matrix.node }} / windows
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Node 26 (ABI 147) is the release that exposed the gap — v11 published
+        # no prebuild for it. Kept as a matrix so another version is a one-line
+        # addition if an older ABI ever needs covering.
+        node: [26]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Must precede setup-node so that `cache: pnpm` can find the binary.
+      # Pinned to maestro's version — pnpm 11 is what generated the lockfile.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Assert the addon came from a prebuild, not a source build
+        shell: pwsh
+        run: |
+          # Resolve through pnpm's symlink farm rather than guessing the path.
+          $pkg = node -p "require('path').dirname(require.resolve('better-sqlite3/package.json'))"
+          $abi = node -p "process.versions.modules"
+          Write-Host "better-sqlite3 at $pkg (node $(node -v), ABI $abi)"
+
+          $addon = Join-Path $pkg 'build/Release/better_sqlite3.node'
+          if (-not (Test-Path $addon)) {
+            throw "no better_sqlite3.node — the install script produced nothing for ABI $abi"
+          }
+
+          # node-gyp leaves these behind; prebuild-install never creates them.
+          $built = Get-ChildItem (Join-Path $pkg 'build') -Recurse `
+                     -Include *.vcxproj, *.obj -ErrorAction SilentlyContinue
+          if ($built) {
+            throw "compiled from source (found $($built[0].Name)) — no prebuild published for ABI $abi"
+          }
+
+          Write-Host "OK: prebuilt binary for ABI $abi"
+
+      # bash (Git Bash, preinstalled on the runner) purely so the JS can be a
+      # plain quoted heredoc — PowerShell here-strings are needlessly fragile.
+      - name: Smoke-test the native addon
+        shell: bash
+        run: |
+          node - <<'JS'
+          const Database = require('better-sqlite3');
+          const db = new Database(':memory:');
+          db.pragma('foreign_keys = ON');   // knexfile.ts sets this on every connection
+          db.exec('create table t (a integer primary key, b text)');
+          db.prepare('insert into t (b) values (?)').run('ok');
+          const row = db.prepare('select a, b from t').get();
+          if (row.a !== 1 || row.b !== 'ok') throw new Error('bad row: ' + JSON.stringify(row));
+          const {v} = db.prepare('select sqlite_version() v').get();
+          console.log(`sqlite ${v} works on ${process.version} (ABI ${process.versions.modules})`);
+          db.close();
+          JS
+
+      - name: Typecheck
+        run: pnpm build
