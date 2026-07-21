@@ -1,9 +1,0 @@
-- 2026-07-02: setCaseStatus mutation for the global case status control.
-- 2026-07-02: bank imports auto-resolve the subject's account (bankAccountId optional).
-- 2026-07-02: mergeCases mutation — fold cases into one, archive the drained sources.
-- 2026-07-02: imports self-attribute rows (phones→suspects, account column→accounts); subject optional.
-- 2026-07-02: globalPeople query — cross-case person grouping for the people database (user wish).
-- 2026-07-02: evidence list queries scoped to the active case via SUSPECT evidence entries (no case = all data).
-- 2026-07-03: updateCaseFile mutation — edit caseName/description/priority/leadInvestigator (caseId + status stay managed elsewhere).
-- 2026-07-03: imports link into the active case (evidence entries); generic signed + balance-before bank formats; clearAllData mutation deleted.
-- 2026-07-03: txn currency (MNT default), import creates people by Регистрийн дугаар (dedup), closing/archiving unselects the case. (co-authored with owner)
