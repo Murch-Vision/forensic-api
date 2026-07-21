@@ -239,10 +239,11 @@ export class ReportService {
 
   // Account-inspection report (Mongolian). Scope depends on the threshold:
   //   minAmount = 0  → the people flagged UNDER_INVESTIGATION.
-  //   minAmount > 0  → EVERYONE with a transaction at/above the threshold,
-  //                    flagged or not, plus the flagged people regardless.
-  // A subject's ledger lists transactions with ANY counterparty holding a bank
-  // account number (not only other suspects). Ordered by time.
+  //   minAmount > 0  → EVERYONE on EITHER SIDE of a transaction at/above the
+  //                    threshold, flagged or not, plus the flagged regardless.
+  // "Either side" matters: statements are imported for a few account holders,
+  // so most people in a case only ever appear as the counterparty on someone
+  // else's statement. Ordered by time.
   async generateMarkedSuspectsPdf(minAmount = 0): Promise<Buffer> {
     const everyone = await this.db.getSuspectsWithRelations();
     const isMarked = (s: {status: string}) =>
@@ -258,17 +259,45 @@ export class ReportService {
     // threshold the candidate set is small, but above one it is everybody.
     const accounts = await this.db.getAllBankAccounts();
     const suspectByAccount = new Map<number, number>();
+    const byAccountNumber = new Map<string, BankAccount>();
+    const accountById = new Map<number, BankAccount>();
     for (const a of accounts) {
+      accountById.set(a.id, a);
       if (a.suspectId != null) suspectByAccount.set(a.id, a.suspectId);
+      const num = a.accountNumber?.trim();
+      if (num) byAccountNumber.set(num, a);
     }
+
+    // A transaction has TWO parties, and only one of them owns the statement
+    // it was imported from. Attributing it to the account holder alone caps the
+    // report at the handful of people whose statements were imported — everyone
+    // else in the case only ever appears as a counterparty.
     const bySuspect = new Map<number, BankTransaction[]>();
-    for (const t of await this.db.getAllTransactions()) {
-      if (!qualifies(t)) continue;
-      const sid = suspectByAccount.get(t.bankAccountId);
-      if (sid == null) continue;
+    const add = (sid: number | undefined, t: BankTransaction) => {
+      if (sid == null) return;
       const list = bySuspect.get(sid) ?? [];
       list.push(t);
       bySuspect.set(sid, list);
+    };
+    for (const t of await this.db.getAllTransactions()) {
+      if (!qualifies(t)) continue;
+      const holderSid = suspectByAccount.get(t.bankAccountId);
+      add(holderSid, t);
+
+      // The far side of the same transaction, when we can identify whose
+      // account that number is.
+      const cpAccount = byAccountNumber.get((t.counterpartyAccount ?? "").trim());
+      const cpSid = cpAccount?.suspectId ?? undefined;
+      if (cpSid == null || cpSid === holderSid) continue;
+      // Seen from the counterparty, the flow is reversed and the "other party"
+      // is the account holder — otherwise their ledger reads inside out.
+      const holderAccount = accountById.get(t.bankAccountId);
+      add(cpSid, {
+        ...t,
+        type: t.type.toLowerCase() === "credit" ? "DEBIT" : "CREDIT",
+        counterpartyAccount: holderAccount?.accountNumber ?? null,
+        counterpartyName: holderAccount?.accountHolderName ?? null,
+      });
     }
 
     // Flagged people are always in. Above a threshold, so is anyone else who
