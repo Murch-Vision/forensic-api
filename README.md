@@ -20,6 +20,17 @@ pnpm dev          # watch mode
 
 The GraphQL API listens on `PORT` (default `4000`).
 
+| Variable | Purpose |
+| --- | --- |
+| `PORT` | Listen port. Default `4000`. |
+| `CORS_ORIGIN` | Comma-separated allow-list of browser origins, e.g. `http://localhost:5173,http://192.168.1.50:5173`. Unset reflects whichever origin asks — right for an on-premise box reached by localhost, hostname and LAN IP alike. |
+| `BODY_LIMIT` | Max request body. Default `50mb`; imported statements arrive base64-encoded in the mutation body. |
+| `DB_CLIENT` / `DB_FILE` / `DATA_DIR` | SQLite by default; `DB_CLIENT=pg` switches to Postgres. |
+| `REPORT_LOCATION` | Location printed in the PDF report header. |
+
+`GET /health` answers `{"ok":true}` without touching the database, for uptime
+checks and the launcher.
+
 ## Windows: start automatically
 
 Autostart is a plain batch file in your **Startup folder**. No Task Scheduler,

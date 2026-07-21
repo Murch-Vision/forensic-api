@@ -6,8 +6,11 @@
  * Purpose     :
  * Description :
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
+import http from "node:http";
 import {ApolloServer} from "@apollo/server";
-import {startStandaloneServer} from "@apollo/server/standalone";
+import {expressMiddleware} from "@apollo/server/express4";
+import express from "express";
+import cors from "cors";
 import db from "./db/knex";
 import {typeDefs} from "./graphql/schema";
 import {resolvers, type GraphQLContext} from "./graphql/resolvers";
@@ -32,6 +35,30 @@ import {NoiseFilterService} from "./services/noiseFilterService";
 import {CaseGraphService} from "./services/caseGraphService";
 import {AuthService} from "./services/authService";
 import {UpdateService} from "./services/updateService";
+
+// CORS_ORIGIN is a comma-separated allow-list, e.g.
+//   CORS_ORIGIN=http://localhost:5173,http://192.168.1.50:5173
+// Unset reflects whatever origin asked, which is what an on-premise install
+// needs: the workstation is reached by localhost, by hostname and by LAN IP,
+// and all three are the same machine.
+function corsOptions(): cors.CorsOptions {
+  const allowed = (process.env.CORS_ORIGIN || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return {
+    // Reflecting the origin (rather than "*") is what makes credentials and a
+    // preflighted Authorization header work at all.
+    origin: allowed.length > 0 ? allowed : true,
+    credentials: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type", "Authorization", "apollo-require-preflight",
+      "x-apollo-operation-name",
+    ],
+    maxAge: 86400,
+  };
+}
 
 async function main(): Promise<void> {
   const server = new ApolloServer<GraphQLContext>({typeDefs, resolvers});
@@ -81,12 +108,27 @@ async function main(): Promise<void> {
     };
   };
 
-  const {url} = await startStandaloneServer(server, {
-    listen: {port},
-    context,
-  });
+  // startStandaloneServer gives no way to configure CORS, so the browser was
+  // stuck with Apollo's defaults: no Authorization on preflight and no way to
+  // allow the workstation's own origin. Run the middleware on express instead.
+  await server.start();
 
-  console.log(`Forensic Analyst GraphQL API ready at ${url}`);
+  const app = express();
+  app.use(cors(corsOptions()));
+  // Imported statements arrive as base64 in the mutation body, so the default
+  // 100kb limit rejects real evidence files.
+  app.use(express.json({limit: process.env.BODY_LIMIT || "50mb"}));
+  // Plain liveness probe for the launcher / uptime checks.
+  app.get("/health", (_req, res) => {
+    res.json({ok: true});
+  });
+  app.use("/", expressMiddleware(server, {context}));
+
+  const httpServer = http.createServer(app);
+  await new Promise<void>((resolve) => httpServer.listen({port}, resolve));
+
+  console.log(`Forensic Analyst GraphQL API ready at http://localhost:${port}/`);
+  console.log(`CORS: ${process.env.CORS_ORIGIN || "any origin (reflected)"}`);
 }
 
 main().catch((err) => {
