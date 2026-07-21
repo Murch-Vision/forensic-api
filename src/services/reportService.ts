@@ -687,10 +687,10 @@ function cell(
   doc.fontSize(7.6);
   let s = text ?? "";
   if (doc.widthOfString(s) > maxW) {
-    while (s.length > 1 && doc.widthOfString(`${s}…`) > maxW) {
+    while (s.length > 1 && doc.widthOfString(`${s}...`) > maxW) {
       s = s.slice(0, -1);
     }
-    s = `${s}…`;
+    s = `${s}...`;
   }
   const x = c.align === "right" ? c.x : c.x + pad;
   doc.fillColor(color).text(s, x, y,
