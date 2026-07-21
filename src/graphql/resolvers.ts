@@ -323,10 +323,11 @@ export const resolvers = {
       };
     },
     reportSuspectPdf: async (
-      _p: unknown, a: {suspectId: number}, c: GraphQLContext
+      _p: unknown, a: {suspectId: number; minAmount?: number}, c: GraphQLContext
     ) => {
       const suspect = await c.suspects.getSuspectById(a.suspectId);
-      const buf = await c.reports.generateSuspectPdf(a.suspectId);
+      const buf = await c.reports.generateSuspectPdf(
+        a.suspectId, a.minAmount ?? 0);
       const safe = (suspect?.suspectId ?? `Suspect-${a.suspectId}`)
         .replace(/[^A-Za-z0-9_-]/g, "");
       const filename = `Suspect-${safe}.pdf`;
@@ -339,9 +340,9 @@ export const resolvers = {
       };
     },
     reportMarkedSuspectsPdf: async (
-      _p: unknown, _a: unknown, c: GraphQLContext
+      _p: unknown, a: {minAmount?: number}, c: GraphQLContext
     ) => {
-      const buf = await c.reports.generateMarkedSuspectsPdf();
+      const buf = await c.reports.generateMarkedSuspectsPdf(a.minAmount ?? 0);
       const filename = "MarkedSuspects-Transactions.pdf";
       await c.audit.record("Report.Generated", `File:${filename}`,
         "Marked suspects transaction report");

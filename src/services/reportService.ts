@@ -676,14 +676,25 @@ function pill(
     {lineBreak: false});
 }
 
-// One ledger cell with 6px padding on the aligned side.
+// One ledger cell with 6px padding on the aligned side. The text is
+// hard-truncated to a single line (pdfkit's lineBreak:false/ellipsis still
+// wraps long Cyrillic strings, so we clip manually).
 function cell(
   doc: PDFKit.PDFDocument, text: string, c: LedgerCol, y: number, color: string
 ): void {
   const pad = 6;
+  const maxW = c.w - pad;
+  doc.fontSize(7.6);
+  let s = text ?? "";
+  if (doc.widthOfString(s) > maxW) {
+    while (s.length > 1 && doc.widthOfString(`${s}…`) > maxW) {
+      s = s.slice(0, -1);
+    }
+    s = `${s}…`;
+  }
   const x = c.align === "right" ? c.x : c.x + pad;
-  doc.fontSize(7.6).fillColor(color).text(text, x, y,
-    {width: c.w - pad, align: c.align, lineBreak: false, ellipsis: true});
+  doc.fillColor(color).text(s, x, y,
+    {width: maxW, align: c.align, lineBreak: false});
 }
 
 // Filled table header band.

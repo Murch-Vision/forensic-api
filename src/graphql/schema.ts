@@ -890,10 +890,10 @@ export const typeDefs = /* GraphQL */ `
     previewImport(content: String!, filename: String, sheetName: String, uploadId: String): ImportPreview!
     excelSheets(content: String!, filename: String!, uploadId: String): [String!]!
     reportPdf: ReportFile!
-    "Per-suspect financial PDF: profile, income/outgoing totals and the transaction ledger."
-    reportSuspectPdf(suspectId: Int!): ReportFile!
-    "Financial PDF for ALL marked suspects (status UNDER_INVESTIGATION): combined summary + a section each."
-    reportMarkedSuspectsPdf: ReportFile!
+    "Per-suspect financial PDF: profile, income/outgoing totals and the transaction ledger. minAmount hides transactions below the given amount."
+    reportSuspectPdf(suspectId: Int!, minAmount: Int): ReportFile!
+    "Financial PDF for ALL marked suspects (status UNDER_INVESTIGATION): combined summary + a section each. minAmount keeps only single transactions at/above the given amount."
+    reportMarkedSuspectsPdf(minAmount: Int): ReportFile!
     reportExcel: ReportFile!
     reportWord: ReportFile!
     screenSuspect(id: Int!): [SanctionsHit!]!
