@@ -53,10 +53,14 @@ schtasks /End    /TN "ForensicAnalystBackend"    &  :: stop it
 scripts\uninstall-startup-windows.bat            &  :: remove it
 ```
 
-> Requires Node.js (which provides `npm`) on the system `PATH`. On self-update
-> the launcher also pulls the sibling frontend checkout when `..\forensic-frontend`
-> exists (via the `FAW_UPDATE_REPOS` env var). PowerShell installers
-> (`install-startup-windows.ps1`) are still included as an alternative.
+> Requires Node.js installed **for all users** — the boot task runs as `SYSTEM`,
+> which only sees the machine `PATH`, so a per-user Node install (nvm, fnm) makes
+> the task start and die silently. On self-update the launcher also pulls the
+> sibling frontend checkout when `..\forensic-frontend` exists (via the
+> `FAW_UPDATE_REPOS` env var).
+>
+> If nothing comes up after a restart, read `logs\startup.log` — the launcher
+> records every step there, since there is no console at boot.
 
 ## Self-update
 

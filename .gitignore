@@ -8,3 +8,4 @@ data/
 # desktop sidecar build output
 desktop/dist/
 .pnpm-store/
+logs/
