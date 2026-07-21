@@ -22,42 +22,41 @@ The GraphQL API listens on `PORT` (default `4000`).
 
 ## Windows: start automatically at boot
 
-Everything needed lives in [`scripts/`](scripts/):
+The launcher uses **`npm`** (not pnpm) and runs from the **Command Prompt**, so
+it works reliably from the `SYSTEM` account at boot. Everything lives in
+[`scripts/`](scripts/):
 
 | Script | Purpose |
 | --- | --- |
-| `start-windows.bat` | Launcher — installs deps, runs migrations, starts the server. Also a self-update **restart loop** (honours exit code 42). |
-| `install-startup-windows.ps1` | Registers a Scheduled Task that runs the launcher **at boot**. |
-| `uninstall-startup-windows.ps1` | Removes that task. |
-| `self-update.bat` | `git pull` + restart the Scheduled Task. |
+| `start-windows.bat` | Launcher — `npm install` (first run), `npm run migrate`, `npm run start`. Also a self-update **restart loop** (honours exit code 42). |
+| `install-startup-windows.bat` | Registers the boot Scheduled Task (uses `schtasks`, no PowerShell). |
+| `uninstall-startup-windows.bat` | Removes that task. |
+| `self-update.bat` | `git pull` + `npm install` + restart the Scheduled Task. |
 
-### Install (run once)
+### Install (run once) — Command Prompt
 
-Open **PowerShell as Administrator** in the project root and run:
+Open **Command Prompt as Administrator** (right-click → *Run as administrator*),
+`cd` to the project root, and run:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install-startup-windows.ps1
+```bat
+scripts\install-startup-windows.bat
 ```
 
-This creates a Scheduled Task named **`ForensicAnalystBackend`** that launches the
-backend on every system boot (runs as `SYSTEM`, auto-restarts on failure).
+This creates a Scheduled Task named **`ForensicAnalystBackend`** that runs
+`start-windows.bat` on every system boot as `SYSTEM` (elevated).
 
-Handy variants:
+Handy commands:
 
-```powershell
-# Start at user logon instead of at system boot
-powershell -ExecutionPolicy Bypass -File scripts\install-startup-windows.ps1 -AtLogon
-
-# Start it now without rebooting
-Start-ScheduledTask -TaskName ForensicAnalystBackend
-
-# Remove it
-powershell -ExecutionPolicy Bypass -File scripts\uninstall-startup-windows.ps1
+```bat
+schtasks /Run    /TN "ForensicAnalystBackend"    &  :: start it now, no reboot
+schtasks /End    /TN "ForensicAnalystBackend"    &  :: stop it
+scripts\uninstall-startup-windows.bat            &  :: remove it
 ```
 
-> If `pnpm` isn't on `PATH`, the launcher falls back to `corepack pnpm`
-> automatically. On self-update it also pulls the sibling frontend checkout when
-> `..\forensic-frontend` exists (via the `FAW_UPDATE_REPOS` env var).
+> Requires Node.js (which provides `npm`) on the system `PATH`. On self-update
+> the launcher also pulls the sibling frontend checkout when `..\forensic-frontend`
+> exists (via the `FAW_UPDATE_REPOS` env var). PowerShell installers
+> (`install-startup-windows.ps1`) are still included as an alternative.
 
 ## Self-update
 

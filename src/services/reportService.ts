@@ -236,10 +236,10 @@ export class ReportService {
     return done;
   }
 
-  // Marked-suspects report (Mongolian): every person flagged
-  // UNDER_INVESTIGATION. Only transactions BETWEEN the marked suspects are
-  // listed (ordered by time), with per-suspect totals, counts and date spans
-  // and a cover breakdown table.
+  // Marked-suspects account-inspection report (Mongolian): every person
+  // flagged UNDER_INVESTIGATION. Lists each subject's transactions — at/above
+  // the amount threshold — with ANY counterparty that has a bank account
+  // number (not only other marked suspects). Ordered by time.
   async generateMarkedSuspectsPdf(minAmount = 0): Promise<Buffer> {
     const marked = (await this.db.getSuspectsWithRelations())
       .filter((s) => s.status === "UNDER_INVESTIGATION");
@@ -248,45 +248,16 @@ export class ReportService {
         "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
     }
 
-    // Cross-reference index: which account numbers / national-ids / names
-    // belong to a marked suspect, so a transaction's counterparty can be
-    // resolved back to another marked suspect.
-    const markedIds = new Set(marked.map((s) => s.id));
-    const ownerByAccount = new Map<string, number>();
-    for (const a of await this.db.getAllBankAccounts()) {
-      if (a.suspectId != null && markedIds.has(a.suspectId)) {
-        ownerByAccount.set(a.accountNumber, a.suspectId);
-      }
-    }
-    const natIdToSuspect = new Map<string, number>();
-    const nameToSuspect = new Map<string, number>();
-    for (const s of marked) {
-      if (s.nationalId) natIdToSuspect.set(s.nationalId, s.id);
-      nameToSuspect.set(normName(s.fullName), s.id);
-    }
-    // A transaction is "between suspects" when its counterparty resolves to a
-    // DIFFERENT marked suspect (by account, national-id or name).
-    const counterpartySuspect = (t: BankTransaction, selfId: number): number
-      | null => {
-      if (t.counterpartyAccount) {
-        const o = ownerByAccount.get(t.counterpartyAccount);
-        if (o != null && o !== selfId) return o;
-      }
-      if (t.counterpartyNationalId) {
-        const o = natIdToSuspect.get(t.counterpartyNationalId);
-        if (o != null && o !== selfId) return o;
-      }
-      const byName = nameToSuspect.get(normName(t.counterpartyName));
-      if (byName != null && byName !== selfId) return byName;
-      return null;
-    };
+    // A transaction qualifies when the counterparty has a bank account number
+    // (anyone, not just marked suspects) and the amount clears the threshold.
+    const qualifies = (t: BankTransaction): boolean =>
+      t.amount >= minAmount
+      && !!(t.counterpartyAccount && t.counterpartyAccount.trim());
 
-    // Per suspect: only inter-suspect transactions at/above the threshold,
-    // kept ascending by time.
+    // Per suspect: qualifying transactions, kept ascending by time.
     const blocks = await Promise.all(marked.map(async (s) => {
       const all = await this.db.getTransactionsForSuspect(s.id);
-      const txns = all.filter((t) =>
-        t.amount >= minAmount && counterpartySuspect(t, s.id) != null);
+      const txns = all.filter(qualifies);
       const {income, outgoing} = totals(txns);
       return {suspect: s, txns, income, outgoing, range: dateRange(txns)};
     }));
@@ -303,7 +274,7 @@ export class ReportService {
     const thresholdNote = minAmount > 0 ? `      Босго: ≥ ${mnt(minAmount)}` : "";
     doc.fontSize(9.5).fillColor(INK).text(
       `Тэмдэглэсэн сэжигтэн: ${marked.length}      ` +
-      `Нийт хоорондын гүйлгээ: ${totalTxns}      Хугацаа: ${span}${thresholdNote}`,
+      `Нийт гүйлгээ: ${totalTxns}      Хугацаа: ${span}${thresholdNote}`,
       ML, doc.y, {width: CW, align: "center", lineBreak: false});
     doc.y += 20;
 
@@ -351,7 +322,7 @@ export class ReportService {
       doc.addPage();
       doc.y = 48;
       renderSuspect(doc, b.suspect, b.txns,
-        {ledgerLabel: "СЭЖИГТНҮҮД ХООРОНДЫН ГҮЙЛГЭЭ"});
+        {ledgerLabel: "ГҮЙЛГЭЭ"});
     }
 
     drawFooters(doc);
@@ -578,11 +549,6 @@ function dateRange(txns: BankTransaction[]): {from: string; to: string} {
     from: formatDateLike(txns[0].timestamp),
     to: formatDateLike(txns[txns.length - 1].timestamp),
   };
-}
-
-// Normalise a name for cross-referencing counterparties to suspects.
-function normName(s: string | null | undefined): string {
-  return (s ?? "").trim().toUpperCase().replace(/\s+/g, " ");
 }
 
 // Formal official-document header: centred title, then a three-column row of

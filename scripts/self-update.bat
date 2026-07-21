@@ -17,13 +17,6 @@ cd /d "%~dp0.."
 
 set "TASK=ForensicAnalystBackend"
 
-where pnpm >nul 2>&1
-if %errorlevel%==0 (
-    set "PNPM=pnpm"
-) else (
-    set "PNPM=corepack pnpm"
-)
-
 REM Remember the current commit, pull, then compare.
 for /f %%i in ('git rev-parse HEAD') do set "BEFORE=%%i"
 echo [self-update] Pulling latest code...
@@ -37,7 +30,7 @@ if "!BEFORE!"=="!AFTER!" (
 
 echo [self-update] New version pulled (!BEFORE:~0,7! -^> !AFTER:~0,7!).
 echo [self-update] Reinstalling dependencies...
-call %PNPM% install --frozen-lockfile
+call npm install
 
 echo [self-update] Restarting scheduled task '%TASK%'...
 schtasks /End /TN "%TASK%" >nul 2>&1
