@@ -6,6 +6,9 @@
  * Purpose     :
  * Description :
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
+// The knex CLI loads this file directly (migrations, seeds), so it needs .env
+// applied here too — it does not go through src/index.ts.
+import "dotenv/config";
 import path from "path";
 import type {Knex} from "knex";
 

@@ -6,6 +6,9 @@
  * Purpose     :
  * Description :
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
+// FIRST — every module below reads process.env while it initialises (knex picks
+// up DB_FILE at import time), so .env has to be in place before any of them run.
+import "dotenv/config";
 import http from "node:http";
 import {ApolloServer} from "@apollo/server";
 import {expressMiddleware} from "@apollo/server/express4";

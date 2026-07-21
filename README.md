@@ -18,7 +18,8 @@ pnpm start        # production  (tsx src/index.ts)
 pnpm dev          # watch mode
 ```
 
-The GraphQL API listens on `PORT` (default `4000`).
+The GraphQL API listens on `PORT` (default `4000`). Copy
+[`env.example`](env.example) to `.env` to configure it:
 
 | Variable | Purpose |
 | --- | --- |
