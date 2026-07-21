@@ -63,12 +63,13 @@ interface LedgerCol {
   align: "left" | "right";
 }
 const LEDGER_COLS: LedgerCol[] = [
-  {label: "Огноо", x: 40, w: 66, align: "left"},
-  {label: "Төрөл", x: 106, w: 40, align: "left"},
-  {label: "Харьцсан тал", x: 146, w: 104, align: "left"},
-  {label: "Гүйлгээний утга", x: 250, w: 128, align: "left"},
-  {label: "Дүн", x: 378, w: 88, align: "right"},
-  {label: "Үлдэгдэл", x: 466, w: 89, align: "right"},
+  {label: "Огноо", x: 40, w: 50, align: "left"},
+  {label: "Төрөл", x: 90, w: 38, align: "left"},
+  // Wide enough to show counterparty names in full (they are NOT truncated).
+  {label: "Харьцсан тал", x: 128, w: 162, align: "left"},
+  {label: "Гүйлгээний утга", x: 290, w: 90, align: "left"},
+  {label: "Дүн", x: 380, w: 88, align: "right"},
+  {label: "Үлдэгдэл", x: 468, w: 87, align: "right"},
 ];
 
 // A Unicode TTF is required for Cyrillic; pdfkit's built-in Helvetica is
@@ -779,7 +780,7 @@ function renderSuspect(
     const y = ensureRow(doc, LEDGER_COLS);
     if (i % 2 === 1) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA);
     const credit = t.type.toLowerCase() === "credit";
-    cell(doc, formatDateLike(t.timestamp, true), LEDGER_COLS[0], y, INK);
+    cell(doc, formatDateLike(t.timestamp), LEDGER_COLS[0], y, INK);
     cell(doc, credit ? "Орлого" : "Зарлага", LEDGER_COLS[1], y,
       credit ? GREEN : RED);
     cell(doc, t.counterpartyName || t.counterpartyAccount || "—",
