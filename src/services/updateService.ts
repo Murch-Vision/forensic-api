@@ -16,6 +16,21 @@ import path from "node:path";
 
 const pexec = promisify(execFile);
 
+// execFile rejects with "Command failed: git pull --ff-only" and buries the
+// reason in .stderr. Surfacing only the first line of .message told the analyst
+// nothing about what to fix, so prefer git's own words.
+function gitError(e: unknown): string {
+  const err = e as {stderr?: string; stdout?: string; message?: string};
+  const raw = [err?.stderr, err?.stdout, err?.message]
+    .find((s) => typeof s === "string" && s.trim().length > 0) ?? String(e);
+  return raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .join(" ");
+}
+
 // Exit code the managed launcher (scripts/start-windows.bat) watches for: it
 // means "an update was pulled — reinstall, migrate and start me again".
 export const RESTART_EXIT_CODE = 42;
@@ -54,6 +69,27 @@ export class UpdateService {
     return stdout.trim();
   }
 
+  // `git pull --ff-only` with no arguments needs an upstream branch, and a
+  // deployment checkout very often has none — the clone was made, or the
+  // branch created, without tracking. Git then fails with "no tracking
+  // information", which reads as a broken updater. Name the remote and branch
+  // explicitly so it works either way.
+  private async pullIn(cwd: string): Promise<void> {
+    const args = ["pull", "--ff-only"];
+    try {
+      await this.gitIn(cwd, "rev-parse", "--abbrev-ref",
+        "--symbolic-full-name", "@{u}");
+    } catch {
+      // No upstream — fall back to origin and whatever branch is checked out.
+      const branch = await this.gitIn(cwd, "rev-parse", "--abbrev-ref", "HEAD");
+      if (!branch || branch === "HEAD") {
+        throw new Error("detached HEAD — check out a branch first");
+      }
+      args.push("origin", branch);
+    }
+    await this.gitIn(cwd, ...args);
+  }
+
   // Extra checkouts to pull alongside the main repo (e.g. the frontend), so a
   // single "Update" click refreshes the whole workstation. Configured as a
   // path-delimiter-separated list in FAW_UPDATE_REPOS.
@@ -69,7 +105,7 @@ export class UpdateService {
   private async pullExtra(repo: string): Promise<boolean> {
     try {
       const before = await this.gitIn(repo, "rev-parse", "HEAD");
-      await this.gitIn(repo, "pull", "--ff-only");
+      await this.pullIn(repo);
       const after = await this.gitIn(repo, "rev-parse", "HEAD");
       return before !== after;
     } catch {
@@ -117,9 +153,9 @@ export class UpdateService {
 
     // Fast-forward only — never create merge commits on the deployment box.
     try {
-      await this.git("pull", "--ff-only");
+      await this.pullIn(this.repoRoot);
     } catch (e) {
-      const detail = e instanceof Error ? e.message.split("\n")[0] : String(e);
+      const detail = gitError(e);
       return {
         updated: false,
         previousCommit: short(previousCommit),
