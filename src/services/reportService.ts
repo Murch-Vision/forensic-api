@@ -62,14 +62,15 @@ interface LedgerCol {
   w: number;
   align: "left" | "right";
 }
+// Direction is carried by the amount's sign and colour, so there is no
+// separate type column; running balance is dropped as well.
 const LEDGER_COLS: LedgerCol[] = [
   {label: "Огноо", x: 40, w: 50, align: "left"},
-  {label: "Төрөл", x: 90, w: 38, align: "left"},
   // Wide enough to show counterparty names in full (they are NOT truncated).
-  {label: "Харьцсан тал", x: 128, w: 162, align: "left"},
-  {label: "Гүйлгээний утга", x: 290, w: 90, align: "left"},
-  {label: "Дүн", x: 380, w: 88, align: "right"},
-  {label: "Үлдэгдэл", x: 468, w: 87, align: "right"},
+  {label: "Харьцсан тал", x: 90, w: 150, align: "left"},
+  {label: "Дансны дугаар", x: 240, w: 95, align: "left"},
+  {label: "Гүйлгээний утга", x: 335, w: 120, align: "left"},
+  {label: "Дүн", x: 455, w: 100, align: "right"},
 ];
 
 // A Unicode TTF is required for Cyrillic; pdfkit's built-in Helvetica is
@@ -851,14 +852,11 @@ function renderSuspect(
     if (i % 2 === 1) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA);
     const credit = t.type.toLowerCase() === "credit";
     cell(doc, formatDateLike(t.timestamp), LEDGER_COLS[0], y, INK);
-    cell(doc, credit ? "Орлого" : "Зарлага", LEDGER_COLS[1], y,
-      credit ? GREEN : RED);
-    cell(doc, t.counterpartyName || t.counterpartyAccount || "—",
-      LEDGER_COLS[2], y, INK);
+    cell(doc, t.counterpartyName || "—", LEDGER_COLS[1], y, INK);
+    cell(doc, t.counterpartyAccount || "—", LEDGER_COLS[2], y, MUTED);
     cell(doc, t.description || t.category || "—", LEDGER_COLS[3], y, MUTED);
     cell(doc, `${credit ? "+" : "−"}${mnt(t.amount)}`, LEDGER_COLS[4], y,
       credit ? GREEN : RED);
-    cell(doc, mnt(t.runningBalance), LEDGER_COLS[5], y, MUTED);
     doc.y = y + 13;
   });
 }
