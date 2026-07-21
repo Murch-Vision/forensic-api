@@ -237,17 +237,20 @@ export class ReportService {
     return done;
   }
 
-  // Account-inspection report (Mongolian). Scope depends on the threshold:
+  // Account-inspection report (Mongolian). Every transaction counted here has
+  // a marked suspect on one side of it — the report is about the suspects and
+  // who they moved money with, never the case at large. Scope by threshold:
   //   minAmount = 0  → the people flagged UNDER_INVESTIGATION.
-  //   minAmount > 0  → EVERYONE on EITHER SIDE of a transaction at/above the
-  //                    threshold, flagged or not, plus the flagged regardless.
-  // "Either side" matters: statements are imported for a few account holders,
-  // so most people in a case only ever appear as the counterparty on someone
-  // else's statement. Ordered by time.
+  //   minAmount > 0  → the flagged people PLUS whoever they transacted with
+  //                    at/above the threshold, flagged or not.
+  // Both sides are counted because statements are imported for a handful of
+  // account holders, so a suspect's counterparties only ever appear as a
+  // counterparty string on someone else's statement. Ordered by time.
   async generateMarkedSuspectsPdf(minAmount = 0): Promise<Buffer> {
     const everyone = await this.db.getSuspectsWithRelations();
     const isMarked = (s: {status: string}) =>
       s.status === "UNDER_INVESTIGATION";
+    const markedIds = new Set(everyone.filter(isMarked).map((s) => s.id));
 
     // A transaction qualifies when the counterparty has a bank account number
     // (anyone, not just marked suspects) and the amount clears the threshold.
@@ -282,12 +285,21 @@ export class ReportService {
     for (const t of await this.db.getAllTransactions()) {
       if (!qualifies(t)) continue;
       const holderSid = suspectByAccount.get(t.bankAccountId);
+      const cpAccount = byAccountNumber.get((t.counterpartyAccount ?? "").trim());
+      const cpSid = cpAccount?.suspectId ?? undefined;
+
+      // Only money that a suspect actually touched. Without this the report
+      // fills up with people who merely transact with each other and have no
+      // connection to the investigation.
+      const touchesSuspect =
+        (holderSid != null && markedIds.has(holderSid))
+        || (cpSid != null && markedIds.has(cpSid));
+      if (!touchesSuspect) continue;
+
       add(holderSid, t);
 
       // The far side of the same transaction, when we can identify whose
       // account that number is.
-      const cpAccount = byAccountNumber.get((t.counterpartyAccount ?? "").trim());
-      const cpSid = cpAccount?.suspectId ?? undefined;
       if (cpSid == null || cpSid === holderSid) continue;
       // Seen from the counterparty, the flow is reversed and the "other party"
       // is the account holder — otherwise their ledger reads inside out.
@@ -306,7 +318,8 @@ export class ReportService {
       isMarked(s) || (minAmount > 0 && (bySuspect.get(s.id)?.length ?? 0) > 0));
     if (candidates.length === 0) {
       throw new Error(minAmount > 0
-        ? `${mnt(minAmount)}-с дээш гүйлгээ олдсонгүй. Босгоо бууруулна уу.`
+        ? `Сэжигтэнтэй холбоотой, ${mnt(minAmount)}-с дээш гүйлгээ олдсонгүй. `
+          + "Босгоо бууруулна уу."
         : "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
     }
 
@@ -339,7 +352,8 @@ export class ReportService {
     const markedCount = blocks.filter((b) => b.marked).length;
     const thresholdNote = minAmount > 0 ? `      Босго: ≥ ${mnt(minAmount)}` : "";
     const who = minAmount > 0
-      ? `Хамрагдсан хүн: ${blocks.length} (сэжигтэн: ${markedCount})`
+      ? `Сэжигтэн: ${markedCount}      `
+        + `Харьцсан этгээд: ${blocks.length - markedCount}`
       : `Тэмдэглэсэн сэжигтэн: ${markedCount}`;
     doc.fontSize(9.5).fillColor(INK).text(
       `${who}      ` +
@@ -350,7 +364,7 @@ export class ReportService {
     // Cover breakdown table (no combined cards, no net — per request). Now
     // carries a bank-account count column.
     sectionBar(doc, minAmount > 0
-      ? `БОСГО ДАВСАН ЭТГЭЭД (${blocks.length})`
+      ? `СЭЖИГТЭН БОЛОН ХАРЬЦСАН ЭТГЭЭД (${blocks.length})`
       : `СЭЖИГТНҮҮД (${blocks.length})`);
     const summaryCols: LedgerCol[] = [
       {label: "Сэжигтэн", x: 40, w: 128, align: "left"},
