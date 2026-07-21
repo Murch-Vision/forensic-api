@@ -35,10 +35,31 @@ function gitError(e: unknown): string {
 // means "an update was pulled — reinstall, migrate and start me again".
 export const RESTART_EXIT_CODE = 42;
 
+// One checkout the workstation runs. The Settings page showed a single
+// version, which is misleading: backend and frontend are separate repos that
+// update independently and can sit on different commits.
+export interface RepoVersion {
+  name: string;
+  path: string;
+  version: string;
+  commit: string;
+  branch: string;
+  dirty: boolean;
+}
+
+export interface RepoUpdate {
+  name: string;
+  updated: boolean;
+  previousCommit: string;
+  newCommit: string;
+  message: string;
+}
+
 export interface VersionInfo {
   version: string;
   commit: string;
   branch: string;
+  repos: RepoVersion[];
 }
 
 export interface UpdateResult {
@@ -49,6 +70,7 @@ export interface UpdateResult {
   newVersion: string;
   message: string;
   restarting: boolean;
+  repos: RepoUpdate[];
 }
 
 export class UpdateService {
@@ -100,43 +122,73 @@ export class UpdateService {
       .filter(Boolean);
   }
 
-  // Pull one extra repo; return true when its HEAD moved. Never throws — a
-  // missing/failed sibling repo must not abort the main update.
-  private async pullExtra(repo: string): Promise<boolean> {
+  private packageVersion(root: string = this.repoRoot): string {
     try {
-      const before = await this.gitIn(repo, "rev-parse", "HEAD");
-      await this.pullIn(repo);
-      const after = await this.gitIn(repo, "rev-parse", "HEAD");
-      return before !== after;
-    } catch {
-      return false;
-    }
-  }
-
-  private packageVersion(): string {
-    try {
-      const raw = readFileSync(path.join(this.repoRoot, "package.json"), "utf8");
+      const raw = readFileSync(path.join(root, "package.json"), "utf8");
       return (JSON.parse(raw).version as string) ?? "unknown";
     } catch {
       return "unknown";
     }
   }
 
-  // Running version + short commit + branch, for the Settings header.
-  async version(): Promise<VersionInfo> {
-    let commit = "unknown";
-    let branch = "unknown";
+  // Human name for a checkout: the package.json name, else the folder name.
+  private repoName(root: string, fallback: string): string {
     try {
-      commit = await this.git("rev-parse", "--short", "HEAD");
+      const raw = readFileSync(path.join(root, "package.json"), "utf8");
+      const n = JSON.parse(raw).name as string | undefined;
+      if (n) return n;
     } catch {
-      /* not a git checkout — leave "unknown" */
+      /* fall through */
+    }
+    return path.basename(root) || fallback;
+  }
+
+  // Every checkout this workstation runs: the backend itself plus whatever
+  // FAW_UPDATE_REPOS points at (normally the frontend).
+  private repoRoots(): string[] {
+    return [this.repoRoot, ...this.extraRepos()];
+  }
+
+  private async repoInfo(root: string): Promise<RepoVersion> {
+    const info: RepoVersion = {
+      name: this.repoName(root, "repo"),
+      path: root,
+      version: this.packageVersion(root),
+      commit: "unknown",
+      branch: "unknown",
+      dirty: false,
+    };
+    try {
+      info.commit = await this.gitIn(root, "rev-parse", "--short", "HEAD");
+    } catch {
+      return info; // not a git checkout
     }
     try {
-      branch = await this.git("rev-parse", "--abbrev-ref", "HEAD");
+      info.branch = await this.gitIn(root, "rev-parse", "--abbrev-ref", "HEAD");
     } catch {
       /* ignore */
     }
-    return {version: this.packageVersion(), commit, branch};
+    try {
+      info.dirty =
+        (await this.gitIn(root, "status", "--porcelain")).length > 0;
+    } catch {
+      /* ignore */
+    }
+    return info;
+  }
+
+  // Running version + short commit + branch, for the Settings header, plus one
+  // entry per checkout so backend and frontend are reported separately.
+  async version(): Promise<VersionInfo> {
+    const repos = await Promise.all(
+      this.repoRoots().map((r) => this.repoInfo(r)));
+    const self = repos[0];
+    return {
+      version: self?.version ?? this.packageVersion(),
+      commit: self?.commit ?? "unknown",
+      branch: self?.branch ?? "unknown",
+      repos,
+    };
   }
 
   // Pull the latest code; restart only when something actually changed AND we
@@ -151,38 +203,50 @@ export class UpdateService {
       /* ignore */
     }
 
-    // Fast-forward only — never create merge commits on the deployment box.
-    try {
-      await this.pullIn(this.repoRoot);
-    } catch (e) {
-      const detail = gitError(e);
-      return {
-        updated: false,
-        previousCommit: short(previousCommit),
-        newCommit: short(previousCommit),
-        previousVersion,
-        newVersion: previousVersion,
-        message: `Шинэчлэл татаж чадсангүй: ${detail}`,
-        restarting: false,
-      };
+    // Every checkout is pulled and reported on its own. A failure in one must
+    // not hide the outcome of the others, which a single blended result did.
+    const repos: RepoUpdate[] = [];
+    for (const root of this.repoRoots()) {
+      const name = this.repoName(root, "repo");
+      let before = "unknown";
+      try {
+        before = await this.gitIn(root, "rev-parse", "HEAD");
+      } catch {
+        repos.push({name, updated: false, previousCommit: "unknown",
+          newCommit: "unknown", message: "Git-ийн сан биш."});
+        continue;
+      }
+      try {
+        await this.pullIn(root);
+      } catch (e) {
+        repos.push({name, updated: false, previousCommit: short(before),
+          newCommit: short(before), message: `Татаж чадсангүй: ${gitError(e)}`});
+        continue;
+      }
+      let after = before;
+      try {
+        after = await this.gitIn(root, "rev-parse", "HEAD");
+      } catch {
+        /* ignore */
+      }
+      repos.push({
+        name,
+        updated: after !== before,
+        previousCommit: short(before),
+        newCommit: short(after),
+        message: after !== before
+          ? `${short(before)} → ${short(after)}`
+          : "Хамгийн сүүлийн үеийнх.",
+      });
     }
 
-    let newCommit = previousCommit;
-    try {
-      newCommit = await this.git("rev-parse", "HEAD");
-    } catch {
-      /* ignore */
-    }
+    const selfRepo = repos[0];
+    const newCommit = selfRepo && selfRepo.newCommit !== "unknown"
+      ? selfRepo.newCommit : previousCommit;
     const newVersion = this.packageVersion();
 
-    // Pull any sibling repos (frontend) too, so one click updates everything.
-    let extraChanged = false;
-    for (const repo of this.extraRepos()) {
-      if (await this.pullExtra(repo)) extraChanged = true;
-    }
-
-    const backendChanged = newCommit !== previousCommit;
-    const updated = backendChanged || extraChanged;
+    const backendChanged = selfRepo?.updated ?? false;
+    const updated = repos.some((r) => r.updated);
 
     // Only a backend code change needs THIS process to restart; a frontend-only
     // pull is picked up by Vite / the frontend's own launcher.
@@ -212,6 +276,7 @@ export class UpdateService {
       newVersion,
       message,
       restarting,
+      repos,
     };
   }
 }

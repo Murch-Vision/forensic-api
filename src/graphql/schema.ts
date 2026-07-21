@@ -840,11 +840,32 @@ export const typeDefs = /* GraphQL */ `
     status: SuspectStatus
   }
 
-  "Running build identity — shown in Settings."
+  "One checkout the workstation runs — backend and frontend are separate repos."
+  type RepoVersion {
+    name: String!
+    path: String!
+    version: String!
+    commit: String!
+    branch: String!
+    "True when the checkout has uncommitted local changes."
+    dirty: Boolean!
+  }
+
+  "Running build identity — shown in Settings. Top-level fields describe the backend; `repos` covers every checkout."
   type VersionInfo {
     version: String!
     commit: String!
     branch: String!
+    repos: [RepoVersion!]!
+  }
+
+  "What a self-update did to one checkout."
+  type RepoUpdate {
+    name: String!
+    updated: Boolean!
+    previousCommit: String!
+    newCommit: String!
+    message: String!
   }
 
   "Outcome of a self-update (git pull + optional restart)."
@@ -856,6 +877,8 @@ export const typeDefs = /* GraphQL */ `
     newVersion: String!
     message: String!
     restarting: Boolean!
+    "Per-checkout outcome — one entry each for backend and frontend."
+    repos: [RepoUpdate!]!
   }
 
   type Query {
