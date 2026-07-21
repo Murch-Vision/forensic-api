@@ -174,6 +174,34 @@ export class SuspectService {
     return updated;
   }
 
+  // Update ONLY the photo (null clears it) — leaves every other field intact,
+  // unlike updateSuspect which does a full replace.
+  async setPhoto(id: number, photoData: string | null): Promise<Suspect> {
+    const existing = await this.getSuspectById(id);
+    if (!existing) throw new Error(`Suspect ${id} not found`);
+    await this.db("suspects").where({id}).update({
+      photoData,
+      updatedAt: new Date().toISOString(),
+    });
+    const updated = await this.getSuspectById(id);
+    if (!updated) throw new Error(`Suspect ${id} not found`);
+    return updated;
+  }
+
+  // Update ONLY the status (e.g. mark a person UNDER_INVESTIGATION) — leaves
+  // every other field intact, unlike updateSuspect which does a full replace.
+  async setStatus(id: number, status: SuspectStatus): Promise<Suspect> {
+    const existing = await this.getSuspectById(id);
+    if (!existing) throw new Error(`Suspect ${id} not found`);
+    await this.db("suspects").where({id}).update({
+      status,
+      updatedAt: new Date().toISOString(),
+    });
+    const updated = await this.getSuspectById(id);
+    if (!updated) throw new Error(`Suspect ${id} not found`);
+    return updated;
+  }
+
   async deleteSuspect(id: number): Promise<boolean> {
     const count = await this.db("suspects").where({id}).del();
     return count > 0;
