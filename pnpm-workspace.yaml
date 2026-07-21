@@ -1,0 +1,12 @@
+# Native/postinstall builds this project needs. pnpm >=11 reads `allowBuilds`;
+# pnpm 10.6–10.x reads `onlyBuiltDependencies`. Both are listed so the repo
+# installs cleanly on either (the package.json `pnpm` field covers pnpm <10.6).
+allowBuilds:
+  '@apollo/protobufjs': true
+  better-sqlite3: true
+  esbuild: true
+
+onlyBuiltDependencies:
+  - '@apollo/protobufjs'
+  - better-sqlite3
+  - esbuild
