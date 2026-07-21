@@ -236,17 +236,16 @@ export class ReportService {
     return done;
   }
 
-  // Marked-suspects account-inspection report (Mongolian): every person
-  // flagged UNDER_INVESTIGATION. Lists each subject's transactions — at/above
-  // the amount threshold — with ANY counterparty that has a bank account
-  // number (not only other marked suspects). Ordered by time.
+  // Account-inspection report (Mongolian). Scope depends on the threshold:
+  //   minAmount = 0  → the people flagged UNDER_INVESTIGATION.
+  //   minAmount > 0  → EVERYONE with a transaction at/above the threshold,
+  //                    flagged or not, plus the flagged people regardless.
+  // A subject's ledger lists transactions with ANY counterparty holding a bank
+  // account number (not only other suspects). Ordered by time.
   async generateMarkedSuspectsPdf(minAmount = 0): Promise<Buffer> {
-    const marked = (await this.db.getSuspectsWithRelations())
-      .filter((s) => s.status === "UNDER_INVESTIGATION");
-    if (marked.length === 0) {
-      throw new Error(
-        "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
-    }
+    const everyone = await this.db.getSuspectsWithRelations();
+    const isMarked = (s: {status: string}) =>
+      s.status === "UNDER_INVESTIGATION";
 
     // A transaction qualifies when the counterparty has a bank account number
     // (anyone, not just marked suspects) and the amount clears the threshold.
@@ -254,13 +253,49 @@ export class ReportService {
       t.amount >= minAmount
       && !!(t.counterpartyAccount && t.counterpartyAccount.trim());
 
-    // Per suspect: qualifying transactions, kept ascending by time.
-    const blocks = await Promise.all(marked.map(async (s) => {
-      const all = await this.db.getTransactionsForSuspect(s.id);
-      const txns = all.filter(qualifies);
+    // One pass over the ledger instead of a query per subject — with no
+    // threshold the candidate set is small, but above one it is everybody.
+    const accounts = await this.db.getAllBankAccounts();
+    const suspectByAccount = new Map<number, number>();
+    for (const a of accounts) {
+      if (a.suspectId != null) suspectByAccount.set(a.id, a.suspectId);
+    }
+    const bySuspect = new Map<number, BankTransaction[]>();
+    for (const t of await this.db.getAllTransactions()) {
+      if (!qualifies(t)) continue;
+      const sid = suspectByAccount.get(t.bankAccountId);
+      if (sid == null) continue;
+      const list = bySuspect.get(sid) ?? [];
+      list.push(t);
+      bySuspect.set(sid, list);
+    }
+
+    // Flagged people are always in. Above a threshold, so is anyone else who
+    // actually cleared it — that is the whole point of setting one.
+    const candidates = everyone.filter((s) =>
+      isMarked(s) || (minAmount > 0 && (bySuspect.get(s.id)?.length ?? 0) > 0));
+    if (candidates.length === 0) {
+      throw new Error(minAmount > 0
+        ? `${mnt(minAmount)}-с дээш гүйлгээ олдсонгүй. Босгоо бууруулна уу.`
+        : "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
+    }
+
+    const blocks = candidates.map((s) => {
+      const txns = (bySuspect.get(s.id) ?? [])
+        .slice()
+        .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
       const {income, outgoing} = totals(txns);
-      return {suspect: s, txns, income, outgoing, range: dateRange(txns)};
-    }));
+      return {
+        suspect: s, txns, income, outgoing, range: dateRange(txns),
+        marked: isMarked(s),
+      };
+    });
+    // Flagged subjects first, then the biggest movers — the reason a threshold
+    // was set is to surface those.
+    blocks.sort((a, b) =>
+      Number(b.marked) - Number(a.marked)
+      || (b.income + b.outgoing) - (a.income + a.outgoing)
+      || a.suspect.fullName.localeCompare(b.suspect.fullName));
 
     const {doc, done} = startDoc();
     formalHeader(doc, "Дансанд үзлэг хийсэн тухай тайлан");
@@ -271,16 +306,22 @@ export class ReportService {
     const span = stamps.length
       ? `${formatDateLike(stamps[0])} — ${formatDateLike(stamps[stamps.length - 1])}`
       : "—";
+    const markedCount = blocks.filter((b) => b.marked).length;
     const thresholdNote = minAmount > 0 ? `      Босго: ≥ ${mnt(minAmount)}` : "";
+    const who = minAmount > 0
+      ? `Хамрагдсан хүн: ${blocks.length} (сэжигтэн: ${markedCount})`
+      : `Тэмдэглэсэн сэжигтэн: ${markedCount}`;
     doc.fontSize(9.5).fillColor(INK).text(
-      `Тэмдэглэсэн сэжигтэн: ${marked.length}      ` +
+      `${who}      ` +
       `Нийт гүйлгээ: ${totalTxns}      Хугацаа: ${span}${thresholdNote}`,
       ML, doc.y, {width: CW, align: "center", lineBreak: false});
     doc.y += 20;
 
     // Cover breakdown table (no combined cards, no net — per request). Now
     // carries a bank-account count column.
-    sectionBar(doc, `СЭЖИГТНҮҮД (${blocks.length})`);
+    sectionBar(doc, minAmount > 0
+      ? `БОСГО ДАВСАН ЭТГЭЭД (${blocks.length})`
+      : `СЭЖИГТНҮҮД (${blocks.length})`);
     const summaryCols: LedgerCol[] = [
       {label: "Сэжигтэн", x: 40, w: 128, align: "left"},
       {label: "Данс", x: 168, w: 34, align: "right"},
@@ -294,7 +335,10 @@ export class ReportService {
     blocks.forEach((b, i) => {
       const y = ensureRow(doc, summaryCols);
       if (i % 2 === 1) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA);
-      cell(doc, b.suspect.fullName, summaryCols[0], y, INK);
+      // "*" marks the flagged suspects once non-suspects join the report.
+      cell(doc, b.marked && minAmount > 0
+        ? `* ${b.suspect.fullName}` : b.suspect.fullName,
+      summaryCols[0], y, INK);
       cell(doc, String(b.suspect.bankAccounts.length), summaryCols[1], y, INK);
       cell(doc, String(b.txns.length), summaryCols[2], y, INK);
       cell(doc, b.range.from, summaryCols[3], y, MUTED);
