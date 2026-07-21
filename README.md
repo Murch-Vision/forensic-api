@@ -20,47 +20,43 @@ pnpm dev          # watch mode
 
 The GraphQL API listens on `PORT` (default `4000`).
 
-## Windows: start automatically at boot
+## Windows: start automatically
 
-The launcher uses **`npm`** (not pnpm) and runs from the **Command Prompt**, so
-it works reliably from the `SYSTEM` account at boot. Everything lives in
-[`scripts/`](scripts/):
+Autostart is a plain batch file in your **Startup folder**. No Task Scheduler,
+no service, no administrator. Everything lives in [`scripts/`](scripts/):
 
 | Script | Purpose |
 | --- | --- |
 | `start-windows.bat` | Launcher — `npm install` (first run), `npm run migrate`, `npm run start`. Also a self-update **restart loop** (honours exit code 42). |
-| `install-startup-windows.bat` | Registers the boot Scheduled Task (uses `schtasks`, no PowerShell). |
-| `uninstall-startup-windows.bat` | Removes that task. |
-| `self-update.bat` | `git pull` + `npm install` + restart the Scheduled Task. |
+| `install-startup-windows.bat` | Adds the launcher to your Startup folder. |
+| `uninstall-startup-windows.bat` | Removes it. |
+| `self-update.bat` | `git pull` + `npm install` + restart the launcher. |
 
-### Install (run once) — Command Prompt
+### Install (run once)
 
-Open **Command Prompt as Administrator** (right-click → *Run as administrator*),
-`cd` to the project root, and run:
+**Double-click** `scripts\install-startup-windows.bat`. That is the whole
+install. It writes `ForensicAnalystBackend.bat` into
 
-```bat
-scripts\install-startup-windows.bat
+```
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
 ```
 
-This creates a Scheduled Task named **`ForensicAnalystBackend`** that runs
-`start-windows.bat` on every system boot as `SYSTEM` (elevated).
+and starts the backend straight away so you can see it work.
 
-Handy commands:
+To remove it later, double-click `scripts\uninstall-startup-windows.bat`.
 
-```bat
-schtasks /Run    /TN "ForensicAnalystBackend"    &  :: start it now, no reboot
-schtasks /End    /TN "ForensicAnalystBackend"    &  :: stop it
-scripts\uninstall-startup-windows.bat            &  :: remove it
-```
-
-> Requires Node.js installed **for all users** — the boot task runs as `SYSTEM`,
-> which only sees the machine `PATH`, so a per-user Node install (nvm, fnm) makes
-> the task start and die silently. On self-update the launcher also pulls the
-> sibling frontend checkout when `..\forensic-frontend` exists (via the
-> `FAW_UPDATE_REPOS` env var).
+> **It starts when you log in, not at boot.** That is the deliberate trade-off:
+> it runs as *you*, with *your* `PATH`, in *your* session — the same environment
+> where starting it by hand already works. A boot-time Scheduled Task runs as
+> `SYSTEM`, which cannot see a per-user Node install, is blocked by the default
+> laptop battery policy, and is killed after 3 days. That is why the old task
+> reported success and then did nothing. If nobody logs in, nothing runs.
 >
-> If nothing comes up after a restart, read `logs\startup.log` — the launcher
-> records every step there, since there is no console at boot.
+> If the app does not come up, read `logs\startup.log` — the launcher records
+> every step there, including exactly where it failed.
+>
+> On self-update the launcher also pulls the sibling frontend checkout when
+> `..\forensic-frontend` exists (via the `FAW_UPDATE_REPOS` env var).
 
 ## Self-update
 
