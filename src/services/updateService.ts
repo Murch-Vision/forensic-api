@@ -9,7 +9,7 @@
  *               HEAD moved it (optionally) exits with code 42 so the managed
  *               launcher loop reinstalls deps, re-migrates and relaunches.
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
-import {execFile} from "node:child_process";
+import {execFile, spawn} from "node:child_process";
 import {promisify} from "node:util";
 import {existsSync, readFileSync, writeFileSync} from "node:fs";
 import path from "node:path";
@@ -78,8 +78,19 @@ export interface UpdateResult {
   repos: RepoUpdate[];
 }
 
+export interface UpdateLog {
+  running: boolean;
+  lines: string[];
+}
+
 export class UpdateService {
   private readonly repoRoot: string;
+
+  // Live output of the update currently running. The Settings page polls
+  // this while the button spins — a 1-2 minute pnpm build shows movement
+  // line by line instead of dead silence.
+  private updateLogLines: string[] = [];
+  private updating = false;
 
   // The launcher cd's to the project root before `pnpm start`, so cwd is the
   // repo root; allow an override for tests.
@@ -132,22 +143,64 @@ export class UpdateService {
     return existsSync(path.join(sibling, ".git")) ? [sibling] : [];
   }
 
-  // Reinstall + rebuild a pulled checkout. pnpm, not npm — the repos are
-  // pnpm projects (pnpm-lock.yaml) and an npm install inside one produces a
-  // broken node_modules. On Windows pnpm is pnpm.cmd, which Node refuses to
-  // spawn without a shell (CVE-2024-27980) — hence the flag. A vite build
-  // easily exceeds execFile's 1MB output default, so raise it.
-  private async pnpmIn(cwd: string, ...args: string[]): Promise<void> {
-    const win = process.platform === "win32";
-    await pexec(win ? "pnpm.cmd" : "pnpm", args, {
-      cwd,
-      shell: win,
-      timeout: 10 * 60_000,
-      maxBuffer: 16 * 1024 * 1024,
-      // There is no TTY here, and pnpm ABORTS instead of assuming yes when it
-      // wants to confirm something (e.g. purging an npm-made node_modules).
-      // CI=true makes every such prompt non-interactive.
-      env: {...process.env, CI: "true"},
+  updateLog(): UpdateLog {
+    return {running: this.updating, lines: [...this.updateLogLines]};
+  }
+
+  private push(line: string): void {
+    this.updateLogLines.push(line);
+    if (this.updateLogLines.length > 500) {
+      this.updateLogLines.splice(0, this.updateLogLines.length - 500);
+    }
+  }
+
+  // Reinstall + rebuild a pulled checkout, streaming every output line into
+  // the live log. pnpm, not npm — the repos are pnpm projects
+  // (pnpm-lock.yaml) and an npm install inside one produces a broken
+  // node_modules. On Windows pnpm is pnpm.cmd, which Node refuses to spawn
+  // without a shell (CVE-2024-27980) — hence the flag.
+  private pnpmIn(cwd: string, ...args: string[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const win = process.platform === "win32";
+      this.push(`$ pnpm ${args.join(" ")}`);
+      const child = spawn(win ? "pnpm.cmd" : "pnpm", args, {
+        cwd,
+        shell: win,
+        // There is no TTY here, and pnpm ABORTS instead of assuming yes when
+        // it wants to confirm something (e.g. purging an npm-made
+        // node_modules). CI=true makes every such prompt non-interactive.
+        env: {...process.env, CI: "true"},
+      });
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error("10 минутад багтсангүй — тасаллаа"));
+      }, 10 * 60_000);
+      // The last chunk of output doubles as the error message on failure —
+      // the exit code alone explains nothing.
+      let tail = "";
+      const onData = (b: Buffer) => {
+        const text = b.toString();
+        tail = (tail + text).slice(-2000);
+        for (const raw of text.split(/\r?\n|\r/)) {
+          const line = raw.trimEnd();
+          if (line) this.push(line);
+        }
+      };
+      child.stdout.on("data", onData);
+      child.stderr.on("data", onData);
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          resolve();
+        } else {
+          const last = tail.split(/\r?\n/).filter(Boolean).slice(-3).join(" ");
+          reject(new Error(last || `exit ${code}`));
+        }
+      });
     });
   }
 
@@ -255,6 +308,16 @@ export class UpdateService {
   // run under the managed launcher (FAW_MANAGED=1), so a dev session is never
   // killed out from under the analyst.
   async selfUpdate(): Promise<UpdateResult> {
+    this.updating = true;
+    this.updateLogLines = [];
+    try {
+      return await this.runSelfUpdate();
+    } finally {
+      this.updating = false;
+    }
+  }
+
+  private async runSelfUpdate(): Promise<UpdateResult> {
     const previousVersion = this.packageVersion();
     let previousCommit = "unknown";
     try {
@@ -277,9 +340,11 @@ export class UpdateService {
           newCommit: "unknown", message: "Git-ийн сан биш."});
         continue;
       }
+      this.push(`── ${name}: git pull…`);
       try {
         await this.pullIn(root);
       } catch (e) {
+        this.push(`татаж чадсангүй: ${gitError(e)}`);
         repos.push({name, updated: false, previousCommit: short(before),
           newCommit: short(before), message: `Татаж чадсангүй: ${gitError(e)}`});
         continue;
@@ -290,6 +355,9 @@ export class UpdateService {
       } catch {
         /* ignore */
       }
+      this.push(after !== before
+        ? `${short(before)} → ${short(after)}`
+        : "шинэ commit алга");
       // An EXTRA checkout (the frontend) is served as a BUILT app — pulling
       // its source changes nothing on screen until dist is rebuilt. vite
       // preview reads dist from disk on every request (sirv dev:true), so a
@@ -305,9 +373,11 @@ export class UpdateService {
           await this.pnpmIn(root, "run", "build");
           writeFileSync(path.join(root, "dist", ".commit"), after);
           note = " — build шинэчлэгдлээ";
+          this.push("build амжилттай ✓");
         } catch (e) {
           buildFailed = true;
           note = ` — build амжилтгүй: ${gitError(e)}`;
+          this.push(`build амжилтгүй: ${gitError(e)}`);
         }
       }
       const moved = after !== before;

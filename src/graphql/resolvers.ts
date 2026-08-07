@@ -203,6 +203,10 @@ export const resolvers = {
       c.data.getDashboardStats(),
     appVersion: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.update.version(),
+    updateLog: (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireAdmin(c);
+      return c.update.updateLog();
+    },
     bankAccounts: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       scopedAccounts(c),
     transactions: async (

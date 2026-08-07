@@ -870,6 +870,12 @@ export const typeDefs = /* GraphQL */ `
     message: String!
   }
 
+  "Live output of the update currently running — Settings polls it while the button spins."
+  type UpdateLog {
+    running: Boolean!
+    lines: [String!]!
+  }
+
   "Outcome of a self-update (git pull + optional restart)."
   type UpdateResult {
     updated: Boolean!
@@ -889,6 +895,8 @@ export const typeDefs = /* GraphQL */ `
     dashboardStats: DashboardStats!
     "Running version + git commit for the Settings page."
     appVersion: VersionInfo!
+    "Live progress of the running self-update (empty when idle)."
+    updateLog: UpdateLog!
     bankAccounts: [BankAccount!]!
     transactions(includeRemoved: Boolean): [BankTransaction!]!
     callRecords: [CallRecord!]!
