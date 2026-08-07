@@ -45,6 +45,11 @@ export interface RepoVersion {
   commit: string;
   branch: string;
   dirty: boolean;
+  // Commit the SERVED build was made from (dist/.commit) — null for the
+  // backend (runs from source, restart covers it), "" for a built app whose
+  // marker is missing (built by hand or never built). The Settings page
+  // compares it against `commit` to say whether the screen is current.
+  builtCommit: string | null;
 }
 
 export interface RepoUpdate {
@@ -186,6 +191,7 @@ export class UpdateService {
   }
 
   private async repoInfo(root: string): Promise<RepoVersion> {
+    const extra = root !== this.repoRoot;
     const info: RepoVersion = {
       name: this.repoName(root, "repo"),
       path: root,
@@ -193,11 +199,18 @@ export class UpdateService {
       commit: "unknown",
       branch: "unknown",
       dirty: false,
+      builtCommit: extra ? "" : null,
     };
     try {
       info.commit = await this.gitIn(root, "rev-parse", "--short", "HEAD");
     } catch {
       return info; // not a git checkout
+    }
+    if (extra) {
+      // The marker holds the full hash; trim to the same length as `commit`
+      // so the two are directly comparable.
+      const bc = this.builtCommit(root);
+      info.builtCommit = bc ? bc.slice(0, info.commit.length) : "";
     }
     try {
       info.branch = await this.gitIn(root, "rev-parse", "--abbrev-ref", "HEAD");

@@ -849,6 +849,8 @@ export const typeDefs = /* GraphQL */ `
     branch: String!
     "True when the checkout has uncommitted local changes."
     dirty: Boolean!
+    "Commit the SERVED build was made from — null for the backend (runs from source), empty when unknown."
+    builtCommit: String
   }
 
   "Running build identity — shown in Settings. Top-level fields describe the backend; \`repos\` covers every checkout."
