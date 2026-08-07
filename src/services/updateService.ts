@@ -122,6 +122,30 @@ export class UpdateService {
       .filter(Boolean);
   }
 
+  // Reinstall + rebuild a pulled checkout. npm on Windows is npm.cmd, which
+  // Node refuses to spawn without a shell (CVE-2024-27980) — hence the flag.
+  // A vite build easily exceeds execFile's 1MB output default, so raise it.
+  private async npmIn(cwd: string, ...args: string[]): Promise<void> {
+    const win = process.platform === "win32";
+    await pexec(win ? "npm.cmd" : "npm", args, {
+      cwd,
+      shell: win,
+      timeout: 10 * 60_000,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  }
+
+  private hasBuildScript(root: string): boolean {
+    try {
+      const raw = readFileSync(path.join(root, "package.json"), "utf8");
+      const scripts = JSON.parse(raw).scripts as
+        Record<string, string> | undefined;
+      return Boolean(scripts?.build);
+    } catch {
+      return false;
+    }
+  }
+
   private packageVersion(root: string = this.repoRoot): string {
     try {
       const raw = readFileSync(path.join(root, "package.json"), "utf8");
@@ -206,6 +230,7 @@ export class UpdateService {
     // Every checkout is pulled and reported on its own. A failure in one must
     // not hide the outcome of the others, which a single blended result did.
     const repos: RepoUpdate[] = [];
+    let buildFailed = false;
     for (const root of this.repoRoots()) {
       const name = this.repoName(root, "repo");
       let before = "unknown";
@@ -229,13 +254,29 @@ export class UpdateService {
       } catch {
         /* ignore */
       }
+      // A pulled EXTRA checkout (the frontend) is served as a BUILT app —
+      // pulling its source changes nothing on screen until dist is rebuilt.
+      // vite preview reads dist from disk on every request (sirv dev:true),
+      // so a rebuild is also all it takes: no frontend process restart.
+      let note = "";
+      if (root !== this.repoRoot && after !== before
+        && this.hasBuildScript(root)) {
+        try {
+          await this.npmIn(root, "install");
+          await this.npmIn(root, "run", "build");
+          note = " — build шинэчлэгдлээ";
+        } catch (e) {
+          buildFailed = true;
+          note = ` — build амжилтгүй: ${gitError(e)}`;
+        }
+      }
       repos.push({
         name,
         updated: after !== before,
         previousCommit: short(before),
         newCommit: short(after),
         message: after !== before
-          ? `${short(before)} → ${short(after)}`
+          ? `${short(before)} → ${short(after)}${note}`
           : "Хамгийн сүүлийн үеийнх.",
       });
     }
@@ -248,8 +289,9 @@ export class UpdateService {
     const backendChanged = selfRepo?.updated ?? false;
     const updated = repos.some((r) => r.updated);
 
-    // Only a backend code change needs THIS process to restart; a frontend-only
-    // pull is picked up by Vite / the frontend's own launcher.
+    // Only a backend code change needs THIS process to restart; a frontend
+    // update was already rebuilt above and shows up on the next browser
+    // reload.
     const managed = process.env.FAW_MANAGED === "1";
     const restarting = backendChanged && managed;
 
@@ -264,8 +306,12 @@ export class UpdateService {
       message = "Шинэ хувилбар алга — код хамгийн сүүлийн үеийнх байна.";
     } else if (restarting) {
       message = "Шинэчлэл татагдлаа — сервер дахин ачаалж байна…";
-    } else {
+    } else if (backendChanged) {
       message = "Шинэчлэл татагдлаа. Идэвхжүүлэхийн тулд серверийг дахин ачаална уу.";
+    } else if (buildFailed) {
+      message = "Шинэчлэл татагдлаа, гэвч build амжилтгүй — доорх мөрийг харна уу.";
+    } else {
+      message = "Шинэчлэл татагдлаа — хуудсаа дахин ачаалахад шинэ хувилбар ажиллана.";
     }
 
     return {
