@@ -11,7 +11,7 @@
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import {execFile} from "node:child_process";
 import {promisify} from "node:util";
-import {readFileSync, writeFileSync} from "node:fs";
+import {existsSync, readFileSync, writeFileSync} from "node:fs";
 import path from "node:path";
 
 const pexec = promisify(execFile);
@@ -118,13 +118,18 @@ export class UpdateService {
   }
 
   // Extra checkouts to pull alongside the main repo (e.g. the frontend), so a
-  // single "Update" click refreshes the whole workstation. Configured as a
-  // path-delimiter-separated list in FAW_UPDATE_REPOS.
+  // single "Update" click refreshes the whole workstation. FAW_UPDATE_REPOS
+  // (path-delimiter-separated) overrides; unset, the standard side-by-side
+  // layout is auto-detected — otherwise an api launched by hand (pnpm dev)
+  // neither lists nor updates the frontend, only the Windows launcher did.
   private extraRepos(): string[] {
-    return (process.env.FAW_UPDATE_REPOS ?? "")
+    const env = (process.env.FAW_UPDATE_REPOS ?? "")
       .split(path.delimiter)
       .map((p) => p.trim())
       .filter(Boolean);
+    if (env.length) return env;
+    const sibling = path.resolve(this.repoRoot, "..", "forensic-frontend");
+    return existsSync(path.join(sibling, ".git")) ? [sibling] : [];
   }
 
   // Reinstall + rebuild a pulled checkout. npm on Windows is npm.cmd, which
