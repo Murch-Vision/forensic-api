@@ -132,12 +132,14 @@ export class UpdateService {
     return existsSync(path.join(sibling, ".git")) ? [sibling] : [];
   }
 
-  // Reinstall + rebuild a pulled checkout. npm on Windows is npm.cmd, which
-  // Node refuses to spawn without a shell (CVE-2024-27980) — hence the flag.
-  // A vite build easily exceeds execFile's 1MB output default, so raise it.
-  private async npmIn(cwd: string, ...args: string[]): Promise<void> {
+  // Reinstall + rebuild a pulled checkout. pnpm, not npm — the repos are
+  // pnpm projects (pnpm-lock.yaml) and an npm install inside one produces a
+  // broken node_modules. On Windows pnpm is pnpm.cmd, which Node refuses to
+  // spawn without a shell (CVE-2024-27980) — hence the flag. A vite build
+  // easily exceeds execFile's 1MB output default, so raise it.
+  private async pnpmIn(cwd: string, ...args: string[]): Promise<void> {
     const win = process.platform === "win32";
-    await pexec(win ? "npm.cmd" : "npm", args, {
+    await pexec(win ? "pnpm.cmd" : "pnpm", args, {
       cwd,
       shell: win,
       timeout: 10 * 60_000,
@@ -295,8 +297,8 @@ export class UpdateService {
       if (root !== this.repoRoot && this.hasBuildScript(root)
         && this.builtCommit(root) !== after) {
         try {
-          await this.npmIn(root, "install");
-          await this.npmIn(root, "run", "build");
+          await this.pnpmIn(root, "install");
+          await this.pnpmIn(root, "run", "build");
           writeFileSync(path.join(root, "dist", ".commit"), after);
           note = " — build шинэчлэгдлээ";
         } catch (e) {
