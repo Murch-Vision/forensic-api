@@ -1,7 +1,7 @@
 /* -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
  * File Name   : resolvers.ts
  * Created at  : 2026-06-23
- * Updated at  : 2026-06-23
+ * Updated at  : 2026-08-07
  * Author      : jeefo
  * Purpose     :
  * Description :
@@ -31,6 +31,7 @@ import type {NoiseFilter, NoiseFilterService}
   from "../services/noiseFilterService";
 import type {CaseGraphService} from "../services/caseGraphService";
 import type {AuthService, AuthUser} from "../services/authService";
+import {sendMaestroFeedback} from "../services/supportService";
 import type {UpdateService} from "../services/updateService";
 import type {AlertSeverity, EvidenceSourceType} from "../models/enums";
 import {
@@ -931,6 +932,34 @@ export const resolvers = {
       const id = await c.data.addCaseNote(a.input);
       await c.audit.record("CaseNote.Add", `CaseNote:${id}`);
       return id;
+    },
+    // Any signed-in user may report — the sender's identity comes from the
+    // session, not the input, so a post can't impersonate anyone. Caps mirror
+    // maestro's own intake (text 4000 / 3 × 5MB images) with headroom.
+    sendSupportRequest: async (
+      _p: unknown,
+      a: {input: {type: string; text: string; images?: string[] | null}},
+      c: GraphQLContext
+    ) => {
+      const user = requireUser(c);
+      const text = a.input.text.trim();
+      if (!text) throw new Error("Хүсэлтээ бичнэ үү.");
+      const type = ["Алдаа", "Санал", "Асуулт"].includes(a.input.type)
+        ? a.input.type : "";
+      const images = (a.input.images ?? [])
+        .filter((d) => d.startsWith("data:image/") && d.length <= 7_000_000)
+        .slice(0, 3)
+        .map((d) => ({data: d}));
+      const meta: Record<string, string> = {app: "forensic"};
+      if (type) meta.type = type;
+      await sendMaestroFeedback({
+        text    : (type ? `[${type}] ` : "") + text.slice(0, 3800),
+        author  : user.fullName ?? user.username,
+        contact : user.username,
+        meta,
+        images,
+      });
+      return true;
     },
   },
 

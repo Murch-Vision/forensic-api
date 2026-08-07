@@ -1,7 +1,7 @@
 /* -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
  * File Name   : schema.ts
  * Created at  : 2026-06-23
- * Updated at  : 2026-06-23
+ * Updated at  : 2026-08-07
  * Author      : jeefo
  * Purpose     :
  * Description :
@@ -953,6 +953,15 @@ export const typeDefs = /* GraphQL */ `
     ): [AuditEvent!]!
   }
 
+  "Staff → developer request, proxied into the maestro feedback inbox."
+  input SupportRequestInput {
+    "Алдаа | Санал | Асуулт"
+    type: String!
+    text: String!
+    "Client-compressed image data URIs (data:image/…), up to 3."
+    images: [String!]
+  }
+
   type Mutation {
     "Pull the latest code from git; restarts the server when new commits arrive (ADMIN only)."
     selfUpdate: UpdateResult!
@@ -1045,5 +1054,7 @@ export const typeDefs = /* GraphQL */ `
     grantCaseAccess(caseFileId: Int!, userId: Int!): Boolean!
     "Revoke a detective's access to a case. ADMIN only."
     revokeCaseAccess(caseFileId: Int!, userId: Int!): Boolean!
+    "Send a technical request to the developer (any signed-in user)."
+    sendSupportRequest(input: SupportRequestInput!): Boolean!
   }
 `;
