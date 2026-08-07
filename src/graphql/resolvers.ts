@@ -6,6 +6,7 @@
  * Purpose     :
  * Description :
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
+import os from "node:os";
 import type {SuspectInput, SuspectService} from "../services/suspectService";
 import type {DataService} from "../services/dataService";
 import type {AnalysisService} from "../services/analysisService";
@@ -206,6 +207,22 @@ export const resolvers = {
     updateLog: (_p: unknown, _a: unknown, c: GraphQLContext) => {
       requireAdmin(c);
       return c.update.updateLog();
+    },
+    // The machine's LAN IPv4 addresses. The client composes the full URL with
+    // ITS OWN port (window.location.port) — the api never guesses which port
+    // the frontend is served on. Link-local 169.254.* is noise, not a way in.
+    lanAddresses: (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireUser(c);
+      const out: string[] = [];
+      for (const infos of Object.values(os.networkInterfaces())) {
+        for (const i of infos ?? []) {
+          if (i.family === "IPv4" && !i.internal
+            && !i.address.startsWith("169.254.")) {
+            out.push(i.address);
+          }
+        }
+      }
+      return out;
     },
     bankAccounts: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       scopedAccounts(c),

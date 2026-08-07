@@ -897,6 +897,8 @@ export const typeDefs = /* GraphQL */ `
     appVersion: VersionInfo!
     "Live progress of the running self-update (empty when idle)."
     updateLog: UpdateLog!
+    "This server's IPv4 addresses on the local network — Settings shows them with the app's port so other computers know what to open."
+    lanAddresses: [String!]!
     bankAccounts: [BankAccount!]!
     transactions(includeRemoved: Boolean): [BankTransaction!]!
     callRecords: [CallRecord!]!
