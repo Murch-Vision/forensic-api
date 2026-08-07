@@ -144,6 +144,10 @@ export class UpdateService {
       shell: win,
       timeout: 10 * 60_000,
       maxBuffer: 16 * 1024 * 1024,
+      // There is no TTY here, and pnpm ABORTS instead of assuming yes when it
+      // wants to confirm something (e.g. purging an npm-made node_modules).
+      // CI=true makes every such prompt non-interactive.
+      env: {...process.env, CI: "true"},
     });
   }
 
