@@ -955,7 +955,7 @@ export const typeDefs = /* GraphQL */ `
 
   "Staff → developer request, proxied into the maestro feedback inbox."
   input SupportRequestInput {
-    "Алдаа | Санал | Асуулт"
+    "Алдаа | Санал"
     type: String!
     text: String!
     "Client-compressed image data URIs (data:image/…), up to 3."

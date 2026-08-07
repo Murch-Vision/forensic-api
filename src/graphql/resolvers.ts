@@ -944,7 +944,7 @@ export const resolvers = {
       const user = requireUser(c);
       const text = a.input.text.trim();
       if (!text) throw new Error("Хүсэлтээ бичнэ үү.");
-      const type = ["Алдаа", "Санал", "Асуулт"].includes(a.input.type)
+      const type = ["Алдаа", "Санал"].includes(a.input.type)
         ? a.input.type : "";
       const images = (a.input.images ?? [])
         .filter((d) => d.startsWith("data:image/") && d.length <= 7_000_000)
