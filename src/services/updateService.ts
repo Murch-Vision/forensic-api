@@ -11,7 +11,7 @@
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import {execFile} from "node:child_process";
 import {promisify} from "node:util";
-import {readFileSync} from "node:fs";
+import {readFileSync, writeFileSync} from "node:fs";
 import path from "node:path";
 
 const pexec = promisify(execFile);
@@ -135,6 +135,18 @@ export class UpdateService {
     });
   }
 
+  // The commit a checkout's dist was built from — written by us after a
+  // successful build (vite wipes dist, so the marker vanishes with the old
+  // build). Missing or different ⇒ the SERVED app is stale even when the pull
+  // says "already up to date" (e.g. an older updater pulled without building).
+  private builtCommit(root: string): string {
+    try {
+      return readFileSync(path.join(root, "dist", ".commit"), "utf8").trim();
+    } catch {
+      return "";
+    }
+  }
+
   private hasBuildScript(root: string): boolean {
     try {
       const raw = readFileSync(path.join(root, "package.json"), "utf8");
@@ -254,30 +266,37 @@ export class UpdateService {
       } catch {
         /* ignore */
       }
-      // A pulled EXTRA checkout (the frontend) is served as a BUILT app —
-      // pulling its source changes nothing on screen until dist is rebuilt.
-      // vite preview reads dist from disk on every request (sirv dev:true),
-      // so a rebuild is also all it takes: no frontend process restart.
+      // An EXTRA checkout (the frontend) is served as a BUILT app — pulling
+      // its source changes nothing on screen until dist is rebuilt. vite
+      // preview reads dist from disk on every request (sirv dev:true), so a
+      // rebuild is also all it takes: no frontend process restart. Staleness
+      // is judged against the .commit marker, NOT "did this pull move HEAD" —
+      // a commit pulled earlier without a build would otherwise stay unserved
+      // forever.
       let note = "";
-      if (root !== this.repoRoot && after !== before
-        && this.hasBuildScript(root)) {
+      if (root !== this.repoRoot && this.hasBuildScript(root)
+        && this.builtCommit(root) !== after) {
         try {
           await this.npmIn(root, "install");
           await this.npmIn(root, "run", "build");
+          writeFileSync(path.join(root, "dist", ".commit"), after);
           note = " — build шинэчлэгдлээ";
         } catch (e) {
           buildFailed = true;
           note = ` — build амжилтгүй: ${gitError(e)}`;
         }
       }
+      const moved = after !== before;
       repos.push({
         name,
-        updated: after !== before,
+        updated: moved || note === " — build шинэчлэгдлээ",
         previousCommit: short(before),
         newCommit: short(after),
-        message: after !== before
+        message: moved
           ? `${short(before)} → ${short(after)}${note}`
-          : "Хамгийн сүүлийн үеийнх.",
+          : note
+            ? `Код хамгийн сүүлийн үеийнх${note}`
+            : "Хамгийн сүүлийн үеийнх.",
       });
     }
 
