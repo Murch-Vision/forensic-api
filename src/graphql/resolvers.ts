@@ -282,7 +282,14 @@ export const resolvers = {
         caseSubjectNationalIds(c),
       ]);
       const limit = Math.min(Math.max(a.topLimit ?? 30, 1), 200);
-      return analyseAccounts(accounts, txns, subjects, limit);
+      // Night window and the high-value floor come from the department's own
+      // AML settings, not from a number invented in the analysis code.
+      const aml = AmlThresholds.current;
+      return analyseAccounts(accounts, txns, subjects, {
+        nightFrom: aml.nightHoursStart,
+        nightTo: aml.nightHoursEnd,
+        highValueFloor: aml.highValueTxnFloor,
+      }, limit);
     },
     directTransfers: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const [txns, accounts] = await Promise.all([

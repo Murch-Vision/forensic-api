@@ -21,13 +21,34 @@ import type {BankAccount, BankTransaction} from "../models/types";
 import {buildRelations} from "./relationService";
 import type {RelationRow} from "./relationService";
 
-// Шөнийн гүйлгээ — 22:00–05:59. Same window the call register already treats as
-// night, so the two pages cannot disagree about what "night" means.
-const NIGHT_FROM = 22;
-const NIGHT_TO = 5;
+// Шөнийн гүйлгээ and "их дүн" are NOT invented here: the AML config already
+// carries the department's own numbers (nightHoursStart/End, highValueTxnFloor),
+// and inventing a second definition is how two screens end up disagreeing.
+export interface AnalysisConfig {
+  nightFrom      : number;
+  nightTo        : number;
+  highValueFloor : number;
+}
 
-export function isNightHour(hour: number): boolean {
-  return hour >= NIGHT_FROM || hour <= NIGHT_TO;
+// The client's own spreadsheet labelled a counterparty "Их давтамж" from ten
+// transactions upward.
+const FREQUENT_TXN_MIN = 10;
+
+export function isNightHour(hour: number, cfg: AnalysisConfig): boolean {
+  // A window that wraps midnight (22→5) and one that does not (0→6) both work.
+  return cfg.nightFrom <= cfg.nightTo
+    ? hour >= cfg.nightFrom && hour <= cfg.nightTo
+    : hour >= cfg.nightFrom || hour <= cfg.nightTo;
+}
+
+// Үнэлгээ — the rating column from the client's frequency sheet.
+function rate(r: RelationRow, cfg: AnalysisConfig): string {
+  const freq = r.txnCount >= FREQUENT_TXN_MIN;
+  const big = (r.creditTotal + r.debitTotal) >= cfg.highValueFloor;
+  if (freq && big) return "Их давтамж, их дүн";
+  if (freq) return "Их давтамж";
+  if (big) return "Их дүн";
+  return "Ердийн";
 }
 
 // Buckets are read straight out of the stored ISO text rather than through
@@ -101,7 +122,11 @@ export interface AccountAnalysis {
   peakHour         : string | null;
   peakWeekday      : string | null;
   peakMonth        : string | null;
-  topCounterparties: RelationRow[];
+  topCounterparties: RatedRelation[];
+}
+
+export interface RatedRelation extends RelationRow {
+  rating: string;
 }
 
 export interface DirectTransfer {
@@ -143,6 +168,7 @@ export function analyseAccount(
   account: BankAccount,
   txns: BankTransaction[],
   subjectNationalIds: string[],
+  cfg: AnalysisConfig,
   topLimit = 30
 ): AccountAnalysis {
   const byHour = Array.from({length: 24}, (_v, h) =>
@@ -166,7 +192,7 @@ export function analyseAccount(
     const hour = hasTime ? hourOf(t.timestamp) : null;
     if (hour !== null && hour >= 0 && hour < 24) {
       add(byHour[hour], t);
-      if (isNightHour(hour)) {nightCount++; nightTotal += t.amount;}
+      if (isNightHour(hour, cfg)) {nightCount++; nightTotal += t.amount;}
     }
     const wd = weekdayOf(t.timestamp);
     if (wd !== null) add(byWeekday[wd], t);
@@ -203,7 +229,8 @@ export function analyseAccount(
     peakHour: hasTime ? peak(byHour) : null,
     peakWeekday: peak(byWeekday),
     peakMonth: peak(byMonth),
-    topCounterparties: rel.relations.slice(0, topLimit),
+    topCounterparties: rel.relations.slice(0, topLimit)
+      .map((r) => ({...r, rating: rate(r, cfg)})),
   };
 }
 
@@ -211,6 +238,7 @@ export function analyseAccounts(
   accounts: BankAccount[],
   txns: BankTransaction[],
   subjectNationalIds: string[],
+  cfg: AnalysisConfig,
   topLimit = 30
 ): AccountAnalysis[] {
   const byAccount = new Map<number, BankTransaction[]>();
@@ -224,7 +252,7 @@ export function analyseAccounts(
     // carries account records belonging to a tagged person that hold no rows.
     .filter((a) => (byAccount.get(a.id)?.length ?? 0) > 0)
     .map((a) => analyseAccount(a, byAccount.get(a.id) ?? [],
-      subjectNationalIds, topLimit))
+      subjectNationalIds, cfg, topLimit))
     .sort((a, b) => b.txnCount - a.txnCount);
 }
 

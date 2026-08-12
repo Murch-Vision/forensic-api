@@ -205,6 +205,11 @@ export const typeDefs = /* GraphQL */ `
     accountIds: [Int!]!
     "Дундын харьцаа — appears on two or more of our statement accounts."
     mutual: Boolean!
+    """
+    Үнэлгээ — "Их давтамж, их дүн" / "Их давтамж" / "Их дүн" / "Ердийн", from the
+    AML high-value floor. Only set inside an account analysis; null elsewhere.
+    """
+    rating: String
     "Registration number matches a subject on the case's subject list."
     subjectMatch: Boolean!
   }
@@ -274,11 +279,21 @@ export const typeDefs = /* GraphQL */ `
     creditTotal: Float!
     debitTotal: Float!
     netTotal: Float!
-    "Шөнийн гүйлгээ — rows timed 22:00–05:59, the window the call register uses."
+    """
+    Шөнийн гүйлгээ, counted with the department's configured night window
+    (AML nightHoursStart–nightHoursEnd). Zero when hasTimeOfDay is false.
+    """
     nightCount: Int!
     nightTotal: Float!
     firstTxn: String
     lastTxn: String
+    """
+    False when the imported statement carried no clock (every row midnight).
+    byHour, nightCount and peakHour are then empty and must NOT be shown — an
+    hourly chart from date-only rows is a single bar at 00:00, and a night count
+    would read as "every transaction happened at night".
+    """
+    hasTimeOfDay: Boolean!
     byHour: [ActivityBucket!]!
     byWeekday: [ActivityBucket!]!
     byMonth: [ActivityBucket!]!
