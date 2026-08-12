@@ -1008,15 +1008,18 @@ export const resolvers = {
       await c.audit.record("CaseNote.Add", `CaseNote:${id}`);
       return id;
     },
-    // Any signed-in user may report — the sender's identity comes from the
-    // session, not the input, so a post can't impersonate anyone. Caps mirror
-    // maestro's own intake (text 4000 / 3 × 5MB images) with headroom.
+    // ADMIN only: reporting to the developer is the boss's channel, so the
+    // rule is enforced here and not merely hidden in the UI. The sender's
+    // identity comes from the session, not the input, so a post can't
+    // impersonate anyone. Caps mirror maestro's own intake
+    // (text 4000 / 3 × 5MB images) with headroom.
     sendSupportRequest: async (
       _p: unknown,
-      a: {input: {type: string; text: string; images?: string[] | null}},
+      a: {input: {type: string; text: string; images?: string[] | null;
+        page?: string | null; client?: string | null}},
       c: GraphQLContext
     ) => {
-      const user = requireUser(c);
+      const user = requireAdmin(c);
       const text = a.input.text.trim();
       if (!text) throw new Error("Хүсэлтээ бичнэ үү.");
       const type = ["Алдаа", "Санал"].includes(a.input.type)
@@ -1027,6 +1030,11 @@ export const resolvers = {
         .map((d) => ({data: d}));
       const meta: Record<string, string> = {app: "forensic"};
       if (type) meta.type = type;
+      // Trimmed hard: these land in a chat message, not a log store.
+      const page = (a.input.page ?? "").trim().slice(0, 120);
+      if (page) meta.page = page;
+      const client = (a.input.client ?? "").trim().slice(0, 160);
+      if (client) meta.client = client;
       await sendMaestroFeedback({
         text    : (type ? `[${type}] ` : "") + text.slice(0, 3800),
         author  : user.fullName ?? user.username,

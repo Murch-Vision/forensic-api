@@ -1041,13 +1041,20 @@ export const typeDefs = /* GraphQL */ `
     ): [AuditEvent!]!
   }
 
-  "Staff → developer request, proxied into the maestro feedback inbox."
+  "Admin → developer request, proxied into the maestro feedback inbox."
   input SupportRequestInput {
     "Алдаа | Санал"
     type: String!
     text: String!
     "Client-compressed image data URIs (data:image/…), up to 3."
     images: [String!]
+    """
+    Which screen the sender was on (route path). Without it every report starts
+    with a round-trip asking where it happened.
+    """
+    page: String
+    "Browser · OS · window size, for reproducing what the sender saw."
+    client: String
   }
 
   type Mutation {
@@ -1150,7 +1157,7 @@ export const typeDefs = /* GraphQL */ `
     grantCaseAccess(caseFileId: Int!, userId: Int!): Boolean!
     "Revoke a detective's access to a case. ADMIN only."
     revokeCaseAccess(caseFileId: Int!, userId: Int!): Boolean!
-    "Send a technical request to the developer (any signed-in user)."
+    "Send a technical request to the developer. ADMIN only."
     sendSupportRequest(input: SupportRequestInput!): Boolean!
   }
 `;
