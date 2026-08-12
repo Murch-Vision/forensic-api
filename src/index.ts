@@ -35,6 +35,7 @@ import {AnbService} from "./services/anbService";
 import {LocalizationService} from "./services/localizationService";
 import {TelemetryService} from "./services/telemetryService";
 import {NoiseFilterService} from "./services/noiseFilterService";
+import {ConclusionService} from "./services/conclusionService";
 import {CaseGraphService} from "./services/caseGraphService";
 import {AuthService} from "./services/authService";
 import {UpdateService} from "./services/updateService";
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
       i18n,
       telemetry,
       noise    : new NoiseFilterService(db),
+      conclusions : new ConclusionService(db),
       graphs   : new CaseGraphService(db),
       auth,
       update,

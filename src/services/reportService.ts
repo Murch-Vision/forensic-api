@@ -19,12 +19,20 @@ import {
   Packer,
   PageBreak,
   Paragraph,
+  Table,
+  TableCell,
+  TableOfContents,
+  TableRow,
   TextRun,
+  WidthType,
 } from "docx";
 import type {DataService} from "./dataService";
 import type {AuditChainVerdict} from "./auditLogService";
 import type {BankAccount, BankTransaction, Suspect} from "../models/types";
 import {formatDateLike} from "./reportFormat";
+import type {AccountAnalysis, DirectTransfer} from "./accountAnalysisService";
+import type {RelationRow} from "./relationService";
+import type {CaseConclusion} from "./conclusionService";
 
 // Ported from Services/ReportService.cs — the PDF (was QuestPDF) and Excel
 // (was ClosedXML) exporters. Output is returned as an in-memory Buffer so the
@@ -544,6 +552,245 @@ export class ReportService {
     const doc = new Document({sections: [{children}]});
     return Packer.toBuffer(doc);
   }
+
+  // ДАНСНЫ ДҮН ШИНЖИЛГЭЭ — the examiner's verdict document, built to the shape of
+  // the client's own "Мөрч дүгнэлт" template: header, contents, one part per
+  // statement account, the link analysis, then the written conclusions.
+  //
+  // Figures are rendered as TABLES, not screenshots. The template pasted images
+  // of the app because that was the only way to get them into Word by hand; a
+  // table carries the same numbers as selectable, searchable text that survives
+  // being copied into a case file. Charts as embedded images need the browser to
+  // rasterise them (the server has none) and are a separate step.
+  async generateVerdictDocx(input: {
+    caseId: string;
+    caseName: string;
+    period: {from: string | null; to: string | null};
+    analyses: AccountAnalysis[];
+    mutualRelations: RelationRow[];
+    transfers: DirectTransfer[];
+    conclusions: CaseConclusion[];
+  }): Promise<Buffer> {
+    const {analyses, transfers, conclusions} = input;
+    const children: (Paragraph | Table | TableOfContents)[] = [];
+    const conclusionFor = (accountId: number | null): string =>
+      conclusions.find((c) => c.bankAccountId === accountId)?.text ?? "";
+
+    // --- Header -----------------------------------------------------------
+    children.push(centered("ДАНСНЫ ДҮН ШИНЖИЛГЭЭ", 18, "000000"));
+    children.push(new Paragraph({text: ""}));
+    children.push(field("Үзлэг хийсэн дансны дугаар",
+      analyses.map((a) => a.accountNumber).join(", ") || "—"));
+    children.push(field("Данс эзэмшигч",
+      [...new Set(analyses.map((a) => a.ownerName).filter(Boolean))]
+        .join(", ") || "—"));
+    children.push(field("Дүн шинжилгээ хийсэн хуулганы он сар",
+      input.period.from && input.period.to
+        ? `${input.period.from.slice(0, 7)} – ${input.period.to.slice(0, 7)}`
+        : "—"));
+    children.push(field("Хэрэг", `${input.caseId} · ${input.caseName}`));
+    children.push(new Paragraph({text: ""}));
+
+    // --- Contents ---------------------------------------------------------
+    // A real Word field: page numbers are filled in by Word when the document
+    // is opened, because nothing here knows where the pages will break.
+    children.push(heading("АГУУЛГА", 14));
+    children.push(new TableOfContents("Агуулга", {
+      hyperlink: true, headingStyleRange: "1-2",
+    }));
+    children.push(new Paragraph({children: [new PageBreak()]}));
+
+    // --- One part per statement account -----------------------------------
+    analyses.forEach((a, i) => {
+      children.push(heading(
+        `${i + 1}. ДАНС: ${a.accountNumber}${a.ownerName
+          ? ` — ${a.ownerName}` : ""}`, 14));
+
+      children.push(subheading("Дансны хуулганы дэлгэрэнгүй мэдээлэл"));
+      const rows: [string, string][] = [
+        ["Нийт гүйлгээний тоо", num(a.txnCount)],
+        ["Харилцагчийн тоо", num(a.counterpartyCount)],
+        ["Нийт орлого", mnt(a.creditTotal)],
+        ["Нийт зарлага", mnt(a.debitTotal)],
+        ["Орлого зарлагын зөрүү", mnt(a.netTotal)],
+      ];
+      // Only claim a night figure when the statement actually carried a clock.
+      rows.push(a.hasTimeOfDay
+        ? ["Шөнийн гүйлгээ", `${num(a.nightCount)} (${mnt(a.nightTotal)})`]
+        : ["Шөнийн гүйлгээ", "Хуулганд гүйлгээний цаг байхгүй"]);
+      if (a.firstTxn && a.lastTxn) {
+        rows.push(["Хугацаа",
+          `${a.firstTxn.slice(0, 10)} — ${a.lastTxn.slice(0, 10)}`]);
+      }
+      children.push(kvTable(rows));
+
+      children.push(subheading(
+        `Нийт харилцсан харилцагчдийн гүйлгээний давтамжийн жагсаалт `
+        + `(${a.topCounterparties.length})`));
+      children.push(gridTable(
+        ["№", "Харилцагч", "Харьцсан данс", "Гүйлгээ", "Орлого", "Зарлага",
+          "Үнэлгээ"],
+        a.topCounterparties.map((r, n) => [
+          String(n + 1), r.name, r.account ?? "—", num(r.txnCount),
+          mnt(r.creditTotal), mnt(r.debitTotal),
+          (r as {rating?: string}).rating ?? "",
+        ])));
+
+      children.push(subheading(
+        "Хамгийн өндөр дүнгээр орлого, зарлага хийсэн харьцаа"));
+      const flows = a.topCounterparties
+        .flatMap((r) => [
+          ...(r.creditTotal > 0 ? [[r.name, "Орлого", r.creditCount,
+            r.creditTotal] as const] : []),
+          ...(r.debitTotal > 0 ? [[r.name, "Зарлага", r.debitCount,
+            r.debitTotal] as const] : []),
+        ])
+        .sort((x, y) => y[3] - x[3])
+        .slice(0, 15);
+      children.push(gridTable(["Харьцаа", "Төрөл", "Давтамж", "Дүн"],
+        flows.map((f) => [f[0], f[1], num(f[2]), mnt(f[3])])));
+
+      children.push(subheading("Орлого зарлагын идэвхжлийн шинжилгээ"));
+      if (a.hasTimeOfDay) {
+        children.push(bucketTable("Цагаар", a.byHour));
+      } else {
+        children.push(note("Цагийн шинжилгээ: хуулганд гүйлгээний цаг "
+          + "байхгүй тул гаргах боломжгүй."));
+      }
+      children.push(bucketTable("Өдрөөр", a.byWeekday));
+      children.push(bucketTable("Сараар", a.byMonth));
+
+      // The narrative sentence the template leaves blank, filled from the
+      // measured peaks rather than written prose.
+      children.push(subheading("Тайлбар"));
+      children.push(new Paragraph({children: [new TextRun({
+        text: narrative(a), size: 22, font: "Arial"})]}));
+
+      children.push(new Paragraph({children: [new PageBreak()]}));
+    });
+
+    // --- Link analysis ----------------------------------------------------
+    children.push(heading(
+      `${analyses.length + 1}. ДАНСНУУДЫН ХОЛБООСЫН ДҮН ШИНЖИЛГЭЭ`, 14));
+
+    children.push(subheading(
+      `Дундын харилцагч нар (${input.mutualRelations.length})`));
+    children.push(gridTable(
+      ["Харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
+      input.mutualRelations.slice(0, 60).map((r) => [
+        r.name, r.account ?? "—", num(r.txnCount),
+        mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
+      ])));
+
+    children.push(subheading(
+      `Хоорондоо харилцсан шууд гүйлгээ (${transfers.length})`));
+    children.push(gridTable(["Хаанаас", "Хаана", "Гүйлгээ", "Дүн"],
+      transfers.slice(0, 60).map((t) => [
+        t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)])));
+
+    if (transfers.length > 0) {
+      const top = transfers[0];
+      children.push(subheading("Тайлбар"));
+      children.push(new Paragraph({children: [new TextRun({
+        text: `Хамгийн их шууд гүйлгээ: ${top.fromLabel} → ${top.toLabel}, `
+          + `${num(top.txnCount)} гүйлгээ, ${mnt(top.total)}.`,
+        size: 22, font: "Arial"})]}));
+    }
+    children.push(new Paragraph({children: [new PageBreak()]}));
+
+    // --- Дүгнэлт ----------------------------------------------------------
+    children.push(heading(`${analyses.length + 2}. ДҮГНЭЛТ`, 14));
+    for (const a of analyses) {
+      children.push(subheading(`Данс ${a.accountNumber}`));
+      const text = conclusionFor(a.accountId);
+      children.push(text
+        ? new Paragraph({children: [new TextRun({text, size: 22,
+          font: "Arial"})]})
+        : note("Дүгнэлт бичигдээгүй."));
+    }
+    children.push(subheading("Холбоосын дүгнэлт"));
+    const linkText = conclusionFor(null);
+    children.push(linkText
+      ? new Paragraph({children: [new TextRun({text: linkText, size: 22,
+        font: "Arial"})]})
+      : note("Дүгнэлт бичигдээгүй."));
+
+    const doc = new Document({sections: [{children}]});
+    return Packer.toBuffer(doc);
+  }
+}
+
+function num(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+function field(label: string, value: string): Paragraph {
+  return new Paragraph({children: [
+    new TextRun({text: `${label} : `, bold: true, size: 24, font: "Arial"}),
+    new TextRun({text: value, size: 24, font: "Arial"}),
+  ]});
+}
+
+function subheading(text: string): Paragraph {
+  return new Paragraph({
+    heading: HeadingLevel.HEADING_3,
+    spacing: {before: 200, after: 80},
+    children: [new TextRun({text, bold: true, size: 24, font: "Arial"})],
+  });
+}
+
+function note(text: string): Paragraph {
+  return new Paragraph({children: [new TextRun({text, italics: true,
+    size: 20, color: "808080", font: "Arial"})]});
+}
+
+function docxCell(text: string, bold = false): TableCell {
+  return new TableCell({children: [new Paragraph({children: [
+    new TextRun({text, bold, size: 20, font: "Arial"})]})]});
+}
+
+function kvTable(rows: [string, string][]): Table {
+  return new Table({
+    width: {size: 100, type: WidthType.PERCENTAGE},
+    rows: rows.map(([k, v]) => new TableRow({
+      children: [docxCell(k, true), docxCell(v)]})),
+  });
+}
+
+function gridTable(headers: string[], rows: string[][]): Table {
+  return new Table({
+    width: {size: 100, type: WidthType.PERCENTAGE},
+    rows: [
+      new TableRow({children: headers.map((h) => docxCell(h, true))}),
+      ...(rows.length > 0
+        ? rows.map((r) => new TableRow({children: r.map((v) => docxCell(v))}))
+        : [new TableRow({children: headers.map((_h, i) =>
+          docxCell(i === 0 ? "—" : ""))})]),
+    ],
+  });
+}
+
+function bucketTable(title: string, buckets: {
+  label: string; count: number; creditTotal: number; debitTotal: number;
+}[]): Table {
+  const rows = buckets.filter((b) => b.count > 0)
+    .map((b) => [b.label, num(b.count), mnt(b.creditTotal),
+      mnt(b.debitTotal)]);
+  return gridTable([title, "Гүйлгээ", "Орлого", "Зарлага"], rows);
+}
+
+// The template's Тайлбар sentence, with the blanks filled from measured peaks.
+function narrative(a: AccountAnalysis): string {
+  const parts: string[] = [];
+  if (a.peakMonth) {
+    parts.push(`Мөнгөн урсгал ${a.peakMonth} сард хамгийн идэвхтэй байна`);
+  }
+  if (a.peakWeekday) parts.push(`${a.peakWeekday} гарагт идэвхжинэ`);
+  if (a.hasTimeOfDay && a.peakHour) {
+    parts.push(`${a.peakHour} цагт идэвхжинэ`);
+  }
+  if (parts.length === 0) return "Идэвхжлийн онцлох давтамж тодорхойлогдсонгүй.";
+  return `${parts.join(", ")}.`;
 }
 
 function centered(text: string, pt: number, color: string): Paragraph {

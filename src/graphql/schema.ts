@@ -319,6 +319,20 @@ export const typeDefs = /* GraphQL */ `
     byMonth: [ActivityBucket!]!
   }
 
+  """
+  Дүгнэлт — the examiner's written conclusion. bankAccountId null = the
+  link-analysis conclusion, which belongs to the case rather than one account.
+  The program never writes this text.
+  """
+  type CaseConclusion {
+    id: Int!
+    caseFileId: Int!
+    bankAccountId: Int
+    text: String!
+    updatedAt: String!
+    updatedByUserId: Int
+  }
+
   "A login account. ADMIN = department boss; DETECTIVE = scoped analyst."
   type User {
     id: Int!
@@ -1055,6 +1069,8 @@ export const typeDefs = /* GraphQL */ `
     accountAnalyses(topLimit: Int): [AccountAnalysis!]!
     "Direct transfers between the case's own statement accounts."
     directTransfers: [DirectTransfer!]!
+    "Дүгнэлт written for the active case (per account + one for the links)."
+    caseConclusions: [CaseConclusion!]!
     callRecords: [CallRecord!]!
     suspectLinks: [SuspectLink!]!
     caseFiles: [CaseFile!]!
@@ -1085,6 +1101,11 @@ export const typeDefs = /* GraphQL */ `
     reportMarkedSuspectsPdf(minAmount: Int): ReportFile!
     reportExcel: ReportFile!
     reportWord: ReportFile!
+    """
+    ДАНСНЫ ДҮН ШИНЖИЛГЭЭ — the verdict document for the active case, in the shape
+    of the client's template. Figures are tables, not screenshots.
+    """
+    reportVerdictDocx: ReportFile!
     screenSuspect(id: Int!): [SanctionsHit!]!
     sanctionsStatus: SanctionsStatus!
     sanctionsRefreshLogs(take: Int): [SanctionsRefreshLog!]!
@@ -1231,6 +1252,11 @@ export const typeDefs = /* GraphQL */ `
     resetUserPassword(userId: Int!, password: String!): Boolean!
     "Forget a detective's bound device so they can log in from a new one. ADMIN only."
     resetUserDevice(userId: Int!): Boolean!
+    """
+    Store a Дүгнэлт. bankAccountId null targets the link-analysis conclusion;
+    an empty text clears it and returns null.
+    """
+    saveCaseConclusion(bankAccountId: Int, text: String!): CaseConclusion
     "Grant a detective access to a case. ADMIN only."
     grantCaseAccess(caseFileId: Int!, userId: Int!): Boolean!
     "Revoke a detective's access to a case. ADMIN only."

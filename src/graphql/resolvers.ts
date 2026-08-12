@@ -31,6 +31,8 @@ import type {TelemetryService} from "../services/telemetryService";
 import type {NoiseFilter, NoiseFilterService}
   from "../services/noiseFilterService";
 import type {CaseGraphService} from "../services/caseGraphService";
+import type {CaseConclusion, ConclusionService}
+  from "../services/conclusionService";
 import type {AuthService, AuthUser} from "../services/authService";
 import {sendMaestroFeedback} from "../services/supportService";
 import type {UpdateService} from "../services/updateService";
@@ -66,6 +68,7 @@ export interface GraphQLContext {
   telemetry : TelemetryService;
   noise    : NoiseFilterService;
   graphs   : CaseGraphService;
+  conclusions : ConclusionService;
   auth     : AuthService;
   update   : UpdateService;
   // The authenticated caller (null when the request carries no valid token).
@@ -291,6 +294,13 @@ export const resolvers = {
         highValueFloor: aml.highValueTxnFloor,
       }, limit);
     },
+    // Дүгнэлт — what the examiner has written for the active case.
+    caseConclusions: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireUser(c);
+      const active = await c.session.getCurrentCase();
+      if (!active) return [];
+      return c.conclusions.getForCase(active.id);
+    },
     directTransfers: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const [txns, accounts] = await Promise.all([
         scopedTransactions(c, false),
@@ -394,6 +404,47 @@ export const resolvers = {
       return {
         filename: "ForensicReport.pdf",
         mimeType: "application/pdf",
+        base64: buf.toString("base64"),
+      };
+    },
+    // The verdict document. Built from the SAME aggregates the analysis tab
+    // shows, so the document cannot state a figure the screen disagrees with.
+    reportVerdictDocx: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const active = await c.session.getCurrentCase();
+      if (!active) throw new Error("Хэрэг сонгоогүй байна");
+      const [txns, accounts, subjects, conclusions] = await Promise.all([
+        scopedTransactions(c, false),
+        scopedAccounts(c),
+        caseSubjectNationalIds(c),
+        c.conclusions.getForCase(active.id),
+      ]);
+      const aml = AmlThresholds.current;
+      const analyses = analyseAccounts(accounts, txns, subjects, {
+        nightFrom: aml.nightHoursStart,
+        nightTo: aml.nightHoursEnd,
+        highValueFloor: aml.highValueTxnFloor,
+      }, 30);
+      const rel = buildRelations(txns, accounts, subjects);
+      const buf = await c.reports.generateVerdictDocx({
+        caseId: active.caseId,
+        caseName: active.caseName,
+        period: {
+          from: analyses.reduce<string | null>((min, a) =>
+            !min || (a.firstTxn && a.firstTxn < min) ? a.firstTxn : min, null),
+          to: analyses.reduce<string | null>((max, a) =>
+            !max || (a.lastTxn && a.lastTxn > max) ? a.lastTxn : max, null),
+        },
+        analyses,
+        mutualRelations: rel.relations.filter((r) => r.mutual),
+        transfers: directTransfers(accounts, txns),
+        conclusions,
+      });
+      await c.audit.record("Report.Generated", "File:DansniiDunShinjilgee.docx");
+      return {
+        filename: `Dansnii-Dun-Shinjilgee-${active.caseId}.docx`
+          .replace(/[^A-Za-z0-9._-]/g, "-"),
+        mimeType: "application/vnd.openxmlformats-officedocument."
+          + "wordprocessingml.document",
         base64: buf.toString("base64"),
       };
     },
@@ -1012,6 +1063,22 @@ export const resolvers = {
       const ok = await c.auth.resetDevices(a.userId);
       await c.audit.record("User.ResetDevice", `User:${a.userId}`, "");
       return ok;
+    },
+    // The examiner writes the conclusion; the program only stores and places it.
+    saveCaseConclusion: async (
+      _p: unknown,
+      a: {bankAccountId?: number | null; text: string},
+      c: GraphQLContext
+    ) => {
+      const user = requireUser(c);
+      const active = await c.session.getCurrentCase();
+      if (!active) throw new Error("Хэрэг сонгоогүй байна");
+      const row = await c.conclusions.save(
+        active.id, a.bankAccountId ?? null, a.text, user.id);
+      await c.audit.record("Case.Conclusion",
+        `CaseFile:${active.id}`,
+        a.bankAccountId == null ? "link" : `Account:${a.bankAccountId}`);
+      return row;
     },
     grantCaseAccess: async (
       _p: unknown, a: {caseFileId: number; userId: number}, c: GraphQLContext
