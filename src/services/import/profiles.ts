@@ -43,6 +43,7 @@ const BANK_PROFILES: ImportProfile[] = [
     optionalHeaders: ["Харьцсан регистрийн дугаар", "Журнал", "Гүйлгээний дугаар"],
     fieldMap: {
       date: ["Гүйлгээний огноо"], amount: ["Гүйлгээний дүн"],
+      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Time"],
       description: ["Гүйлгээний утга"], counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр"],
       counterpartyNationalId: ["Харьцсан регистрийн дугаар", "Харьцсан регистр"],
@@ -62,6 +63,7 @@ const BANK_PROFILES: ImportProfile[] = [
     optionalHeaders: [],
     fieldMap: {
       date: ["Гүйлгээний огноо"], amount: ["Гүйлгээний дүн"],
+      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Time"],
       description: ["Гүйлгээний утга"], counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр"],
       counterpartyNationalId: ["Харьцсан регистрийн дугаар", "Харьцсан регистр"],

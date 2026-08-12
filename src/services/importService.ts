@@ -316,11 +316,15 @@ export class ImportService {
           res.skippedRows++;
           continue;
         }
-        const date = tryParseDateOrSerial(dateStr);
-        if (!date) {
+        const parsedDate = tryParseDateOrSerial(dateStr);
+        if (!parsedDate) {
           res.skippedRows++;
           continue;
         }
+        // The clock lives in its own column on most Mongolian statements.
+        const date = parsedDate.slice(11, 19) === "00:00:00"
+          ? applyTimeOfDay(parsedDate, get("time") ?? "")
+          : parsedDate;
         const desc = get("description");
         if (desc && desc.includes("Эхний үлдэгдэл")) {
           res.skippedRows++;
@@ -700,6 +704,37 @@ function empty(message: string): ImportSummary {
 function excelSerialToIso(serial: number): string {
   const ms = Date.UTC(1899, 11, 30) + serial * 86_400_000;
   return new Date(ms).toISOString();
+}
+
+// Statements keep the clock in its own column ("Цаг"), so the date column alone
+// parses to midnight. Reading only the date made EVERY transaction 00:00, which
+// flattened the hourly activity chart to a single bar and would have reported
+// 100% of transactions as "шөнийн гүйлгээ". Accepts "14:35", "14:35:22",
+// "2:05 PM" and the Excel fraction-of-a-day a time cell arrives as.
+export function applyTimeOfDay(isoDate: string, raw: string): string {
+  const t = (raw ?? "").trim();
+  if (!t) return isoDate;
+  const day = isoDate.slice(0, 10);
+
+  const hms = /^(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(t);
+  if (hms) {
+    let h = Number(hms[1]);
+    const m = Number(hms[2]);
+    const sec = Number(hms[3] ?? "0");
+    if (/pm/i.test(t) && h < 12) h += 12;
+    if (/am/i.test(t) && h === 12) h = 0;
+    if (h > 23 || m > 59 || sec > 59) return isoDate;
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${day}T${p(h)}:${p(m)}:${p(sec)}.000Z`;
+  }
+
+  // Excel time cell: a fraction of one day (0.5 = 12:00).
+  const frac = Number(t);
+  if (Number.isFinite(frac) && frac > 0 && frac < 1) {
+    const ms = Math.round(frac * 86_400_000);
+    return new Date(Date.parse(`${day}T00:00:00.000Z`) + ms).toISOString();
+  }
+  return isoDate;
 }
 
 export function tryParseDateOrSerial(input: string): string | null {

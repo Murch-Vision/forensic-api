@@ -245,6 +245,65 @@ export const typeDefs = /* GraphQL */ `
     byAccount: [AccountRelations!]!
   }
 
+  "One bucket of activity: an hour, a weekday, or a calendar month."
+  type ActivityBucket {
+    "0-23, 0-6 (Sun-first), or YYYY-MM."
+    key: String!
+    label: String!
+    count: Int!
+    creditCount: Int!
+    debitCount: Int!
+    creditTotal: Float!
+    debitTotal: Float!
+  }
+
+  """
+  Дансны дүн шинжилгээ — one imported statement account. Same scoped,
+  noise-filtered rows the transaction list shows, so the report and the screen
+  cannot disagree.
+  """
+  type AccountAnalysis {
+    accountId: Int!
+    label: String!
+    accountNumber: String!
+    ownerName: String
+    txnCount: Int!
+    counterpartyCount: Int!
+    creditCount: Int!
+    debitCount: Int!
+    creditTotal: Float!
+    debitTotal: Float!
+    netTotal: Float!
+    "Шөнийн гүйлгээ — rows timed 22:00–05:59, the window the call register uses."
+    nightCount: Int!
+    nightTotal: Float!
+    firstTxn: String
+    lastTxn: String
+    byHour: [ActivityBucket!]!
+    byWeekday: [ActivityBucket!]!
+    byMonth: [ActivityBucket!]!
+    "Busiest bucket by transaction count — fills the report's Тайлбар sentence."
+    peakHour: String
+    peakWeekday: String
+    peakMonth: String
+    "Counterparties of THIS account, most transactions first (default top 30)."
+    topCounterparties: [CaseRelation!]!
+  }
+
+  """
+  Хоорондоо харилцсан шууд гүйлгээ — money between two accounts we hold
+  statements for, evidenced by the counterparty account number on the row.
+  """
+  type DirectTransfer {
+    fromAccountId: Int!
+    toAccountId: Int!
+    fromLabel: String!
+    toLabel: String!
+    txnCount: Int!
+    total: Float!
+    byMonth: [ActivityBucket!]!
+  }
+
   "A login account. ADMIN = department boss; DETECTIVE = scoped analyst."
   type User {
     id: Int!
@@ -977,6 +1036,10 @@ export const typeDefs = /* GraphQL */ `
     transactions(includeRemoved: Boolean): [BankTransaction!]!
     "Харьцаа of the active case's statement accounts, aggregated."
     caseRelations: CaseRelationSummary!
+    "Per-account analysis for every statement account in the active case."
+    accountAnalyses(topLimit: Int): [AccountAnalysis!]!
+    "Direct transfers between the case's own statement accounts."
+    directTransfers: [DirectTransfer!]!
     callRecords: [CallRecord!]!
     suspectLinks: [SuspectLink!]!
     caseFiles: [CaseFile!]!

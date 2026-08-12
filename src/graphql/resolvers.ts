@@ -42,6 +42,9 @@ import {
 } from "../services/amlThresholds";
 import type {BankAccount, BankTransaction, Suspect} from "../models/types";
 import {buildRelations} from "../services/relationService";
+import {
+  analyseAccounts, directTransfers,
+} from "../services/accountAnalysisService";
 
 export interface GraphQLContext {
   suspects : SuspectService;
@@ -163,6 +166,16 @@ async function scopedTransactions(
   return ignored.size ? scoped.filter((t) => !ignored.has(t.id)) : scoped;
 }
 
+// Registration numbers of the subjects on the active case's list — what a
+// counterparty's регистр is matched against to be flagged.
+async function caseSubjectNationalIds(c: GraphQLContext): Promise<string[]> {
+  const scope = await caseScope(c);
+  const all = await c.suspects.getAllSuspects();
+  return (scope ? all.filter((s) => scope.suspectIds.has(s.id)) : all)
+    .map((s) => s.nationalId ?? "")
+    .filter(Boolean);
+}
+
 async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
   const accounts = await c.data.getAllBankAccounts();
   const scope = await caseScope(c);
@@ -252,18 +265,31 @@ export const resolvers = {
     // Харьцаа — built from exactly the transactions the Transactions page
     // shows, so the dashboard totals cannot drift away from the list.
     caseRelations: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const [txns, accounts, subjects] = await Promise.all([
+        scopedTransactions(c, false),
+        scopedAccounts(c),
+        caseSubjectNationalIds(c),
+      ]);
+      return buildRelations(txns, accounts, subjects);
+    },
+    // Дансны дүн шинжилгээ — per statement account. Same inputs as above.
+    accountAnalyses: async (
+      _p: unknown, a: {topLimit?: number | null}, c: GraphQLContext
+    ) => {
+      const [txns, accounts, subjects] = await Promise.all([
+        scopedTransactions(c, false),
+        scopedAccounts(c),
+        caseSubjectNationalIds(c),
+      ]);
+      const limit = Math.min(Math.max(a.topLimit ?? 30, 1), 200);
+      return analyseAccounts(accounts, txns, subjects, limit);
+    },
+    directTransfers: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const [txns, accounts] = await Promise.all([
         scopedTransactions(c, false),
         scopedAccounts(c),
       ]);
-      const scope = await caseScope(c);
-      const all = await c.suspects.getAllSuspects();
-      const subjects = (scope
-        ? all.filter((s) => scope.suspectIds.has(s.id))
-        : all)
-        .map((s) => s.nationalId ?? "")
-        .filter(Boolean);
-      return buildRelations(txns, accounts, subjects);
+      return directTransfers(accounts, txns);
     },
     callRecords: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const calls = await c.data.getAllCallRecords();
