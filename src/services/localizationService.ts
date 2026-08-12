@@ -13,8 +13,8 @@ import path from "path";
 // english.csv key→value tables (copied into backend/assets). Get(key) falls
 // back to the key when missing; getChartsPayload mirrors the C# chart locale.
 
-// ASSETS_DIR lets a packaged/desktop build point at bundled read-only assets
-// (Tauri resources) instead of the source-tree ../../assets path.
+// ASSETS_DIR lets an on-premise install point at a read-only assets directory
+// instead of the source-tree ../../assets path.
 const ASSETS = process.env.ASSETS_DIR
   || path.join(__dirname, "..", "..", "assets");
 

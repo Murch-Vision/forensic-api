@@ -40,7 +40,8 @@ import {
   MongoliaDefault,
   UnitedStatesDefault,
 } from "../services/amlThresholds";
-import type {BankAccount, Suspect} from "../models/types";
+import type {BankAccount, BankTransaction, Suspect} from "../models/types";
+import {buildRelations} from "../services/relationService";
 
 export interface GraphQLContext {
   suspects : SuspectService;
@@ -143,6 +144,25 @@ async function caseScope(c: GraphQLContext): Promise<CaseScope | null> {
   };
 }
 
+// The active case's transactions. Removed-as-noise rows are hidden EVERYWHERE
+// by default; only the Transactions page asks for them (includeRemoved) so it
+// can manage / restore them.
+async function scopedTransactions(
+  c: GraphQLContext, includeRemoved: boolean
+): Promise<BankTransaction[]> {
+  const txns = await c.data.getAllTransactions();
+  const scope = await caseScope(c);
+  let scoped = txns;
+  if (scope) {
+    const accountIds = new Set((await scopedAccounts(c)).map((x) => x.id));
+    scoped = txns.filter((t) =>
+      accountIds.has(t.bankAccountId) || scope.txnIds.has(t.id));
+  }
+  if (includeRemoved) return scoped;
+  const ignored = await ignoredTxnIds(c);
+  return ignored.size ? scoped.filter((t) => !ignored.has(t.id)) : scoped;
+}
+
 async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
   const accounts = await c.data.getAllBankAccounts();
   const scope = await caseScope(c);
@@ -228,22 +248,22 @@ export const resolvers = {
       scopedAccounts(c),
     transactions: async (
       _p: unknown, a: {includeRemoved?: boolean}, c: GraphQLContext
-    ) => {
-      const txns = await c.data.getAllTransactions();
+    ) => scopedTransactions(c, a.includeRemoved ?? false),
+    // Харьцаа — built from exactly the transactions the Transactions page
+    // shows, so the dashboard totals cannot drift away from the list.
+    caseRelations: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const [txns, accounts] = await Promise.all([
+        scopedTransactions(c, false),
+        scopedAccounts(c),
+      ]);
       const scope = await caseScope(c);
-      let scoped = txns;
-      if (scope) {
-        const accountIds = new Set((await scopedAccounts(c)).map((x) => x.id));
-        scoped = txns.filter((t) =>
-          accountIds.has(t.bankAccountId) || scope.txnIds.has(t.id));
-      }
-      // Removed-as-noise transactions are hidden EVERYWHERE by default; only
-      // the Transactions page asks for them (includeRemoved) so it can manage /
-      // restore them.
-      if (a.includeRemoved) return scoped;
-      const ignored = await ignoredTxnIds(c);
-      return ignored.size
-        ? scoped.filter((t) => !ignored.has(t.id)) : scoped;
+      const all = await c.suspects.getAllSuspects();
+      const subjects = (scope
+        ? all.filter((s) => scope.suspectIds.has(s.id))
+        : all)
+        .map((s) => s.nationalId ?? "")
+        .filter(Boolean);
+      return buildRelations(txns, accounts, subjects);
     },
     callRecords: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const calls = await c.data.getAllCallRecords();
@@ -886,8 +906,8 @@ export const resolvers = {
       c.auth.logout(c.token),
     createUser: async (
       _p: unknown,
-      a: {input: {username: string; password: string; fullName?: string;
-        role?: "ADMIN" | "DETECTIVE"}},
+      a: {input: {username: string; password: string; rank?: string;
+        fullName?: string; role?: "ADMIN" | "DETECTIVE"}},
       c: GraphQLContext
     ) => {
       requireAdmin(c);
@@ -895,6 +915,40 @@ export const resolvers = {
       await c.audit.record("User.Create", `User:${u.id}`,
         `${u.username} (${u.role})`);
       return u;
+    },
+    updateUser: async (
+      _p: unknown,
+      a: {userId: number; input: {username?: string; rank?: string | null;
+        fullName?: string | null; role?: "ADMIN" | "DETECTIVE"}},
+      c: GraphQLContext
+    ) => {
+      const admin = requireAdmin(c);
+      // An admin editing their OWN account must not be able to demote
+      // themselves out of the admin page they are standing on.
+      if (a.userId === admin.id && a.input.role
+        && a.input.role !== admin.role) {
+        throw new Error("Өөрийн үүргээ өөрчилж болохгүй");
+      }
+      const u = await c.auth.updateUser(a.userId, a.input);
+      await c.audit.record("User.Update", `User:${u.id}`,
+        Object.keys(a.input).join(","));
+      return u;
+    },
+    deleteUser: async (
+      _p: unknown, a: {userId: number; transferToUserId?: number | null},
+      c: GraphQLContext
+    ) => {
+      const admin = requireAdmin(c);
+      if (a.userId === admin.id) {
+        throw new Error("Өөрийн бүртгэлээ устгаж болохгүй");
+      }
+      // Owned cases go to the account the admin PICKED, never a default.
+      const res = await c.auth.deleteUser(
+        a.userId, a.transferToUserId ?? null);
+      await c.audit.record("User.Delete", `User:${a.userId}`,
+        res.casesTransferred
+          ? `${res.casesTransferred} хэрэг → User:${admin.id}` : "");
+      return res.deleted;
     },
     setUserActive: async (
       _p: unknown, a: {userId: number; active: boolean}, c: GraphQLContext
@@ -989,6 +1043,9 @@ export const resolvers = {
     // reset button when true). Only meaningful for detectives.
     deviceBound: (u: {id: number}, _a: unknown, c: GraphQLContext) =>
       c.auth.hasBoundDevice(u.id),
+    // Cases this account owns — shown before deleting, since they change hands.
+    ownedCaseCount: (u: {id: number}, _a: unknown, c: GraphQLContext) =>
+      c.auth.ownedCaseCount(u.id),
   },
 
   Suspect: {

@@ -184,15 +184,80 @@ export const typeDefs = /* GraphQL */ `
     ownerUserId: Int
   }
 
+  """
+  Харьцаа — one counterparty of the case's imported statement accounts, with
+  everything that moved between them. Credit/debit are seen from OUR account:
+  credit = орлого (in), debit = зарлага (out).
+  """
+  type CaseRelation {
+    key: String!
+    name: String!
+    account: String
+    nationalId: String
+    txnCount: Int!
+    creditCount: Int!
+    debitCount: Int!
+    creditTotal: Float!
+    debitTotal: Float!
+    "creditTotal − debitTotal."
+    netTotal: Float!
+    "Which imported statement accounts this counterparty appears on."
+    accountIds: [Int!]!
+    "Дундын харьцаа — appears on two or more of our statement accounts."
+    mutual: Boolean!
+    "Registration number matches a subject on the case's subject list."
+    subjectMatch: Boolean!
+  }
+
+  "One imported statement account with its own counterparty list."
+  type AccountRelations {
+    accountId: Int!
+    label: String!
+    txnCount: Int!
+    relationCount: Int!
+    relations: [CaseRelation!]!
+  }
+
+  """
+  The active case's counterparty picture. Totals count exactly the transactions
+  the analyst still has in the case — rows removed as noise are excluded here
+  too, so these figures match the transaction list.
+  """
+  type CaseRelationSummary {
+    "Accounts a statement was actually imported for (i.e. that have rows)."
+    statementAccounts: Int!
+    totalRelations: Int!
+    mutualRelations: Int!
+    txnCount: Int!
+    creditCount: Int!
+    debitCount: Int!
+    creditTotal: Float!
+    debitTotal: Float!
+    netTotal: Float!
+    """
+    Transactions whose statement row names no counterparty at all (banks write
+    "-" into every column they have nothing for). Counted in the totals above,
+    but they can never appear in the list below.
+    """
+    unnamedTxnCount: Int!
+    "Every counterparty, most transactions first."
+    relations: [CaseRelation!]!
+    byAccount: [AccountRelations!]!
+  }
+
   "A login account. ADMIN = department boss; DETECTIVE = scoped analyst."
   type User {
     id: Int!
     username: String!
+    "Цол — rank/title, kept apart from the name so it can be listed on its own."
+    rank: String
     fullName: String
     role: String!
     active: Boolean!
     "True when this account is locked to a device (detectives only)."
     deviceBound: Boolean!
+    "Cases this account owns. They transfer to the admin if it is deleted."
+    ownedCaseCount: Int!
   }
 
   "Returned by login: the bearer token plus the account it belongs to."
@@ -204,6 +269,15 @@ export const typeDefs = /* GraphQL */ `
   input CreateUserInput {
     username: String!
     password: String!
+    rank: String
+    fullName: String
+    role: String
+  }
+
+  "Every field is optional: only the ones sent are written."
+  input UpdateUserInput {
+    username: String
+    rank: String
     fullName: String
     role: String
   }
@@ -901,6 +975,8 @@ export const typeDefs = /* GraphQL */ `
     lanAddresses: [String!]!
     bankAccounts: [BankAccount!]!
     transactions(includeRemoved: Boolean): [BankTransaction!]!
+    "Харьцаа of the active case's statement accounts, aggregated."
+    caseRelations: CaseRelationSummary!
     callRecords: [CallRecord!]!
     suspectLinks: [SuspectLink!]!
     caseFiles: [CaseFile!]!
@@ -1056,6 +1132,14 @@ export const typeDefs = /* GraphQL */ `
     logout: Boolean!
     "Create a detective (or admin) account. ADMIN only."
     createUser(input: CreateUserInput!): User!
+    "Edit an account's login name, rank, name or role. ADMIN only."
+    updateUser(userId: Int!, input: UpdateUserInput!): User!
+    """
+    Delete an account for good. If it owns cases, transferToUserId must name
+    their new owner — a case is never left ownerless, and never reassigned as a
+    silent side effect. ADMIN only.
+    """
+    deleteUser(userId: Int!, transferToUserId: Int): Boolean!
     "Activate/deactivate an account — deactivating kills live sessions. ADMIN only."
     setUserActive(userId: Int!, active: Boolean!): User!
     "Set a new password for an account. ADMIN only."

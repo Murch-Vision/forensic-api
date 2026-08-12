@@ -9,8 +9,7 @@
     "build": "tsc --noEmit",
     "migrate": "tsx src/db/migrate.ts",
     "rollback": "tsx src/db/rollback.ts",
-    "seed": "tsx src/db/seed.ts",
-    "build:sidecar": "node desktop/build-sidecar.mjs"
+    "seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
     "@apollo/server": "^4.11.3",

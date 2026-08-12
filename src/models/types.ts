@@ -167,6 +167,9 @@ export type UserRole = "ADMIN" | "DETECTIVE";
 export interface User {
   id           : number;
   username     : string;
+  // Цол (rank) and Нэр (name) are separate: the old single fullName field was
+  // being typed as "д/х Э.Төмөрхуяг", which made rank unusable on its own.
+  rank         : string | null;
   fullName     : string | null;
   passwordHash : string;
   role         : UserRole;

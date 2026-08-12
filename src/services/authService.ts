@@ -21,14 +21,15 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export interface AuthUser {
   id       : number;
   username : string;
+  rank     : string | null;
   fullName : string | null;
   role     : UserRole;
   active   : boolean;
 }
 
 function toAuthUser(u: User): AuthUser {
-  return {id: u.id, username: u.username, fullName: u.fullName,
-    role: u.role, active: !!u.active};
+  return {id: u.id, username: u.username, rank: u.rank ?? null,
+    fullName: u.fullName, role: u.role, active: !!u.active};
 }
 
 export class AuthService {
@@ -152,7 +153,8 @@ export class AuthService {
   }
 
   async createUser(input: {
-    username: string; password: string; fullName?: string; role?: UserRole;
+    username: string; password: string; rank?: string; fullName?: string;
+    role?: UserRole;
   }): Promise<AuthUser> {
     const username = input.username.trim();
     if (!username) throw new Error("Нэвтрэх нэр хоосон байна");
@@ -164,6 +166,7 @@ export class AuthService {
     const now = new Date().toISOString();
     const [id] = await this.db("users").insert({
       username,
+      rank: input.rank?.trim() || null,
       fullName: input.fullName?.trim() || null,
       passwordHash: AuthService.hashPassword(input.password),
       role: input.role === "ADMIN" ? "ADMIN" : "DETECTIVE",
@@ -172,6 +175,107 @@ export class AuthService {
     });
     const u = await this.db<User>("users").where({id: Number(id)}).first();
     return toAuthUser(u!);
+  }
+
+  // Boss edits an existing account: login name, rank, name and role. Only the
+  // keys present in `patch` are written, so the form can send one field
+  // without blanking the rest.
+  async updateUser(userId: number, patch: {
+    username?: string; rank?: string | null; fullName?: string | null;
+    role?: UserRole;
+  }): Promise<AuthUser> {
+    const target = await this.db<User>("users").where({id: userId}).first();
+    if (!target) throw new Error("Хэрэглэгч олдсонгүй");
+
+    const row: Record<string, unknown> = {};
+    if (patch.username !== undefined) {
+      const username = patch.username.trim();
+      if (!username) throw new Error("Нэвтрэх нэр хоосон байна");
+      if (username !== target.username) {
+        const clash = await this.db<User>("users").where({username}).first();
+        if (clash) {
+          throw new Error("Ийм нэвтрэх нэртэй хэрэглэгч бүртгэлтэй байна");
+        }
+      }
+      row.username = username;
+    }
+    if (patch.rank !== undefined) row.rank = patch.rank?.trim() || null;
+    if (patch.fullName !== undefined) {
+      row.fullName = patch.fullName?.trim() || null;
+    }
+    if (patch.role !== undefined) {
+      const role = patch.role === "ADMIN" ? "ADMIN" : "DETECTIVE";
+      // Never leave the system with no way in: the last active ADMIN cannot be
+      // demoted to DETECTIVE.
+      if (target.role === "ADMIN" && role !== "ADMIN") {
+        const admins = await this.db<User>("users")
+          .where({role: "ADMIN", active: true}).whereNot({id: userId});
+        if (admins.length === 0) {
+          throw new Error("Системд хамгийн багадаа нэг админ байх ёстой");
+        }
+      }
+      row.role = role;
+    }
+    if (Object.keys(row).length === 0) return toAuthUser(target);
+
+    row.updatedAt = new Date().toISOString();
+    await this.db("users").where({id: userId}).update(row);
+    const u = await this.db<User>("users").where({id: userId}).first();
+    return toAuthUser(u!);
+  }
+
+  // How many cases this account owns. The admin page shows it before deleting,
+  // because those cases change hands.
+  async ownedCaseCount(userId: number): Promise<number> {
+    const [row] = await this.db("case_files").where({ownerUserId: userId})
+      .count({n: "*"});
+    return Number((row as {n: number | string}).n) || 0;
+  }
+
+  // Boss deletes an account. Dependent rows are removed explicitly rather than
+  // relying on ON DELETE CASCADE: SQLite only enforces foreign keys when
+  // `PRAGMA foreign_keys` is on, and this app never turns it on.
+  //
+  // A хэрэг must never be left ownerless — an unowned case file is nobody's
+  // responsibility. But handing it to whoever happened to press Delete would
+  // reassign a criminal case as a side effect of an unrelated action, so when
+  // this account owns cases the caller MUST name their new owner and the
+  // deletion is refused until it does.
+  async deleteUser(userId: number, transferToUserId: number | null):
+    Promise<{deleted: boolean; casesTransferred: number}> {
+    const target = await this.db<User>("users").where({id: userId}).first();
+    if (!target) throw new Error("Хэрэглэгч олдсонгүй");
+    if (userId === transferToUserId) {
+      throw new Error("Хэргийг устгах гэж байгаа хүнд шилжүүлж болохгүй");
+    }
+    const owned = await this.ownedCaseCount(userId);
+    if (owned > 0 && transferToUserId == null) {
+      throw new Error(`Энэ бүртгэл ${owned} хэрэг эзэмшиж байна — `
+        + "хэргийг хэн авахыг сонгоно уу");
+    }
+    if (transferToUserId != null) {
+      const heir = await this.db<User>("users")
+        .where({id: transferToUserId}).first();
+      if (!heir) throw new Error("Хэргийг хүлээн авах бүртгэл олдсонгүй");
+      if (!heir.active) {
+        throw new Error("Идэвхгүй бүртгэлд хэрэг шилжүүлж болохгүй");
+      }
+    }
+    if (target.role === "ADMIN") {
+      const admins = await this.db<User>("users")
+        .where({role: "ADMIN"}).whereNot({id: userId});
+      if (admins.length === 0) {
+        throw new Error("Системд хамгийн багадаа нэг админ байх ёстой");
+      }
+    }
+    const casesTransferred = await this.ownedCaseCount(userId);
+    await this.db("sessions").where({userId}).delete();
+    await this.db("user_devices").where({userId}).delete();
+    await this.db("case_members").where({userId}).delete();
+    await this.db("case_files").where({ownerUserId: userId})
+      .update({ownerUserId: transferToUserId});
+    await this.db("users").where({id: userId}).delete();
+    return {deleted: true, casesTransferred};
   }
 
   async setActive(userId: number, active: boolean): Promise<AuthUser> {
