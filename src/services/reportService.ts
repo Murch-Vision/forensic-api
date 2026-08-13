@@ -21,7 +21,7 @@ import {
   Paragraph,
   Table,
   TableCell,
-  TableOfContents,
+  TableLayoutType,
   TableRow,
   TextRun,
   WidthType,
@@ -572,7 +572,7 @@ export class ReportService {
     conclusions: CaseConclusion[];
   }): Promise<Buffer> {
     const {analyses, transfers, conclusions} = input;
-    const children: (Paragraph | Table | TableOfContents)[] = [];
+    const children: (Paragraph | Table)[] = [];
     const conclusionFor = (accountId: number | null): string =>
       conclusions.find((c) => c.bankAccountId === accountId)?.text ?? "";
 
@@ -592,12 +592,18 @@ export class ReportService {
     children.push(new Paragraph({text: ""}));
 
     // --- Contents ---------------------------------------------------------
-    // A real Word field: page numbers are filled in by Word when the document
-    // is opened, because nothing here knows where the pages will break.
+    // Written out rather than left to a Word TOC field: Pages ignores the field
+    // entirely and showed a blank first page. Page numbers are deliberately
+    // absent — nothing here can know where Word will break the pages, and a
+    // wrong page number is worse than none.
     children.push(heading("АГУУЛГА", 14));
-    children.push(new TableOfContents("Агуулга", {
-      hyperlink: true, headingStyleRange: "1-2",
-    }));
+    children.push(gridTable(["№", "Хийсэн дүн шинжилгээний ажил"],
+      [
+        ...analyses.map((a, i) => [String(i + 1),
+          `Данс ${a.accountNumber}${a.ownerName ? ` — ${a.ownerName}` : ""}`]),
+        [String(analyses.length + 1), "Данснуудын холбоосын дүн шинжилгээ"],
+        [String(analyses.length + 2), "Дүгнэлт"],
+      ], [1, 14]));
     children.push(new Paragraph({children: [new PageBreak()]}));
 
     // --- One part per statement account -----------------------------------
@@ -634,7 +640,7 @@ export class ReportService {
           String(n + 1), r.name, r.account ?? "—", num(r.txnCount),
           mnt(r.creditTotal), mnt(r.debitTotal),
           (r as {rating?: string}).rating ?? "",
-        ])));
+        ]), [2, 6, 5, 2, 4, 4, 4]));
 
       children.push(subheading(
         "Хамгийн өндөр дүнгээр орлого, зарлага хийсэн харьцаа"));
@@ -648,7 +654,8 @@ export class ReportService {
         .sort((x, y) => y[3] - x[3])
         .slice(0, 15);
       children.push(gridTable(["Харьцаа", "Төрөл", "Давтамж", "Дүн"],
-        flows.map((f) => [f[0], f[1], num(f[2]), mnt(f[3])])));
+        flows.map((f) => [f[0], f[1], num(f[2]), mnt(f[3])]),
+        [7, 3, 3, 4]));
 
       children.push(subheading("Орлого зарлагын идэвхжлийн шинжилгээ"));
       if (a.hasTimeOfDay) {
@@ -680,13 +687,14 @@ export class ReportService {
       input.mutualRelations.slice(0, 60).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount),
         mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
-      ])));
+      ]), [6, 5, 2, 4, 4, 4]));
 
     children.push(subheading(
       `Хоорондоо харилцсан шууд гүйлгээ (${transfers.length})`));
     children.push(gridTable(["Хаанаас", "Хаана", "Гүйлгээ", "Дүн"],
       transfers.slice(0, 60).map((t) => [
-        t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)])));
+        t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]),
+      [7, 7, 2, 4]));
 
     if (transfers.length > 0) {
       const top = transfers[0];
@@ -744,30 +752,72 @@ function note(text: string): Paragraph {
     size: 20, color: "808080", font: "Arial"})]});
 }
 
-function docxCell(text: string, bold = false): TableCell {
-  return new TableCell({children: [new Paragraph({children: [
-    new TextRun({text, bold, size: 20, font: "Arial"})]})]});
+// A4 portrait minus the default 1-inch margins, in DXA (twentieths of a point).
+// Every table MUST declare its column widths: with only a percentage width on
+// the table, Word guesses and Pages collapses each column to a single character,
+// which turned the whole document into vertical strips of letters.
+const PAGE_DXA = 9026;
+
+// 600 DXA (~0.42") is the floor: below roughly a quarter inch a cell wraps a
+// two-digit number one character per line, which is what made the first draft of
+// this document unreadable.
+const MIN_COL_DXA = 600;
+
+function widthsFor(weights: number[]): number[] {
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  const raw = weights.map((w) => Math.round((w / sum) * PAGE_DXA));
+  const lifted = raw.map((w) => Math.max(w, MIN_COL_DXA));
+  // Lifting narrow columns has to be paid for by the wide ones, or the table
+  // ends up wider than the page.
+  const over = lifted.reduce((a, b) => a + b, 0) - PAGE_DXA;
+  if (over <= 0) return lifted;
+  const spare = lifted
+    .map((w, i) => ({i, room: w - MIN_COL_DXA}))
+    .filter((x) => x.room > 0);
+  const roomTotal = spare.reduce((a, b) => a + b.room, 0) || 1;
+  for (const {i, room} of spare) {
+    lifted[i] -= Math.round((room / roomTotal) * over);
+  }
+  return lifted;
+}
+
+function docxCell(text: string, dxa: number, bold = false): TableCell {
+  return new TableCell({
+    width: {size: dxa, type: WidthType.DXA},
+    children: [new Paragraph({children: [
+      new TextRun({text, bold, size: 20, font: "Arial"})]})],
+  });
+}
+
+function table(colWidths: number[], rows: TableRow[]): Table {
+  return new Table({
+    width: {size: 100, type: WidthType.PERCENTAGE},
+    layout: TableLayoutType.FIXED,
+    columnWidths: colWidths,
+    rows,
+  });
 }
 
 function kvTable(rows: [string, string][]): Table {
-  return new Table({
-    width: {size: 100, type: WidthType.PERCENTAGE},
-    rows: rows.map(([k, v]) => new TableRow({
-      children: [docxCell(k, true), docxCell(v)]})),
-  });
+  const w = widthsFor([4, 6]);
+  return table(w, rows.map(([k, v]) => new TableRow({
+    children: [docxCell(k, w[0], true), docxCell(v, w[1])]})));
 }
 
-function gridTable(headers: string[], rows: string[][]): Table {
-  return new Table({
-    width: {size: 100, type: WidthType.PERCENTAGE},
-    rows: [
-      new TableRow({children: headers.map((h) => docxCell(h, true))}),
-      ...(rows.length > 0
-        ? rows.map((r) => new TableRow({children: r.map((v) => docxCell(v))}))
-        : [new TableRow({children: headers.map((_h, i) =>
-          docxCell(i === 0 ? "—" : ""))})]),
-    ],
-  });
+// `weights` sizes the columns relative to each other — a name column needs far
+// more room than a count.
+function gridTable(
+  headers: string[], rows: string[][], weights?: number[]
+): Table {
+  const w = widthsFor(weights ?? headers.map(() => 1));
+  return table(w, [
+    new TableRow({children: headers.map((h, i) => docxCell(h, w[i], true))}),
+    ...(rows.length > 0
+      ? rows.map((r) => new TableRow({
+        children: r.map((v, i) => docxCell(v, w[i] ?? w[0]))}))
+      : [new TableRow({children: headers.map((_h, i) =>
+        docxCell(i === 0 ? "—" : "", w[i]))})]),
+  ]);
 }
 
 function bucketTable(title: string, buckets: {
@@ -776,7 +826,8 @@ function bucketTable(title: string, buckets: {
   const rows = buckets.filter((b) => b.count > 0)
     .map((b) => [b.label, num(b.count), mnt(b.creditTotal),
       mnt(b.debitTotal)]);
-  return gridTable([title, "Гүйлгээ", "Орлого", "Зарлага"], rows);
+  return gridTable([title, "Гүйлгээ", "Орлого", "Зарлага"], rows,
+    [3, 2, 4, 4]);
 }
 
 // The template's Тайлбар sentence, with the blanks filled from measured peaks.
