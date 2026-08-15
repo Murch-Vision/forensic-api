@@ -635,11 +635,23 @@ export const typeDefs = /* GraphQL */ `
   type ImportPreview {
     headers: [String!]!
     sampleRows: [[String]!]!
+    "Data rows this range yields, blank ones already dropped."
     totalRows: Int!
     detectedProfile: String
     domain: String
     confidence: String!
     mapping: [ColumnMap!]!
+    """
+    The rows this preview was read from, numbered as the spreadsheet numbers
+    them (1-based, blank rows counted). Detected when the caller passed none,
+    so the screen can show its guess and let the analyst correct it.
+    """
+    headerRow: Int!
+    firstDataRow: Int!
+    "Defaults to the last row holding data — files carry blank rows after it."
+    lastDataRow: Int!
+    "Rows in the sheet, for bounding what may be picked."
+    sheetRows: Int!
   }
 
   type ImportSummary {
@@ -1092,7 +1104,18 @@ export const typeDefs = /* GraphQL */ `
     suspectLocations: [SuspectLocation!]!
     benfordObserved(bankAccountId: Int!): [Float!]!
     amlConfig: AmlConfig!
-    previewImport(content: String!, filename: String, sheetName: String, uploadId: String): ImportPreview!
+    previewImport(
+      content: String!
+      filename: String
+      sheetName: String
+      uploadId: String
+      "1-based, as the spreadsheet numbers its rows. Null = detect."
+      headerRow: Int
+      "1-based first data row. Null = the row after the header."
+      startRow: Int
+      "1-based last data row, inclusive. Null = the last row holding data."
+      endRow: Int
+    ): ImportPreview!
     excelSheets(content: String!, filename: String!, uploadId: String): [String!]!
     reportPdf: ReportFile!
     "Per-suspect financial PDF: profile, income/outgoing totals and the transaction ledger. minAmount hides transactions below the given amount."
@@ -1204,6 +1227,10 @@ export const typeDefs = /* GraphQL */ `
       subjectNumber: String
       mapping: [ColumnMapInput!]
       uploadId: String
+      "Rows to read, 1-based as the spreadsheet numbers them. Null = detect."
+      headerRow: Int
+      startRow: Int
+      endRow: Int
     ): ImportSummary!
     "Populate the active case with a lifelike demo call/device network so the analytics charts and connection graph are meaningful."
     generateSampleData: SampleDataResult!

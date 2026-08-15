@@ -14,7 +14,75 @@
 export interface NormalizedTable {
   headers: string[];
   rows: (string | null)[][];
-  headerRowIndex: number;
+  /**
+   * Which rows of the FILE this table was cut from, numbered exactly as the
+   * spreadsheet numbers them — 1-based, blank rows counted. The analyst reads
+   * these numbers off their own screen, so an index that quietly skips blanks
+   * would name a different row than the one they are pointing at.
+   */
+  headerRow    : number;
+  firstDataRow : number;
+  lastDataRow  : number;
+  /** Rows in the sheet, so a caller can bound what it offers to pick. */
+  sheetRows    : number;
+}
+
+/**
+ * Which rows to read. Every field is optional and 1-based; null means "decide
+ * it from the file" — the header by detection, the start right after it, the
+ * end at the last row that holds anything.
+ */
+export interface RowRange {
+  headerRow? : number | null;
+  startRow?  : number | null;
+  endRow?    : number | null;
+}
+
+export const EMPTY_TABLE: NormalizedTable = {
+  headers: [], rows: [], headerRow: 0, firstDataRow: 0, lastDataRow: 0,
+  sheetRows: 0,
+};
+
+const isBlankRow = (row: (string | null)[] | undefined): boolean =>
+  !row || row.every((c) => c == null || c.trim() === "");
+
+const clamp = (n: number, lo: number, hi: number): number =>
+  Math.min(Math.max(Math.trunc(n), lo), hi);
+
+/**
+ * Cut the header + data rows out of a raw grid, honouring whatever the caller
+ * pinned down and deciding the rest.
+ *
+ * The END defaults to the last row holding data, not to the last row in the
+ * sheet: statements routinely carry blank rows (or a stray cell left over from
+ * editing) after the final entry, and reading to the physical end turns those
+ * into failed rows in the summary.
+ */
+export function sliceTable(
+  grid  : (string | null)[][],
+  range : RowRange = {}
+): NormalizedTable {
+  if (grid.length === 0) return EMPTY_TABLE;
+  let lastData = grid.length;
+  while (lastData > 0 && isBlankRow(grid[lastData - 1])) lastData--;
+  if (lastData === 0) return {...EMPTY_TABLE, sheetRows: grid.length};
+
+  const header = clamp(range.headerRow ?? detectHeaderRow(grid) + 1,
+    1, grid.length);
+  // Data cannot start on or above its own header. An out-of-range start simply
+  // yields no rows, which the summary then reports as zero imported.
+  const start = clamp(range.startRow ?? header + 1, header + 1, grid.length + 1);
+  const end   = clamp(range.endRow ?? lastData, start - 1, grid.length);
+  return {
+    headers: (grid[header - 1] ?? []).map((x) => (x ?? "").trim()),
+    // Blank rows INSIDE the chosen range are dropped here rather than left for
+    // the import loop to reject: they are not rows anybody meant to import.
+    rows: grid.slice(start - 1, end).filter((r) => !isBlankRow(r)),
+    headerRow: header,
+    firstDataRow: start,
+    lastDataRow: end,
+    sheetRows: grid.length,
+  };
 }
 
 const HEADER_SCAN_ROWS = 15;
@@ -26,13 +94,23 @@ function looksNumericOrDate(s: string): boolean {
   return false;
 }
 
-// Pick the most header-like row: mostly non-empty, mostly non-numeric, distinct.
+const filledCells = (row: (string | null)[] | undefined): number =>
+  (row ?? []).filter((c) => c != null && c.trim() !== "").length;
+
+// Pick the most header-like row: mostly non-empty, mostly non-numeric,
+// distinct — and as WIDE as the table it heads.
 export function detectHeaderRow(grid: (string | null)[][]): number {
   let bestIdx = 0;
   let bestScore = -Infinity;
   const scan = Math.min(HEADER_SCAN_ROWS, grid.length);
+  // The widest row near the top is the table's own width. Without this a title
+  // line above the table ("Тайлан: ХААН банк", one filled cell) scored a
+  // perfect fill/text/distinct ratio, tied with the real header row and won on
+  // being first — so the columns came out as a single nonsense header.
+  let widest = 1;
+  for (let r = 0; r < scan; r++) widest = Math.max(widest, filledCells(grid[r]));
   for (let r = 0; r < scan; r++) {
-    const row = grid[r];
+    const row = grid[r] ?? [];
     let nonEmpty = 0;
     let numericish = 0;
     const seen = new Set<string>();
@@ -46,7 +124,9 @@ export function detectHeaderRow(grid: (string | null)[][]): number {
     const fillRatio = nonEmpty / Math.max(1, row.length);
     const textRatio = 1 - numericish / nonEmpty;
     const distinctRatio = seen.size / nonEmpty;
-    const score = fillRatio * 1 + textRatio * 2 + distinctRatio * 1;
+    const widthRatio = nonEmpty / widest;
+    const score = fillRatio * 1 + textRatio * 2 + distinctRatio * 1
+      + widthRatio * 2;
     if (score > bestScore) {
       bestScore = score;
       bestIdx = r;
@@ -104,19 +184,18 @@ function splitLine(line: string, delim: string): (string | null)[] {
   return out;
 }
 
-export function parseDelimited(text: string): NormalizedTable {
+export function parseDelimited(
+  text  : string,
+  range : RowRange = {}
+): NormalizedTable {
   const raw = text.replace(/^﻿/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  // Only the trailing newline's phantom line goes; every other blank line stays
+  // so line 1 of the file is row 1 here, whatever the analyst types.
   const lines = raw.split("\n").filter((l, i, arr) =>
     !(i === arr.length - 1 && l.trim() === ""));
-  if (lines.length === 0) return {headers: [], rows: [], headerRowIndex: 0};
+  if (lines.length === 0) return EMPTY_TABLE;
   const delim = detectDelimiter(lines);
-  const grid = lines.map((l) => splitLine(l, delim));
-  const h = detectHeaderRow(grid);
-  return {
-    headers: grid[h].map((x) => (x ?? "").trim()),
-    rows: grid.slice(h + 1),
-    headerRowIndex: h,
-  };
+  return sliceTable(lines.map((l) => splitLine(l, delim)), range);
 }
 
 // Cell value by header name (case/space-insensitive); null if absent/empty.

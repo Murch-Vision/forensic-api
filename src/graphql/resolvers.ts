@@ -386,11 +386,14 @@ export const resolvers = {
     previewImport: (
       _p: unknown,
       a: {content: string; filename?: string; sheetName?: string;
-        uploadId?: string},
+        uploadId?: string; headerRow?: number; startRow?: number;
+        endRow?: number},
       c: GraphQLContext
     ) => c.imports.preview(
       a.uploadId ? uploadContent(a.uploadId) : a.content,
-      a.filename ?? null, a.sheetName ?? null),
+      a.filename ?? null, a.sheetName ?? null,
+      {headerRow: a.headerRow ?? null, startRow: a.startRow ?? null,
+        endRow: a.endRow ?? null}),
     excelSheets: (
       _p: unknown,
       a: {content: string; filename: string; uploadId?: string},
@@ -808,7 +811,8 @@ export const resolvers = {
       a: {content: string; kind: ImportKind; bankAccountId?: number;
         filename?: string; sheetName?: string; subjectSuspectId?: number;
         subjectNumber?: string;
-        mapping?: {field: string; column: string}[]; uploadId?: string},
+        mapping?: {field: string; column: string}[]; uploadId?: string;
+        headerRow?: number; startRow?: number; endRow?: number},
       c: GraphQLContext
     ) => {
       // Imported data ALWAYS belongs to a case — there is no such thing as a
@@ -829,6 +833,8 @@ export const resolvers = {
         filename: a.filename ?? null, sheetName: a.sheetName ?? null,
         subjectSuspectId: a.subjectSuspectId ?? null,
         subjectNumber: a.subjectNumber ?? null, mapping,
+        headerRow: a.headerRow ?? null, startRow: a.startRow ?? null,
+        endRow: a.endRow ?? null,
       });
       await c.audit.record("Import.Run", sum.domain,
         `${sum.importedRows}/${sum.totalRows} rows`);

@@ -10,9 +10,11 @@ import * as XLSX from "xlsx";
 import type {Knex} from "knex";
 import {
   cell,
-  detectHeaderRow,
+  EMPTY_TABLE,
   parseDelimited,
+  sliceTable,
   type NormalizedTable,
+  type RowRange,
 } from "./import/tabularReader";
 import {detectProfile, type DetectionResult} from "./import/profiles";
 
@@ -34,6 +36,12 @@ export interface ImportPreview {
   domain: string | null;
   confidence: string;
   mapping: {field: string; column: string}[];
+  // The rows this preview was cut from, so the screen can SHOW the decision it
+  // made and let the analyst correct it instead of guessing what it did.
+  headerRow: number;
+  firstDataRow: number;
+  lastDataRow: number;
+  sheetRows: number;
 }
 
 // Everything the import mutation carries. Passed as one object so the call
@@ -47,6 +55,11 @@ export interface ImportOptions {
   subjectSuspectId? : number | null;
   subjectNumber?    : string | null;
   mapping?          : ColumnMapping | null;
+  // Which rows to read (1-based, as the spreadsheet numbers them). Null =
+  // decide from the file.
+  headerRow?        : number | null;
+  startRow?         : number | null;
+  endRow?           : number | null;
 }
 
 export interface ImportSummary {
@@ -77,10 +90,11 @@ export class ImportService {
   buildTable(
     content: string,
     filename?: string | null,
-    sheetName?: string | null
+    sheetName?: string | null,
+    range: RowRange = {}
   ): NormalizedTable {
-    if (isWorkbook(filename)) return parseWorkbook(content, sheetName);
-    return parseDelimited(content);
+    if (isWorkbook(filename)) return parseWorkbook(content, sheetName, range);
+    return parseDelimited(content, range);
   }
 
   excelSheets(content: string, filename?: string | null): string[] {
@@ -92,14 +106,19 @@ export class ImportService {
   preview(
     content: string,
     filename?: string | null,
-    sheetName?: string | null
+    sheetName?: string | null,
+    range: RowRange = {}
   ): ImportPreview {
-    const table = this.buildTable(content, filename, sheetName);
+    const table = this.buildTable(content, filename, sheetName, range);
     const det = detectProfile(table);
     return {
       headers: table.headers,
       sampleRows: table.rows.slice(0, 10),
       totalRows: table.rows.length,
+      headerRow: table.headerRow,
+      firstDataRow: table.firstDataRow,
+      lastDataRow: table.lastDataRow,
+      sheetRows: table.sheetRows,
       detectedProfile: det.profile?.displayName ?? null,
       domain: det.domain,
       confidence: det.confidence,
@@ -109,7 +128,9 @@ export class ImportService {
   }
 
   async importData(opts: ImportOptions): Promise<ImportSummary> {
-    const table = this.buildTable(opts.content, opts.filename, opts.sheetName);
+    const table = this.buildTable(opts.content, opts.filename, opts.sheetName, {
+      headerRow: opts.headerRow, startRow: opts.startRow, endRow: opts.endRow,
+    });
     const det = detectProfile(table);
     const domain = opts.kind === "AUTO" ? det.domain : opts.kind;
     if (!domain) {
@@ -798,28 +819,29 @@ function isWorkbook(filename?: string | null): boolean {
 
 // Parse a base64 workbook (.xlsx / .xls) into the same NormalizedTable shape
 // the delimited reader produces, with the same header-row auto-detection.
-function parseWorkbook(base64: string, sheetName?: string | null): NormalizedTable {
+function parseWorkbook(
+  base64     : string,
+  sheetName? : string | null,
+  range      : RowRange = {}
+): NormalizedTable {
   const wb = XLSX.read(Buffer.from(base64, "base64"), {type: "buffer"});
   const name = sheetName && wb.SheetNames.includes(sheetName)
     ? sheetName : wb.SheetNames[0];
   const sheet = wb.Sheets[name];
-  if (!sheet) return {headers: [], rows: [], headerRowIndex: 0};
+  if (!sheet) return EMPTY_TABLE;
+  // blankrows: TRUE — a dropped blank row would shift every row number below
+  // it, and then "мөр 12" here is not the мөр 12 on the analyst's screen. The
+  // blanks are removed later, by sliceTable, after the range has been cut.
   const aoa = XLSX.utils.sheet_to_json<(string | number | null)[]>(sheet, {
-    header: 1, raw: false, defval: null, blankrows: false,
+    header: 1, raw: false, defval: null, blankrows: true,
   });
   const grid: (string | null)[][] = aoa.map((row) =>
-    row.map((c) => {
+    (row ?? []).map((c) => {
       if (c == null) return null;
       const s = String(c).trim();
       return s === "" ? null : s;
     }));
-  if (grid.length === 0) return {headers: [], rows: [], headerRowIndex: 0};
-  const h = detectHeaderRow(grid);
-  return {
-    headers: grid[h].map((x) => (x ?? "").trim()),
-    rows: grid.slice(h + 1),
-    headerRowIndex: h,
-  };
+  return sliceTable(grid, range);
 }
 
 export function unwrapCallerId(raw: string): string {
