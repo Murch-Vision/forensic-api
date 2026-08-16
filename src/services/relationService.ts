@@ -35,11 +35,20 @@ export interface RelationRow {
   subjectMatch  : boolean;
 }
 
+// One statement account's own totals — the same figures the summary carries
+// for the whole case, so the dashboard can show ONE account without
+// re-deriving (and mis-deriving) them on the client.
 export interface AccountRelations {
   accountId     : number;
   label         : string;
   txnCount      : number;
   relationCount : number;
+  mutualCount   : number;
+  creditCount   : number;
+  debitCount    : number;
+  creditTotal   : number;
+  debitTotal    : number;
+  netTotal      : number;
   relations     : RelationRow[];
 }
 
@@ -104,9 +113,17 @@ function relationKey(t: BankTransaction): string | null {
   return null;
 }
 
+interface PerAcct {
+  txnCount    : number;
+  creditCount : number;
+  debitCount  : number;
+  credit      : number;
+  debit       : number;
+}
+
 interface Acc {
   row   : RelationRow;
-  perAcct : Map<number, {txnCount: number; credit: number; debit: number}>;
+  perAcct : Map<number, PerAcct>;
 }
 
 function blank(key: string, t: BankTransaction): Acc {
@@ -163,9 +180,10 @@ export function buildRelations(
     if (!r.account) r.account = clean(t.counterpartyAccount);
 
     const per = a.perAcct.get(t.bankAccountId)
-      ?? {txnCount: 0, credit: 0, debit: 0};
+      ?? {txnCount: 0, creditCount: 0, debitCount: 0, credit: 0, debit: 0};
     per.txnCount++;
-    if (isCredit) per.credit += t.amount; else per.debit += t.amount;
+    if (isCredit) {per.creditCount++; per.credit += t.amount;}
+    else {per.debitCount++; per.debit += t.amount;}
     a.perAcct.set(t.bankAccountId, per);
   }
 
@@ -183,24 +201,39 @@ export function buildRelations(
     || (y.creditTotal + y.debitTotal) - (x.creditTotal + x.debitTotal)
     || x.name.localeCompare(y.name));
 
+  // WHOSE account first, the number after: the analyst knows these accounts by
+  // the person, and a heading that opens with seventeen digits says nothing
+  // until it is read to the end.
+  const acctOwner = (id: number): string | null => {
+    const a = accounts.find((x) => x.id === id);
+    return a ? clean(a.accountHolderName) : null;
+  };
   const acctLabel = (id: number): string => {
     const a = accounts.find((x) => x.id === id);
     if (!a) return `Данс #${id}`;
-    return [a.bankName, a.accountNumber, a.accountHolderName]
+    return [acctOwner(id), a.accountNumber, clean(a.bankName)]
       .filter(Boolean).join(" · ");
   };
 
   // Slide 4: every statement account with its own counterparty list.
   const byAccount: AccountRelations[] = accounts.map((acct) => {
     const rows: RelationRow[] = [];
-    let count = 0;
+    let count = 0, creditCount = 0, debitCount = 0;
+    let credit = 0, debit = 0, mutualCount = 0;
     for (const a of byKey.values()) {
       const per = a.perAcct.get(acct.id);
       if (!per) continue;
       count += per.txnCount;
+      creditCount += per.creditCount;
+      debitCount += per.debitCount;
+      credit += per.credit;
+      debit += per.debit;
+      if (a.row.mutual) mutualCount++;
       rows.push({
         ...a.row,
         txnCount: per.txnCount,
+        creditCount: per.creditCount,
+        debitCount: per.debitCount,
         creditTotal: per.credit,
         debitTotal: per.debit,
         netTotal: per.credit - per.debit,
@@ -212,10 +245,31 @@ export function buildRelations(
       || x.name.localeCompare(y.name));
     return {
       accountId: acct.id, label: acctLabel(acct.id),
-      txnCount: count, relationCount: rows.length, relations: rows,
+      txnCount: count, relationCount: rows.length, mutualCount,
+      creditCount, debitCount,
+      creditTotal: credit, debitTotal: debit, netTotal: credit - debit,
+      relations: rows,
     };
-  }).filter((g) => g.relationCount > 0)
-    .sort((x, y) => y.txnCount - x.txnCount);
+  }).filter((g) => g.relationCount > 0);
+
+  // ONE PERSON'S ACCOUNTS STAND NEXT TO EACH OTHER. Sorting the columns by
+  // transaction count alone scattered a man's three accounts across the strip
+  // with other people's in between, so they could not be read together. Owners
+  // are ordered by their own busiest account; within an owner, busiest first.
+  const ownerBest = new Map<string, number>();
+  for (const g of byAccount) {
+    const o = acctOwner(g.accountId) ?? `#${g.accountId}`;
+    ownerBest.set(o, Math.max(ownerBest.get(o) ?? 0, g.txnCount));
+  }
+  byAccount.sort((x, y) => {
+    const ox = acctOwner(x.accountId) ?? `#${x.accountId}`;
+    const oy = acctOwner(y.accountId) ?? `#${y.accountId}`;
+    if (ox !== oy) {
+      return (ownerBest.get(oy) ?? 0) - (ownerBest.get(ox) ?? 0)
+        || ox.localeCompare(oy);
+    }
+    return y.txnCount - x.txnCount;
+  });
 
   return {
     // "Хуулсан данс" means a statement was actually imported for it. The case

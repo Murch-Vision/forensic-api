@@ -218,6 +218,13 @@ export const typeDefs = /* GraphQL */ `
     label: String!
     txnCount: Int!
     relationCount: Int!
+    "Counterparties on this account that other statement accounts also deal with."
+    mutualCount: Int!
+    creditCount: Int!
+    debitCount: Int!
+    creditTotal: Float!
+    debitTotal: Float!
+    netTotal: Float!
     relations: [CaseRelation!]!
   }
 
