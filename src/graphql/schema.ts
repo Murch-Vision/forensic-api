@@ -114,8 +114,6 @@ export const typeDefs = /* GraphQL */ `
     suspectId: Int
     accountHolderName: String
     createdAt: String!
-    "Computed: masked account number for display."
-    maskedNumber: String!
   }
 
   type BankTransaction {

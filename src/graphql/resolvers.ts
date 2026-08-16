@@ -107,15 +107,6 @@ function age(dateOfBirth: string | null): number {
   return Math.floor(days / 365.25);
 }
 
-// Computed [NotMapped] BankAccount.MaskedNumber.
-function maskedNumber(accountNumber: string): string {
-  if (!accountNumber) return "****";
-  if (accountNumber.length > 4) {
-    return "*".repeat(accountNumber.length - 4) + accountNumber.slice(-4);
-  }
-  return accountNumber;
-}
-
 // CASE SCOPE — when the analyst has an active case, the evidence list queries
 // (suspects, bankAccounts, transactions, callRecords, correlations) return
 // only that case's records. Membership comes from evidence_entries:
@@ -1177,10 +1168,6 @@ export const resolvers = {
       c.suspects.getLinks(s.id),
     recordCounts: (s: Suspect, _a: unknown, c: GraphQLContext) =>
       c.suspects.getRecordCounts(s.id),
-  },
-
-  BankAccount: {
-    maskedNumber: (a: BankAccount) => maskedNumber(a.accountNumber),
   },
 
   SuspectLink: {
