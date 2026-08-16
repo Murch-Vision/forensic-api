@@ -83,18 +83,24 @@ function normId(s: string | null | undefined): string | null {
   return v ? v.toUpperCase() : null;
 }
 
-// Identity of a counterparty. The account number is the strongest handle; a
-// registration number is next; otherwise the printed name is all a statement
-// gives us. Rows carrying an account are NOT merged into same-name rows that
-// lack one — guessing that they are the same person would invent a link the
-// evidence does not show.
+// Identity of a counterparty is the PERSON, not the account (his call,
+// 2026-08-16: "харьцсан хүний олон данстай байвал нийлүүлээд нэг болгож орж
+// ирнэ"). Keying by account first split one person across as many rows as he
+// held accounts — АМАРСАНАА ПҮРЭВДОРЖ appeared twice in the дундын list, once
+// with a number and once without, and the counts read as two people.
+//
+// So: the printed name IS the identity; a registration number identifies the
+// unnamed; the account number is an identity only when the statement printed
+// neither. ⚠️ Two different people who share a name therefore merge — the
+// statement gives nothing to tell them apart, and the analyst can see the
+// split in the transaction list.
 function relationKey(t: BankTransaction): string | null {
-  const acct = clean(t.counterpartyAccount);
-  if (acct) return `acct:${acct}`;
-  const nat = normId(t.counterpartyNationalId);
-  if (nat) return `nat:${nat}`;
   const name = clean(t.counterpartyName);
   if (name) return `name:${normName(name)}`;
+  const nat = normId(t.counterpartyNationalId);
+  if (nat) return `nat:${nat}`;
+  const acct = clean(t.counterpartyAccount);
+  if (acct) return `acct:${acct}`;
   return null;
 }
 
@@ -152,6 +158,9 @@ export function buildRelations(
     const laterName = clean(t.counterpartyName);
     if (r.name === "—" && laterName) r.name = laterName;
     if (!r.nationalId) r.nationalId = normId(t.counterpartyNationalId);
+    // Now that one person's accounts merge, the first row seen may be the one
+    // without a number — keep the first real one so the drill-through works.
+    if (!r.account) r.account = clean(t.counterpartyAccount);
 
     const per = a.perAcct.get(t.bankAccountId)
       ?? {txnCount: 0, credit: 0, debit: 0};

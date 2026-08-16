@@ -461,12 +461,9 @@ export class AnalysisService {
     const out = [];
     for (const a of accounts) {
       const txns = await this.db.getTransactionsForAccount(a.id);
-      const masked = a.accountNumber.length > 4
-        ? "*".repeat(a.accountNumber.length - 4) + a.accountNumber.slice(-4)
-        : a.accountNumber;
       out.push({
         bankAccountId: a.id,
-        accountName: `${a.bankName ?? "Банк"} - ${masked}`,
+        accountName: `${a.bankName ?? "Банк"} - ${a.accountNumber}`,
         analysis: this.analyzeAccountCore(a.id, txns),
         ruleResult: this.runRuleEngineCore(a.id, txns),
         benfordObserved: computeBenfordObserved(txns),
