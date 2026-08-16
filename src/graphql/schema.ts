@@ -1032,6 +1032,8 @@ export const typeDefs = /* GraphQL */ `
     dirty: Boolean!
     "Commit the SERVED build was made from — null for the backend (runs from source), empty when unknown."
     builtCommit: String
+    "Why the checkout could not be read (git missing, dubious ownership, not a checkout). Null when it reads fine."
+    error: String
   }
 
   "Running build identity — shown in Settings. Top-level fields describe the backend; \`repos\` covers every checkout."

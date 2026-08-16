@@ -19,6 +19,28 @@ const pexec = promisify(execFile);
 // execFile rejects with "Command failed: git pull --ff-only" and buries the
 // reason in .stderr. Surfacing only the first line of .message told the analyst
 // nothing about what to fix, so prefer git's own words.
+// Git failing to READ a checkout has three usual causes on the workstation,
+// and "Git-ийн сан биш" was printed for all three: git not installed (or not
+// on the service account's PATH), Windows' dubious-ownership guard, and an
+// actual non-checkout. Name the one that happened, with the fix where there
+// is one.
+function gitReadError(e: unknown, root: string): string {
+  const code = (e as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") {
+    return "git олдсонгүй — Git суулгаагүй эсвэл PATH дээр байхгүй байна";
+  }
+  const raw = gitError(e);
+  if (/dubious ownership/i.test(raw)) {
+    return `Git энэ хавтасны эзэмшигчийг зөвшөөрөхгүй байна. Тушаал: `
+      + `git config --global --add safe.directory `
+      + `"${root.replace(/\\/g, "/")}"`;
+  }
+  if (/not a git repository/i.test(raw)) {
+    return `Git-ийн сан биш: ${root}`;
+  }
+  return `${raw} (${root})`;
+}
+
 function gitError(e: unknown): string {
   const err = e as {stderr?: string; stdout?: string; message?: string};
   const raw = [err?.stderr, err?.stdout, err?.message]
@@ -50,6 +72,8 @@ export interface RepoVersion {
   // marker is missing (built by hand or never built). The Settings page
   // compares it against `commit` to say whether the screen is current.
   builtCommit: string | null;
+  // Why `commit` is unknown, when it is. Null when the checkout reads fine.
+  error: string | null;
 }
 
 export interface RepoUpdate {
@@ -275,15 +299,10 @@ export class UpdateService {
     }
   }
 
-  // Human name for a checkout: the package.json name, else the folder name.
+  // The FOLDER name — forensic-api / forensic-frontend. package.json calls
+  // them forensic-analyst-backend/-frontend, which is a third set of names
+  // nobody types, and an error naming them could not be matched to a folder.
   private repoName(root: string, fallback: string): string {
-    try {
-      const raw = readFileSync(path.join(root, "package.json"), "utf8");
-      const n = JSON.parse(raw).name as string | undefined;
-      if (n) return n;
-    } catch {
-      /* fall through */
-    }
     return path.basename(root) || fallback;
   }
 
@@ -303,11 +322,13 @@ export class UpdateService {
       branch: "unknown",
       dirty: false,
       builtCommit: extra ? "" : null,
+      error: null,
     };
     try {
       info.commit = await this.gitIn(root, "rev-parse", "--short", "HEAD");
-    } catch {
-      return info; // not a git checkout
+    } catch (e) {
+      info.error = gitReadError(e, root);
+      return info;
     }
     if (extra) {
       // The marker holds the full hash; trim to the same length as `commit`
@@ -373,10 +394,11 @@ export class UpdateService {
       let before = "unknown";
       try {
         before = await this.gitIn(root, "rev-parse", "HEAD");
-      } catch {
+      } catch (e) {
+        const why = gitReadError(e, root);
+        this.push(why);
         repos.push({name, updated: false, failed: true,
-          previousCommit: "unknown", newCommit: "unknown",
-          message: "Git-ийн сан биш."});
+          previousCommit: "unknown", newCommit: "unknown", message: why});
         continue;
       }
       this.push(`── ${name}: git pull…`);
