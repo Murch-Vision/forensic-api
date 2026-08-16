@@ -411,7 +411,13 @@ export class UpdateService {
     // Every checkout is pulled and reported on its own. A failure in one must
     // not hide the outcome of the others, which a single blended result did.
     const repos: RepoUpdate[] = [];
-    for (const root of this.repoRoots()) {
+    // FRONTEND FIRST, THE BACKEND LAST. The backend is the process running
+    // this code: when its own pull lands it exits for the launcher to restart
+    // it, and anything still queued behind that would be abandoned half-done.
+    // Doing every other checkout first means a backend restart can only ever
+    // interrupt work that is already finished.
+    const order = [...this.extraRepos(), this.repoRoot];
+    for (const root of order) {
       const name = this.repoName(root, "repo");
       let before = "unknown";
       try {
@@ -485,25 +491,16 @@ export class UpdateService {
       });
     }
 
-    const selfRepo = repos[0];
+    // The backend's own entry is the LAST one now — find it by name, not by
+    // position.
+    const selfName = this.repoName(this.repoRoot, "repo");
+    const selfRepo = repos.find((r) => r.name === selfName) ?? repos[0];
     const newCommit = selfRepo && selfRepo.newCommit !== "unknown"
       ? selfRepo.newCommit : previousCommit;
     const newVersion = this.packageVersion();
 
     const backendChanged = selfRepo?.updated ?? false;
     const updated = repos.some((r) => r.updated);
-
-    // Only a backend code change needs THIS process to restart; a frontend
-    // update was already rebuilt above and shows up on the next browser
-    // reload.
-    const managed = process.env.FAW_MANAGED === "1";
-    const restarting = backendChanged && managed;
-
-    if (restarting) {
-      // Let the GraphQL response flush first, then hand control back to the
-      // launcher loop which reinstalls deps, re-runs migrations and relaunches.
-      setTimeout(() => process.exit(RESTART_EXIT_CODE), 1500);
-    }
 
     // A pull or build that ERRORED must never be reported as "nothing new".
     // It was: the headline read `updated` first, so a workstation whose pull
@@ -513,6 +510,22 @@ export class UpdateService {
     const failedRepos = repos.filter((r) => r.failed);
     const failed = failedRepos.length > 0;
 
+    // Only a backend code change needs THIS process to restart; a frontend
+    // update was already rebuilt above and shows up on the next browser
+    // reload.
+    const managed = process.env.FAW_MANAGED === "1";
+    // ⛔ Never exit while another checkout failed. The restart hands the
+    // process to the launcher loop, and the analyst is then staring at a dead
+    // app AND a failure message he can no longer read. Fix the failure, press
+    // the button again, and the backend restarts on the next clean run.
+    const restarting = backendChanged && managed && !failed;
+
+    if (restarting) {
+      // Let the GraphQL response flush first, then hand control back to the
+      // launcher loop which reinstalls deps, re-runs migrations and relaunches.
+      setTimeout(() => process.exit(RESTART_EXIT_CODE), 1500);
+    }
+
     let message: string;
     if (failed && !updated) {
       message = `Шинэчлэл амжилтгүй — ${failedRepos
@@ -520,7 +533,10 @@ export class UpdateService {
     } else if (!updated) {
       message = "Шинэ хувилбар алга — код хамгийн сүүлийн үеийнх байна.";
     } else if (failed) {
-      message = "Заримыг нь шинэчиллээ, гэвч алдаа гарлаа — доорх мөрийг харна уу.";
+      message = backendChanged
+        ? "Заримыг нь шинэчиллээ, гэвч алдаа гарлаа. Серверийг дахин "
+          + "ачаалаагүй — алдааг зассны дараа дахин дарна уу."
+        : "Заримыг нь шинэчиллээ, гэвч алдаа гарлаа — доорх мөрийг харна уу.";
     } else if (restarting) {
       message = "Шинэчлэл татагдлаа — сервер дахин ачаалж байна…";
     } else if (backendChanged) {
