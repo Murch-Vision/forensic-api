@@ -40,7 +40,12 @@ export interface RelationRow {
 // re-deriving (and mis-deriving) them on the client.
 export interface AccountRelations {
   accountId     : number;
+  // label = the two parts joined; ownerName/accountNumber are kept apart so
+  // the UI can print the name on one line and the number under it — a header
+  // that runs "NAME · 00000005169198832" on one line is a wall of digits.
   label         : string;
+  ownerName     : string | null;
+  accountNumber : string;
   txnCount      : number;
   relationCount : number;
   mutualCount   : number;
@@ -245,6 +250,7 @@ export function buildRelations(
       || x.name.localeCompare(y.name));
     return {
       accountId: acct.id, label: acctLabel(acct.id),
+      ownerName: acctOwner(acct.id), accountNumber: acct.accountNumber,
       txnCount: count, relationCount: rows.length, mutualCount,
       creditCount, debitCount,
       creditTotal: credit, debitTotal: debit, netTotal: credit - debit,

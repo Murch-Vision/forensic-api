@@ -216,6 +216,8 @@ export const typeDefs = /* GraphQL */ `
   type AccountRelations {
     accountId: Int!
     label: String!
+    ownerName: String
+    accountNumber: String!
     txnCount: Int!
     relationCount: Int!
     "Counterparties on this account that other statement accounts also deal with."
