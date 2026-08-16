@@ -5,8 +5,9 @@ REM  Started automatically at boot by the registered Scheduled
 REM  Task (see install-startup-windows.bat). Can also be run
 REM  manually by double-clicking.
 REM
-REM  Uses npm (not pnpm) so it works from the SYSTEM account at
-REM  boot. Runs as a restart loop: the in-app "Update" button
+REM  Uses pnpm — these are pnpm projects and npm would install a
+REM  different tree than the one that was tested. Runs as a restart
+REM  loop: the in-app "Update" button
 REM  pulls new code and exits with code 42, which reinstalls
 REM  deps, re-runs migrations and relaunches the new version.
 REM
@@ -26,25 +27,34 @@ set "LOG=%CD%\logs\startup.log"
 call :log "=========================================================="
 call :log "start-windows: booting (user=%USERNAME%, cwd=%CD%)"
 
-REM --- Locate npm -------------------------------------------------------
-REM At boot this runs as SYSTEM, whose PATH is the MACHINE path only. A
-REM per-user Node install (nvm, fnm, winget-to-user) is invisible there, which
-REM is the usual reason autostart works when clicked but not after a restart.
-set "NPM="
-for /f "delims=" %%i in ('where npm.cmd 2^>nul') do if not defined NPM set "NPM=%%i"
-if not defined NPM if exist "%ProgramFiles%\nodejs\npm.cmd" set "NPM=%ProgramFiles%\nodejs\npm.cmd"
-if not defined NPM if exist "%ProgramFiles(x86)%\nodejs\npm.cmd" set "NPM=%ProgramFiles(x86)%\nodejs\npm.cmd"
-if not defined NPM if exist "%LOCALAPPDATA%\Programs\nodejs\npm.cmd" set "NPM=%LOCALAPPDATA%\Programs\nodejs\npm.cmd"
-if not defined NPM if exist "%ProgramData%\chocolatey\bin\npm.cmd" set "NPM=%ProgramData%\chocolatey\bin\npm.cmd"
+REM --- Locate pnpm ------------------------------------------------------
+REM pnpm, NOT npm: these are pnpm projects (pnpm-lock.yaml) and an npm install
+REM resolves fresh from package.json instead of the locked tree — the versions
+REM that were tested are not the versions that end up installed.
+REM
+REM At boot this may run as another account whose PATH is the MACHINE path
+REM only. A per-user install (npm -g, corepack, the standalone installer) is
+REM invisible there, which is the usual reason autostart works when clicked but
+REM not after a restart — so look in the usual places by hand as well.
+set "PNPM="
+for /f "delims=" %%i in ('where pnpm.cmd 2^>nul') do if not defined PNPM set "PNPM=%%i"
+if not defined PNPM if exist "%APPDATA%\npm\pnpm.cmd" set "PNPM=%APPDATA%\npm\pnpm.cmd"
+if not defined PNPM if exist "%ProgramFiles%\nodejs\pnpm.cmd" set "PNPM=%ProgramFiles%\nodejs\pnpm.cmd"
+if not defined PNPM if exist "%ProgramFiles(x86)%\nodejs\pnpm.cmd" set "PNPM=%ProgramFiles(x86)%\nodejs\pnpm.cmd"
+if not defined PNPM if exist "%LOCALAPPDATA%\pnpm\pnpm.exe" set "PNPM=%LOCALAPPDATA%\pnpm\pnpm.exe"
+if not defined PNPM if exist "%LOCALAPPDATA%\Programs\nodejs\pnpm.cmd" set "PNPM=%LOCALAPPDATA%\Programs\nodejs\pnpm.cmd"
 
-if not defined NPM (
-    call :log "FATAL: npm not found. Node is probably installed for your user"
-    call :log "       only, so the SYSTEM account cannot see it. Reinstall Node"
-    call :log "       for ALL USERS from https://nodejs.org, then re-run"
-    call :log "       scripts\install-startup-windows.bat"
+if not defined PNPM (
+    call :log "FATAL: pnpm not found. Install it for ALL USERS:"
+    call :log "         npm install -g pnpm"
+    call :log "       then re-run scripts\install-startup-windows.bat"
     exit /b 9009
 )
-call :log "using npm: !NPM!"
+call :log "using pnpm: !PNPM!"
+
+REM No TTY here: pnpm ABORTS instead of assuming yes when it wants to confirm
+REM something (e.g. purging a node_modules an npm install left behind).
+set "CI=true"
 
 REM Tell the server it is running under this managed loop, so selfUpdate is
 REM allowed to exit-42 for an automatic restart.
@@ -56,19 +66,19 @@ if exist "..\forensic-frontend\.git" set "FAW_UPDATE_REPOS=%CD%\..\forensic-fron
 :loop
 REM ALWAYS install, not just when node_modules is missing. A pull that adds a
 REM dependency leaves an existing node_modules incomplete, and the app then
-REM dies on boot with a missing module — npm exits in seconds when nothing
+REM dies on boot with a missing module — pnpm exits in seconds when nothing
 REM changed, which is a cheap price for never booting half-installed.
 call :log "installing dependencies..."
-call "!NPM!" install >> "%LOG%" 2>&1
-if !errorlevel! neq 0 call :log "WARNING: npm install exited !errorlevel!"
+call "!PNPM!" install >> "%LOG%" 2>&1
+if !errorlevel! neq 0 call :log "WARNING: pnpm install exited !errorlevel!"
 
 REM Apply any pending database migrations before serving.
 call :log "running database migrations..."
-call "!NPM!" run migrate >> "%LOG%" 2>&1
+call "!PNPM!" run migrate >> "%LOG%" 2>&1
 if !errorlevel! neq 0 call :log "WARNING: migrate exited !errorlevel!"
 
 call :log "starting backend..."
-call "!NPM!" run start >> "%LOG%" 2>&1
+call "!PNPM!" run start >> "%LOG%" 2>&1
 set "CODE=!errorlevel!"
 call :log "backend exited with code !CODE!"
 
@@ -76,7 +86,7 @@ REM Exit code 42 == "update pulled, restart me". Reinstall deps (in case
 REM package.json changed) and loop; any other exit code ends the launcher.
 if !CODE! equ 42 (
     call :log "update applied — reinstalling and restarting..."
-    call "!NPM!" install >> "%LOG%" 2>&1
+    call "!PNPM!" install >> "%LOG%" 2>&1
     goto loop
 )
 

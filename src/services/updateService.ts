@@ -216,23 +216,16 @@ export class UpdateService {
     }
   }
 
-  // Which package manager to drive this checkout with.
+  // pnpm, always. These are pnpm projects (pnpm-lock.yaml): an npm install
+  // ignores the lock and resolves fresh from package.json, so the tree that
+  // ends up on the workstation is not the tree that was tested — his rule,
+  // and the reason the launcher scripts were moved to pnpm too.
   //
-  // The repos are pnpm projects, but the Windows workstation is installed and
-  // launched with npm on purpose (scripts/start-windows.bat: npm is on the
-  // MACHINE path, so it also works when the Scheduled Task starts the app as
-  // SYSTEM at boot). Hard-coding pnpm here meant the in-app Update button tried
-  // to drive a checkout that npm had installed — and on a machine with no pnpm
-  // at all it failed with ENOENT before it could build anything.
-  //
-  // So: follow whoever created node_modules, and only fall back to a
-  // preference when there is nothing to follow.
-  private packageManager(root: string): "pnpm" | "npm" {
-    const modules = path.join(root, "node_modules");
-    // pnpm leaves this file; npm and yarn do not.
-    if (existsSync(path.join(modules, ".modules.yaml"))) return "pnpm";
-    if (existsSync(modules)) return "npm";
-    return existsSync(path.join(root, "pnpm-lock.yaml")) ? "pnpm" : "npm";
+  // An npm-made node_modules left over from the old launcher is purged by
+  // pnpm on its first run; CI=true below is what lets it do that without a
+  // confirmation prompt it cannot ask for.
+  private packageManager(_root: string): "pnpm" | "npm" {
+    return "pnpm";
   }
 
   // Reinstall + rebuild a pulled checkout, streaming every output line into

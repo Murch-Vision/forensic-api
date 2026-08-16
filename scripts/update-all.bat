@@ -17,6 +17,9 @@ REM ============================================================
 
 setlocal enabledelayedexpansion
 
+REM pnpm has no TTY here and ABORTS on any confirmation prompt.
+set "CI=true"
+
 REM This script lives in <repo>\scripts, so two levels up holds both repos.
 pushd "%~dp0..\.." || (
     echo FAILED: cannot reach the folder holding the repos.
@@ -105,16 +108,16 @@ if "!BEFORE!"=="!AFTER!" (
 )
 
 echo   installing dependencies...
-call npm install
+call pnpm install
 if errorlevel 1 (
-    echo   FAILED: npm install
+    echo   FAILED: pnpm install
     set "FAILED=!FAILED! %NAME%"
     popd
     goto :eof
 )
 
 echo   building...
-call npm run build
+call pnpm run build
 if errorlevel 1 (
     echo   FAILED: build
     set "FAILED=!FAILED! %NAME%"
