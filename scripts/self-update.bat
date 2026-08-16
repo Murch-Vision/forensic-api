@@ -13,13 +13,17 @@ setlocal enabledelayedexpansion
 
 cd /d "%~dp0.."
 
+REM Windows git refuses a repo owned by another account ("dubious
+REM ownership"). Carry the exception on the command line.
+set "GIT=git -c safe.directory=%CD%"
+
 set "NAME=ForensicAnalystBackend"
 
 REM Remember the current commit, pull, then compare.
-for /f %%i in ('git rev-parse HEAD') do set "BEFORE=%%i"
+for /f %%i in ('!GIT! rev-parse HEAD') do set "BEFORE=%%i"
 echo [self-update] Pulling latest code...
-git pull --ff-only
-for /f %%i in ('git rev-parse HEAD') do set "AFTER=%%i"
+!GIT! pull --ff-only
+for /f %%i in ('!GIT! rev-parse HEAD') do set "AFTER=%%i"
 
 if "!BEFORE!"=="!AFTER!" (
     echo [self-update] Already up to date — nothing to restart.

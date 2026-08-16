@@ -69,19 +69,24 @@ if not exist "%DIR%\.git" (
 
 pushd "%DIR%"
 
-for /f "delims=" %%i in ('git rev-parse --short HEAD 2^>nul') do set "BEFORE=%%i"
+REM Windows git refuses a repo owned by another account ("dubious
+REM ownership"). Carry the exception on the command line so it applies to
+REM whoever double-clicked this, not to whoever once typed a git config.
+set "GIT=git -c safe.directory=%DIR%"
+
+for /f "delims=" %%i in ('!GIT! rev-parse --short HEAD 2^>nul') do set "BEFORE=%%i"
 
 REM A deployment clone often has no upstream branch, and a bare `git pull`
 REM then fails with "no tracking information". Name origin + the current
 REM branch when that is the case.
-git rev-parse --abbrev-ref --symbolic-full-name @{u} >nul 2>&1
+!GIT! rev-parse --abbrev-ref --symbolic-full-name @{u} >nul 2>&1
 if errorlevel 1 (
-    for /f "delims=" %%b in ('git rev-parse --abbrev-ref HEAD') do set "BR=%%b"
+    for /f "delims=" %%b in ('!GIT! rev-parse --abbrev-ref HEAD') do set "BR=%%b"
     echo   pulling origin !BR! ^(no upstream configured^)
-    git pull --ff-only origin !BR!
+    !GIT! pull --ff-only origin !BR!
 ) else (
     echo   pulling...
-    git pull --ff-only
+    !GIT! pull --ff-only
 )
 if errorlevel 1 (
     echo   FAILED to pull. Local changes? Try: git status
@@ -90,7 +95,7 @@ if errorlevel 1 (
     goto :eof
 )
 
-for /f "delims=" %%i in ('git rev-parse --short HEAD 2^>nul') do set "AFTER=%%i"
+for /f "delims=" %%i in ('!GIT! rev-parse --short HEAD 2^>nul') do set "AFTER=%%i"
 
 if "!BEFORE!"=="!AFTER!" (
     echo   already at !AFTER! — no new code
@@ -122,7 +127,7 @@ REM marker against the checked-out commit to say whether the screen is current;
 REM without it a fresh build still reports as stale forever. Only the frontend
 REM has a dist\ — the backend builds to nothing (tsc --noEmit).
 if exist "dist" (
-    for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do >"dist\.commit" echo %%i
+    for /f "delims=" %%i in ('!GIT! rev-parse HEAD 2^>nul') do >"dist\.commit" echo %%i
 )
 
 REM Restart the launcher only if it was already running — this script must not

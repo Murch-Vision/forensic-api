@@ -133,8 +133,25 @@ export class UpdateService {
     return this.gitIn(this.repoRoot, ...args);
   }
 
+  // Every git call carries `-c safe.directory` for the folder it runs in.
+  //
+  // Windows git refuses to touch a repository owned by a different account
+  // ("detected dubious ownership"), and the workstation's checkouts were made
+  // by a different user than the one autostart runs as — which is exactly why
+  // `pnpm dev` by hand worked while the auto-started build could not read its
+  // own repo. Fixing that with `git config --global` would only fix it for
+  // whoever typed it; carrying it on the command line fixes it for whoever
+  // runs the app. The "command" scope is protected configuration, the only
+  // kind safe.directory is honoured from — a repo-local setting is ignored.
+  //
+  // Both spellings are passed: git compares the path as written, and Windows
+  // gives it back with backslashes while git's own examples use forward ones.
   private async gitIn(cwd: string, ...args: string[]): Promise<string> {
-    const {stdout} = await pexec("git", args, {cwd});
+    const safe = [
+      "-c", `safe.directory=${cwd}`,
+      "-c", `safe.directory=${cwd.replace(/\\/g, "/")}`,
+    ];
+    const {stdout} = await pexec("git", [...safe, ...args], {cwd});
     return stdout.trim();
   }
 
@@ -165,10 +182,15 @@ export class UpdateService {
   // layout is auto-detected — otherwise an api launched by hand (pnpm dev)
   // neither lists nor updates the frontend, only the Windows launcher did.
   private extraRepos(): string[] {
+    // path.resolve: the launcher hands over "%CD%\..\forensic-frontend",
+    // which cmd does not normalise — and an unnormalised path is what the
+    // Settings table then shows and what a safe.directory command would have
+    // to be typed with.
     const env = (process.env.FAW_UPDATE_REPOS ?? "")
       .split(path.delimiter)
       .map((p) => p.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((p) => path.resolve(p));
     if (env.length) return env;
     const sibling = path.resolve(this.repoRoot, "..", "forensic-frontend");
     return existsSync(path.join(sibling, ".git")) ? [sibling] : [];
