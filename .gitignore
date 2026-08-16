@@ -9,3 +9,6 @@ data/
 desktop/dist/
 .pnpm-store/
 logs/
+
+# npm installs on the Windows workstation; pnpm is the only lockfile we track
+package-lock.json

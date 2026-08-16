@@ -55,6 +55,10 @@ export interface RepoVersion {
 export interface RepoUpdate {
   name: string;
   updated: boolean;
+  // A pull or a build that ERRORED. Without this the Settings page cannot tell
+  // "nothing to do" from "it broke": both arrive as updated=false, and the page
+  // used to announce a failed update as "Шинэ хувилбар алга".
+  failed: boolean;
   previousCommit: string;
   newCommit: string;
   message: string;
@@ -69,6 +73,9 @@ export interface VersionInfo {
 
 export interface UpdateResult {
   updated: boolean;
+  // At least one checkout could not be pulled or rebuilt. The page paints the
+  // banner red on this, never on `updated`.
+  failed: boolean;
   previousCommit: string;
   newCommit: string;
   previousVersion: string;
@@ -143,6 +150,15 @@ export class UpdateService {
     return existsSync(path.join(sibling, ".git")) ? [sibling] : [];
   }
 
+  // "origin git@github.com:… · master" — one line for the live log.
+  private async describeRemote(root: string): Promise<string> {
+    const url = await this.gitIn(root, "remote", "get-url", "origin")
+      .catch(() => "remote алга");
+    const branch = await this.gitIn(root, "rev-parse", "--abbrev-ref", "HEAD")
+      .catch(() => "?");
+    return `origin ${url} · ${branch}`;
+  }
+
   updateLog(): UpdateLog {
     return {running: this.updating, lines: [...this.updateLogLines]};
   }
@@ -154,16 +170,34 @@ export class UpdateService {
     }
   }
 
+  // Which package manager to drive this checkout with.
+  //
+  // The repos are pnpm projects, but the Windows workstation is installed and
+  // launched with npm on purpose (scripts/start-windows.bat: npm is on the
+  // MACHINE path, so it also works when the Scheduled Task starts the app as
+  // SYSTEM at boot). Hard-coding pnpm here meant the in-app Update button tried
+  // to drive a checkout that npm had installed — and on a machine with no pnpm
+  // at all it failed with ENOENT before it could build anything.
+  //
+  // So: follow whoever created node_modules, and only fall back to a
+  // preference when there is nothing to follow.
+  private packageManager(root: string): "pnpm" | "npm" {
+    const modules = path.join(root, "node_modules");
+    // pnpm leaves this file; npm and yarn do not.
+    if (existsSync(path.join(modules, ".modules.yaml"))) return "pnpm";
+    if (existsSync(modules)) return "npm";
+    return existsSync(path.join(root, "pnpm-lock.yaml")) ? "pnpm" : "npm";
+  }
+
   // Reinstall + rebuild a pulled checkout, streaming every output line into
-  // the live log. pnpm, not npm — the repos are pnpm projects
-  // (pnpm-lock.yaml) and an npm install inside one produces a broken
-  // node_modules. On Windows pnpm is pnpm.cmd, which Node refuses to spawn
-  // without a shell (CVE-2024-27980) — hence the flag.
-  private pnpmIn(cwd: string, ...args: string[]): Promise<void> {
+  // the live log. On Windows the binaries are pnpm.cmd / npm.cmd, which Node
+  // refuses to spawn without a shell (CVE-2024-27980) — hence the flag.
+  private runPm(pm: "pnpm" | "npm", cwd: string,
+    ...args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
       const win = process.platform === "win32";
-      this.push(`$ pnpm ${args.join(" ")}`);
-      const child = spawn(win ? "pnpm.cmd" : "pnpm", args, {
+      this.push(`$ ${pm} ${args.join(" ")}`);
+      const child = spawn(win ? `${pm}.cmd` : pm, args, {
         cwd,
         shell: win,
         // There is no TTY here, and pnpm ABORTS instead of assuming yes when
@@ -190,7 +224,12 @@ export class UpdateService {
       child.stderr.on("data", onData);
       child.on("error", (e) => {
         clearTimeout(timer);
-        reject(e);
+        // ENOENT here means the package manager is not on this machine's PATH
+        // at all. The raw "spawn pnpm.cmd ENOENT" tells the analyst nothing.
+        const code = (e as NodeJS.ErrnoException).code;
+        reject(code === "ENOENT"
+          ? new Error(`${pm} олдсонгүй — энэ компьютерт суугаагүй байна`)
+          : e);
       });
       child.on("close", (code) => {
         clearTimeout(timer);
@@ -329,24 +368,29 @@ export class UpdateService {
     // Every checkout is pulled and reported on its own. A failure in one must
     // not hide the outcome of the others, which a single blended result did.
     const repos: RepoUpdate[] = [];
-    let buildFailed = false;
     for (const root of this.repoRoots()) {
       const name = this.repoName(root, "repo");
       let before = "unknown";
       try {
         before = await this.gitIn(root, "rev-parse", "HEAD");
       } catch {
-        repos.push({name, updated: false, previousCommit: "unknown",
-          newCommit: "unknown", message: "Git-ийн сан биш."});
+        repos.push({name, updated: false, failed: true,
+          previousCommit: "unknown", newCommit: "unknown",
+          message: "Git-ийн сан биш."});
         continue;
       }
       this.push(`── ${name}: git pull…`);
+      // WHERE it pulls from, in the log. "Шинэ хувилбар алга" on a workstation
+      // that is demonstrably behind usually means the checkout points at
+      // another remote or sits on another branch — invisible until printed.
+      this.push(`   ${await this.describeRemote(root)}`);
       try {
         await this.pullIn(root);
       } catch (e) {
         this.push(`татаж чадсангүй: ${gitError(e)}`);
-        repos.push({name, updated: false, previousCommit: short(before),
-          newCommit: short(before), message: `Татаж чадсангүй: ${gitError(e)}`});
+        repos.push({name, updated: false, failed: true,
+          previousCommit: short(before), newCommit: short(before),
+          message: `Татаж чадсангүй: ${gitError(e)}`});
         continue;
       }
       let after = before;
@@ -366,16 +410,18 @@ export class UpdateService {
       // a commit pulled earlier without a build would otherwise stay unserved
       // forever.
       let note = "";
+      let repoBuildFailed = false;
       if (root !== this.repoRoot && this.hasBuildScript(root)
         && this.builtCommit(root) !== after) {
+        const pm = this.packageManager(root);
         try {
-          await this.pnpmIn(root, "install");
-          await this.pnpmIn(root, "run", "build");
+          await this.runPm(pm, root, "install");
+          await this.runPm(pm, root, "run", "build");
           writeFileSync(path.join(root, "dist", ".commit"), after);
           note = " — build шинэчлэгдлээ";
           this.push("build амжилттай ✓");
         } catch (e) {
-          buildFailed = true;
+          repoBuildFailed = true;
           note = ` — build амжилтгүй: ${gitError(e)}`;
           this.push(`build амжилтгүй: ${gitError(e)}`);
         }
@@ -384,6 +430,7 @@ export class UpdateService {
       repos.push({
         name,
         updated: moved || note === " — build шинэчлэгдлээ",
+        failed: repoBuildFailed,
         previousCommit: short(before),
         newCommit: short(after),
         message: moved
@@ -414,21 +461,33 @@ export class UpdateService {
       setTimeout(() => process.exit(RESTART_EXIT_CODE), 1500);
     }
 
+    // A pull or build that ERRORED must never be reported as "nothing new".
+    // It was: the headline read `updated` first, so a workstation whose pull
+    // failed (no credentials, local edits, wrong branch) and a workstation
+    // that was genuinely current printed the SAME calm grey sentence —
+    // "Шинэ хувилбар алга" — while the screen quietly stayed on old code.
+    const failedRepos = repos.filter((r) => r.failed);
+    const failed = failedRepos.length > 0;
+
     let message: string;
-    if (!updated) {
+    if (failed && !updated) {
+      message = `Шинэчлэл амжилтгүй — ${failedRepos
+        .map((r) => `${r.name}: ${r.message}`).join(" | ")}`;
+    } else if (!updated) {
       message = "Шинэ хувилбар алга — код хамгийн сүүлийн үеийнх байна.";
+    } else if (failed) {
+      message = "Заримыг нь шинэчиллээ, гэвч алдаа гарлаа — доорх мөрийг харна уу.";
     } else if (restarting) {
       message = "Шинэчлэл татагдлаа — сервер дахин ачаалж байна…";
     } else if (backendChanged) {
       message = "Шинэчлэл татагдлаа. Идэвхжүүлэхийн тулд серверийг дахин ачаална уу.";
-    } else if (buildFailed) {
-      message = "Шинэчлэл татагдлаа, гэвч build амжилтгүй — доорх мөрийг харна уу.";
     } else {
       message = "Шинэчлэл татагдлаа — хуудсаа дахин ачаалахад шинэ хувилбар ажиллана.";
     }
 
     return {
       updated,
+      failed,
       previousCommit: short(previousCommit),
       newCommit: short(newCommit),
       previousVersion,

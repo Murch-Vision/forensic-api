@@ -1039,6 +1039,8 @@ export const typeDefs = /* GraphQL */ `
   type RepoUpdate {
     name: String!
     updated: Boolean!
+    "True when the pull or the build ERRORED — distinct from having nothing to do."
+    failed: Boolean!
     previousCommit: String!
     newCommit: String!
     message: String!
@@ -1053,6 +1055,8 @@ export const typeDefs = /* GraphQL */ `
   "Outcome of a self-update (git pull + optional restart)."
   type UpdateResult {
     updated: Boolean!
+    "True when at least one checkout could not be pulled or rebuilt."
+    failed: Boolean!
     previousCommit: String!
     newCommit: String!
     previousVersion: String!

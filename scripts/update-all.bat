@@ -117,6 +117,14 @@ if errorlevel 1 (
     goto :eof
 )
 
+REM Record the commit this build was made from. The Settings page compares the
+REM marker against the checked-out commit to say whether the screen is current;
+REM without it a fresh build still reports as stale forever. Only the frontend
+REM has a dist\ — the backend builds to nothing (tsc --noEmit).
+if exist "dist" (
+    for /f "delims=" %%i in ('git rev-parse HEAD 2^>nul') do >"dist\.commit" echo %%i
+)
+
 REM Restart the launcher only if it was already running — this script must not
 REM start services on a machine where they were deliberately stopped.
 tasklist /FI "WINDOWTITLE eq %TITLE%*" 2>nul | find /I "cmd.exe" >nul
