@@ -54,12 +54,13 @@ REM Also pull the sibling frontend repo on "Update", if present.
 if exist "..\forensic-frontend\.git" set "FAW_UPDATE_REPOS=%CD%\..\forensic-frontend"
 
 :loop
-REM Install dependencies on first run / after an update pulled new packages.
-if not exist "node_modules" (
-    call :log "installing dependencies..."
-    call "!NPM!" install >> "%LOG%" 2>&1
-    if !errorlevel! neq 0 call :log "WARNING: npm install exited !errorlevel!"
-)
+REM ALWAYS install, not just when node_modules is missing. A pull that adds a
+REM dependency leaves an existing node_modules incomplete, and the app then
+REM dies on boot with a missing module — npm exits in seconds when nothing
+REM changed, which is a cheap price for never booting half-installed.
+call :log "installing dependencies..."
+call "!NPM!" install >> "%LOG%" 2>&1
+if !errorlevel! neq 0 call :log "WARNING: npm install exited !errorlevel!"
 
 REM Apply any pending database migrations before serving.
 call :log "running database migrations..."
