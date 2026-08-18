@@ -1114,8 +1114,9 @@ export const typeDefs = /* GraphQL */ `
     lanAddresses: [String!]!
     bankAccounts: [BankAccount!]!
     """
-    Идэвхтэй хэргийн дансууд, тус бүр дээрх мөрийн тоотойгоо. Хамгийн олон
-    мөртэй нь эхэлнэ.
+    Идэвхтэй хэрэгт ХУУЛГА нь орсон дансууд — өөрөөр хэлбэл сэжигтний
+    дансууд, мөрийн тоотойгоо, хамгийн олон мөртэй нь эхэлж. Гүйлгээгүй данс
+    энд ОРОХГҮЙ: тэдгээр нь харилцагчийн баганаас үүссэн хоосон бүртгэл.
     """
     accountRecords: [AccountRecord!]!
     transactions(includeRemoved: Boolean): [BankTransaction!]!

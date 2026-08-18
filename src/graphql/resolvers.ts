@@ -253,15 +253,18 @@ export const resolvers = {
     },
     bankAccounts: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       scopedAccounts(c),
-    // The case's accounts with the size of what each one holds — the list the
-    // analyst deletes from after a wrong import. Biggest first, so the
-    // statement accounts come before the empty shells that a counterparty
-    // column left behind.
+    // The accounts we actually hold a statement for — the суbьектийн дансууд,
+    // the ones an import wrote rows into. ⛔ Accounts with no rows are NOT
+    // listed: they are the empty shells a counterparty column left behind
+    // (hundreds of them, plus the bank's "-" placeholder), and they are not
+    // what anyone means by "delete this account's data".
     accountRecords: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       requireUser(c);
       const records = await c.data.getAccountRecords(await scopedAccounts(c));
-      return records.sort((a, b) => b.txnCount - a.txnCount
-        || a.accountNumber.localeCompare(b.accountNumber));
+      return records
+        .filter((r) => r.txnCount > 0)
+        .sort((a, b) => b.txnCount - a.txnCount
+          || a.accountNumber.localeCompare(b.accountNumber));
     },
     transactions: async (
       _p: unknown, a: {includeRemoved?: boolean}, c: GraphQLContext
