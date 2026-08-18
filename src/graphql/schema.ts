@@ -116,6 +116,32 @@ export const typeDefs = /* GraphQL */ `
     createdAt: String!
   }
 
+  """
+  Нэг данс, дээр нь хэдэн мөр өгөгдөл байгаа нь. Буруу оруулсан хуулгыг
+  дансаар нь буцааж устгахын өмнө юу алга болохыг харуулна. Тоо нь ЦЭВЭР
+  бодит мөрийн тоо: чухал биш гэж хассан мөрүүд ч хамт устана.
+  """
+  type AccountRecord {
+    id: Int!
+    accountNumber: String!
+    bankName: String
+    ownerName: String
+    txnCount: Int!
+    firstTxn: String
+    lastTxn: String
+    createdAt: String!
+  }
+
+  "Устгасны дараа яг хэдэн мөр устсаныг мэдээлнэ."
+  type AccountDeletion {
+    accountNumber: String!
+    transactions: Int!
+    analyses: Int!
+    conclusions: Int!
+    evidence: Int!
+    links: Int!
+  }
+
   type BankTransaction {
     id: Int!
     bankAccountId: Int!
@@ -1087,6 +1113,11 @@ export const typeDefs = /* GraphQL */ `
     "This server's IPv4 addresses on the local network — Settings shows them with the app's port so other computers know what to open."
     lanAddresses: [String!]!
     bankAccounts: [BankAccount!]!
+    """
+    Идэвхтэй хэргийн дансууд, тус бүр дээрх мөрийн тоотойгоо. Хамгийн олон
+    мөртэй нь эхэлнэ.
+    """
+    accountRecords: [AccountRecord!]!
     transactions(includeRemoved: Boolean): [BankTransaction!]!
     "Харьцаа of the active case's statement accounts, aggregated."
     caseRelations: CaseRelationSummary!
@@ -1265,6 +1296,13 @@ export const typeDefs = /* GraphQL */ `
     togglePin(suspectId: Int!): [Int!]!
     generateAnbChart: AnbGenResult!
     createBankAccount(input: BankAccountInput!): BankAccount!
+    """
+    Нэг дансыг бүх гүйлгээ, шинжилгээ, дүгнэлт, баримтын холбоосынх нь хамт
+    устгана — буруу оруулсан хуулгыг буцааж авах зам. Хүн (субьект) устахгүй,
+    бусад дансны хуулга дээр энэ данс харилцагчаар бичигдсэн мөрүүд ч устахгүй
+    (тэдгээр нь тэр дансны хуулга). Дахин импортлоход данс дахин үүснэ.
+    """
+    deleteBankAccount(id: Int!): AccountDeletion!
     createPhoneNumber(input: PhoneNumberInput!): PhoneNumber!
     createCaseFile(input: CaseFileInput!): CaseFile!
     updateCaseFile(caseFileId: Int!, input: CaseFileUpdateInput!): CaseFile!

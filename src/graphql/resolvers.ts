@@ -253,6 +253,16 @@ export const resolvers = {
     },
     bankAccounts: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       scopedAccounts(c),
+    // The case's accounts with the size of what each one holds — the list the
+    // analyst deletes from after a wrong import. Biggest first, so the
+    // statement accounts come before the empty shells that a counterparty
+    // column left behind.
+    accountRecords: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireUser(c);
+      const records = await c.data.getAccountRecords(await scopedAccounts(c));
+      return records.sort((a, b) => b.txnCount - a.txnCount
+        || a.accountNumber.localeCompare(b.accountNumber));
+    },
     transactions: async (
       _p: unknown, a: {includeRemoved?: boolean}, c: GraphQLContext
     ) => scopedTransactions(c, a.includeRemoved ?? false),
@@ -906,6 +916,22 @@ export const resolvers = {
       await c.audit.record("BankAccount.Create", `BankAccount:${acc.id}`,
         acc.accountNumber);
       return acc;
+    },
+    // Take a wrong import back out — the account and everything hanging off
+    // it. Only accounts inside the analyst's active case can be deleted, so a
+    // detective cannot reach another case's evidence through this.
+    deleteBankAccount: async (
+      _p: unknown, a: {id: number}, c: GraphQLContext
+    ) => {
+      const user = requireUser(c);
+      const inScope = (await scopedAccounts(c)).some((x) => x.id === a.id);
+      if (!inScope) throw new Error("Энэ данс идэвхтэй хэрэгт алга.");
+      const res = await c.data.deleteBankAccountDeep(a.id);
+      if (!res) throw new Error("Данс олдсонгүй.");
+      await c.audit.record("BankAccount.Delete", `BankAccount:${a.id}`,
+        `${res.accountNumber} · ${res.transactions} гүйлгээ · ${user.username}`,
+        "HIGH");
+      return res;
     },
     createPhoneNumber: async (
       _p: unknown,

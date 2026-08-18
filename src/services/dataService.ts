@@ -48,6 +48,48 @@ export interface DashboardStats {
   latestCall           : string | null;
 }
 
+// One statement account with the size of what it holds — the list the analyst
+// picks from when a wrong import has to be taken back out.
+export interface AccountRecord {
+  id            : number;
+  accountNumber : string;
+  bankName      : string | null;
+  ownerName     : string | null;
+  txnCount      : number;
+  firstTxn      : string | null;
+  lastTxn       : string | null;
+  createdAt     : string;
+}
+
+// What a delete actually removed, so the screen reports the real figures
+// instead of "done".
+export interface AccountDeletion {
+  accountNumber : string;
+  transactions  : number;
+  analyses      : number;
+  conclusions   : number;
+  evidence      : number;
+  links         : number;
+}
+
+function parseJsonArray<T>(raw: unknown): T[] {
+  if (typeof raw !== "string") return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? (v as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+// SQLite caps a statement at 999 bound parameters — a 5,000-row account would
+// blow past that in a single whereIn.
+function chunked<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 export class DataService {
   private readonly db: Knex;
 
@@ -322,6 +364,144 @@ export class DataService {
     const [id] = await this.db("bank_accounts").insert(row);
     return (await this.db<BankAccount>("bank_accounts")
       .where({id: Number(id)}).first())!;
+  }
+
+  // What each of the given accounts actually holds — the RAW row count, first
+  // and last statement date. Raw, not noise-filtered: this list answers "what
+  // will disappear if I delete this account", and a delete takes the removed
+  // rows with it too.
+  async getAccountRecords(accounts: BankAccount[]): Promise<AccountRecord[]> {
+    if (accounts.length === 0) return [];
+    const ids = accounts.map((a) => a.id);
+    const stats = await this.db("bank_transactions")
+      .whereIn("bankAccountId", ids)
+      .groupBy("bankAccountId")
+      .select("bankAccountId")
+      .count({c: "*"})
+      .min({first: "timestamp"})
+      .max({last: "timestamp"}) as unknown as {
+        bankAccountId: number; c: number | string;
+        first: string | null; last: string | null;
+      }[];
+    const byAccount = new Map<number, {c: number; first: string | null;
+      last: string | null}>();
+    for (const s of stats) {
+      byAccount.set(Number(s.bankAccountId), {
+        c: Number(s.c ?? 0),
+        first: s.first ?? null,
+        last: s.last ?? null,
+      });
+    }
+    // The owner is the name on the statement; fall back to the person the
+    // account is attached to, so an account imported with only a регистр still
+    // shows who it belongs to.
+    const suspectIds = [...new Set(accounts
+      .map((a) => a.suspectId).filter((s): s is number => s != null))];
+    const nameBySuspect = new Map<number, string>();
+    if (suspectIds.length > 0) {
+      for (const s of await this.db("suspects")
+        .whereIn("id", suspectIds).select("id", "fullName")) {
+        nameBySuspect.set(Number(s.id), String(s.fullName));
+      }
+    }
+    return accounts.map((a) => {
+      const st = byAccount.get(a.id);
+      return {
+        id            : a.id,
+        accountNumber : a.accountNumber,
+        bankName      : a.bankName ?? null,
+        ownerName     : a.accountHolderName
+          ?? (a.suspectId != null ? nameBySuspect.get(a.suspectId) ?? null : null),
+        txnCount      : st?.c ?? 0,
+        firstTxn      : st?.first ?? null,
+        lastTxn       : st?.last ?? null,
+        createdAt     : a.createdAt,
+      };
+    });
+  }
+
+  // Delete one account and EVERY row that hangs off it. The schema declares
+  // ON DELETE CASCADE but `PRAGMA foreign_keys` is never switched on, so
+  // SQLite would leave the transactions behind pointing at a dead id — every
+  // dependent is therefore removed explicitly, in one transaction.
+  //
+  // Not touched, deliberately: the people the import created (they belong to
+  // the субьект list, not to this account) and rows on OTHER accounts that
+  // merely name this one as a counterparty (those are the other account's
+  // statement, not this one's).
+  async deleteBankAccountDeep(id: number): Promise<AccountDeletion | null> {
+    const account = await this.db<BankAccount>("bank_accounts")
+      .where({id}).first();
+    if (!account) return null;
+
+    const txnIds = (await this.db("bank_transactions")
+      .where({bankAccountId: id}).pluck("id")) as number[];
+    const txnSet = new Set(txnIds.map(Number));
+
+    return this.db.transaction(async (trx) => {
+      const transactions = await trx("bank_transactions")
+        .where({bankAccountId: id}).del();
+      const analyses = await trx("analysis_results")
+        .where({bankAccountId: id}).del();
+      const conclusions = await trx("case_conclusions")
+        .where({bankAccountId: id}).del();
+      // Exhibit pointers at the account itself and at any of its transactions.
+      let evidence = await trx("evidence_entries")
+        .where({sourceType: "BANK_ACCOUNT", sourceId: id}).del();
+      if (txnIds.length > 0) {
+        for (const chunk of chunked(txnIds, 400)) {
+          evidence += await trx("evidence_entries")
+            .where({sourceType: "TRANSACTION"}).whereIn("sourceId", chunk).del();
+        }
+      }
+
+      // The analyst's "unimportant" marks name transaction ids and
+      // "<accountId>→<counterparty>" pairs. Left behind they would silently
+      // re-apply to whatever row ids a later import reuses.
+      const prefix = `${id}→`;
+      for (const nf of await trx("case_noise_filters").select("*")) {
+        const oldTxns = parseJsonArray<number>(nf.ignoredTxns);
+        const oldPairs = parseJsonArray<string>(nf.ignoredPairs);
+        const ignoredTxns = oldTxns.filter((t) => !txnSet.has(Number(t)));
+        const ignoredPairs = oldPairs
+          .filter((p) => !String(p).startsWith(prefix));
+        if (ignoredTxns.length === oldTxns.length
+          && ignoredPairs.length === oldPairs.length) continue;
+        await trx("case_noise_filters").where({caseFileId: nf.caseFileId})
+          .update({
+            ignoredTxns: JSON.stringify(ignoredTxns),
+            ignoredPairs: JSON.stringify(ignoredPairs),
+            updatedAt: new Date().toISOString(),
+          });
+      }
+
+      // Generated FINANCIAL_TRANSFER connections remember which transactions
+      // back them. A connection left with none of its evidence is no longer a
+      // finding, so it goes; the rest just lose the deleted ids.
+      let links = 0;
+      if (txnIds.length > 0) {
+        for (const l of await trx("suspect_links")
+          .whereNotNull("contributingTxnIds").select("id", "contributingTxnIds")) {
+          const backing = parseJsonArray<number>(l.contributingTxnIds);
+          const kept = backing.filter((t) => !txnSet.has(Number(t)));
+          if (kept.length === backing.length) continue;
+          if (kept.length === 0) {
+            await trx("suspect_links").where({id: l.id}).del();
+            links++;
+          } else {
+            await trx("suspect_links").where({id: l.id})
+              .update({contributingTxnIds: JSON.stringify(kept)});
+          }
+        }
+      }
+
+      await trx("bank_accounts").where({id}).del();
+
+      return {
+        accountNumber: account.accountNumber,
+        transactions, analyses, conclusions, evidence, links,
+      };
+    });
   }
 
   async createPhoneNumber(input: Partial<PhoneNumber>): Promise<PhoneNumber> {
