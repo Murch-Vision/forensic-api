@@ -132,6 +132,22 @@ export const typeDefs = /* GraphQL */ `
     createdAt: String!
   }
 
+  """
+  Хэрэг устгахад юу алга болох нь. Устгахаас өмнө асуухад ч, устгасны дараа
+  тайлагнахад ч ижил тоо. Өөр хэрэгт БАС хамаарах хүн, данс энд тоологдохгүй
+  — тэдгээр нь тэр хэрэгтээ үлдэнэ.
+  """
+  type CasePurge {
+    caseId: String!
+    caseName: String!
+    suspects: Int!
+    accounts: Int!
+    transactions: Int!
+    calls: Int!
+    phones: Int!
+    evidence: Int!
+  }
+
   "Устгасны дараа яг хэдэн мөр устсаныг мэдээлнэ."
   type AccountDeletion {
     accountNumber: String!
@@ -1142,6 +1158,11 @@ export const typeDefs = /* GraphQL */ `
     users: [User!]!
     "Detectives granted access to a case (ADMIN only)."
     caseMembers(caseFileId: Int!): [User!]!
+    """
+    Энэ хэргийг устгавал юу алга болохыг УРЬДЧИЛАН тоолно — баталгаажуулах
+    цонх үүнийг харуулна. Юу ч устгахгүй. ADMIN only.
+    """
+    casePurgePreview(caseFileId: Int!): CasePurge!
     globalPeople: [GlobalPerson!]!
     analysisResults: [AnalysisResult!]!
     auditEvents(limit: Int): [AuditEvent!]!
@@ -1314,6 +1335,12 @@ export const typeDefs = /* GraphQL */ `
     updateCaseFile(caseFileId: Int!, input: CaseFileUpdateInput!): CaseFile!
     setCaseStatus(caseFileId: Int!, status: CaseStatus!): CaseFile!
     mergeCases(sourceCaseFileIds: [Int!]!, targetCaseFileId: Int!): CaseFile!
+    """
+    Хэргийг бүх мэдээллийнх нь хамт устгана: сэжигтэн, данс, гүйлгээ, дуудлага,
+    утас, баримт, дүгнэлт, зураглал. Өөр хэрэгт БАС хамаарах хүн, данс үлдэнэ.
+    Буцаах боломжгүй. ADMIN only.
+    """
+    deleteCaseFile(caseFileId: Int!): CasePurge!
     addCaseNote(input: CaseNoteInput!): Int!
 
     "Authenticate and receive a bearer token. deviceId locks DETECTIVE accounts to one device."

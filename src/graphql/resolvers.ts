@@ -8,7 +8,7 @@
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import os from "node:os";
 import type {SuspectInput, SuspectService} from "../services/suspectService";
-import type {DataService} from "../services/dataService";
+import type {DataService, ScopeIds} from "../services/dataService";
 import type {AnalysisService} from "../services/analysisService";
 import {computeBenfordObserved} from "../services/analysisService";
 import type {GeospatialService} from "../services/geospatialService";
@@ -162,6 +162,26 @@ async function scopeForCases(
     txnIds: by("TRANSACTION"),
     callIds: by("CALL_RECORD"),
   };
+}
+
+// Хэрэг устгах / устгахын өмнө тоолоход хэрэгтэй хоёр хүрээ: тухайн хэргийнх,
+// мөн БУСАД БҮХ хэргийнх. Хоёр хэрэгт зэрэг хамаарах хүн, данс хоёрдугаарт нь
+// орох тул устгалаас хамгаалагдана.
+async function caseScopePair(
+  c: GraphQLContext, caseFileId: number
+): Promise<{mine: ScopeIds; others: ScopeIds}> {
+  const cases = await c.data.getAllCaseFiles();
+  const target = cases.find((cf) => cf.id === caseFileId);
+  if (!target) throw new Error("Хэрэг олдсонгүй.");
+  const [mine, others] = await Promise.all([
+    scopeForCases(c, [target]),
+    scopeForCases(c, cases.filter((cf) => cf.id !== caseFileId)),
+  ]);
+  const ids = (s: CaseScope): ScopeIds => ({
+    suspectIds: [...s.suspectIds], accountIds: [...s.accountIds],
+    txnIds: [...s.txnIds], callIds: [...s.callIds],
+  });
+  return {mine: ids(mine), others: ids(others)};
 }
 
 // Хяналтын самбарын тоонуудыг ХАРАГДАХ мөрүүдээс нь тоолно. Тусдаа SQL
@@ -435,6 +455,16 @@ export const resolvers = {
     },
     // Субьектийн жагсаалт — хэрэг дамнасан НЭГДСЭН бүртгэл, өөрөөр хэлбэл
     // бүх мөрдөгчийн хүмүүс нэг дор. Тиймээс зөвхөн хэлтсийн даргад.
+    // Хэрэг устгахаас өмнө: юу алга болохыг тоолж харуулна. Юу ч устгахгүй.
+    casePurgePreview: async (
+      _p: unknown, a: {caseFileId: number}, c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const {mine, others} = await caseScopePair(c, a.caseFileId);
+      const plan = await c.data.planCasePurge(a.caseFileId, mine, others);
+      if (!plan) throw new Error("Хэрэг олдсонгүй.");
+      return plan;
+    },
     globalPeople: (_p: unknown, _a: unknown, c: GraphQLContext) => {
       requireAdmin(c);
       return c.people.getGlobalPeople();
@@ -1069,6 +1099,22 @@ export const resolvers = {
         if (active?.id === cf.id) await c.session.setCurrentCase(null);
       }
       return cf;
+    },
+    // Хэргийг бүх мэдээллийнх нь хамт устгах. Буцаах боломжгүй тул зөвхөн
+    // админ, аудитад ноцтой зэрэглэлээр бичигдэнэ.
+    deleteCaseFile: async (
+      _p: unknown, a: {caseFileId: number}, c: GraphQLContext
+    ) => {
+      const admin = requireAdmin(c);
+      const {mine, others} = await caseScopePair(c, a.caseFileId);
+      const purged = await c.data.deleteCaseDeep(a.caseFileId, mine, others);
+      if (!purged) throw new Error("Хэрэг олдсонгүй.");
+      await c.audit.record("CaseFile.Delete", `CaseFile:${a.caseFileId}`,
+        `${purged.caseId} · ${purged.caseName} · ${purged.suspects} хүн · `
+        + `${purged.accounts} данс · ${purged.transactions} гүйлгээ · `
+        + `${purged.calls} дуудлага · ${admin.username}`,
+        "CRITICAL");
+      return purged;
     },
     mergeCases: async (
       _p: unknown,

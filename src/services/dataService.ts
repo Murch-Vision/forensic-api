@@ -72,6 +72,27 @@ export interface AccountDeletion {
   links         : number;
 }
 
+// Хэрэгт юу хамаарахыг заасан ID-ууд (resolvers.ts-ийн case scope).
+export interface ScopeIds {
+  suspectIds : number[];
+  accountIds : number[];
+  txnIds     : number[];
+  callIds    : number[];
+}
+
+// Хэрэг устгахад ЯГ юу алга болох нь. Асуухаас өмнө нь ч, устгасны дараа ч
+// ижил тоо — эхнийх нь баталгаажуулах цонхны, хоёр дахь нь тайлагнах тоо.
+export interface CasePurge {
+  caseId       : string;
+  caseName     : string;
+  suspects     : number;
+  accounts     : number;
+  transactions : number;
+  calls        : number;
+  phones       : number;
+  evidence     : number;
+}
+
 function parseJsonArray<T>(raw: unknown): T[] {
   if (typeof raw !== "string") return [];
   try {
@@ -433,12 +454,24 @@ export class DataService {
     const account = await this.db<BankAccount>("bank_accounts")
       .where({id}).first();
     if (!account) return null;
+    return this.db.transaction((trx) => this.deleteAccountRows(trx, id));
+  }
 
-    const txnIds = (await this.db("bank_transactions")
+  // The account delete itself, on a caller-supplied transaction — so deleting
+  // a whole case stays ONE atomic operation instead of a string of separate
+  // ones that can stop half-way.
+  private async deleteAccountRows(
+    trx: Knex.Transaction, id: number
+  ): Promise<AccountDeletion | null> {
+    const account = await trx<BankAccount>("bank_accounts")
+      .where({id}).first();
+    if (!account) return null;
+
+    const txnIds = (await trx("bank_transactions")
       .where({bankAccountId: id}).pluck("id")) as number[];
     const txnSet = new Set(txnIds.map(Number));
 
-    return this.db.transaction(async (trx) => {
+    {
       const transactions = await trx("bank_transactions")
         .where({bankAccountId: id}).del();
       const analyses = await trx("analysis_results")
@@ -501,7 +534,135 @@ export class DataService {
         accountNumber: account.accountNumber,
         transactions, analyses, conclusions, evidence, links,
       };
+    }
+  }
+
+  // Хэрэгт хамаарах боловч ӨӨР хэрэгт хамаардаггүй бичлэгүүд. Нэг хүн (эсвэл
+  // данс) хоёр хэрэгт бүртгэлтэй байж болно — нэг хэргийг устгахад нөгөө
+  // хэргийн мэдээлэл хамт алга болох ёсгүй, тиймээс зөвхөн ЗӨРҮҮГ нь авна.
+  private async casePurgeIds(mine: ScopeIds, others: ScopeIds): Promise<{
+    suspectIds: number[]; accountIds: number[]; callIds: number[];
+    txnIds: number[];
+  }> {
+    const otherSuspects = new Set(others.suspectIds);
+    const suspectIds = mine.suspectIds.filter((id) => !otherSuspects.has(id));
+
+    // Дансыг эздээр нь ч, шууд хавсаргасан баримтаар нь ч харна.
+    const accountsOf = async (suspects: number[], tagged: number[]) => {
+      const out = new Set<number>(tagged);
+      for (const chunk of chunked(suspects, 400)) {
+        for (const id of await this.db("bank_accounts")
+          .whereIn("suspectId", chunk).pluck("id")) out.add(Number(id));
+      }
+      return out;
+    };
+    const mineAccounts = await accountsOf(mine.suspectIds, mine.accountIds);
+    const otherAccounts = await accountsOf(others.suspectIds, others.accountIds);
+    const accountIds = [...mineAccounts].filter((id) => !otherAccounts.has(id));
+
+    const callsOf = async (suspects: number[], tagged: number[]) => {
+      const out = new Set<number>(tagged);
+      for (const chunk of chunked(suspects, 400)) {
+        for (const id of await this.db("call_records")
+          .whereIn("suspectId", chunk).pluck("id")) out.add(Number(id));
+      }
+      return out;
+    };
+    const mineCalls = await callsOf(mine.suspectIds, mine.callIds);
+    const otherCalls = await callsOf(others.suspectIds, others.callIds);
+    const callIds = [...mineCalls].filter((id) => !otherCalls.has(id));
+
+    // Дансаараа дамжин устах гүйлгээнээс ГАДНА, ганцаарчлан баримт болгосон
+    // гүйлгээ байж болно.
+    const otherTxns = new Set(others.txnIds);
+    const txnIds = mine.txnIds.filter((id) => !otherTxns.has(id));
+    return {suspectIds, accountIds, callIds, txnIds};
+  }
+
+  // Устгахаас ӨМНӨ: энэ хэрэгтэй хамт юу алга болохыг тоолно.
+  async planCasePurge(
+    caseFileId: number, mine: ScopeIds, others: ScopeIds
+  ): Promise<CasePurge | null> {
+    const cf = await this.db<CaseFile>("case_files")
+      .where({id: caseFileId}).first();
+    if (!cf) return null;
+    const ids = await this.casePurgeIds(mine, others);
+    let transactions = 0;
+    for (const chunk of chunked(ids.accountIds, 400)) {
+      transactions += Number(((await this.db("bank_transactions")
+        .whereIn("bankAccountId", chunk).count({c: "*"}).first()))?.c ?? 0);
+    }
+    let phones = 0;
+    for (const chunk of chunked(ids.suspectIds, 400)) {
+      phones += Number(((await this.db("phone_numbers")
+        .whereIn("suspectId", chunk).count({c: "*"}).first()))?.c ?? 0);
+    }
+    const evidence = Number(((await this.db("evidence_entries")
+      .where({caseFileId}).count({c: "*"}).first()))?.c ?? 0);
+    return {
+      caseId: cf.caseId, caseName: cf.caseName,
+      suspects: ids.suspectIds.length,
+      accounts: ids.accountIds.length,
+      transactions, calls: ids.callIds.length,
+      phones, evidence,
+    };
+  }
+
+  // Хэргийг бүх мэдээллийнх нь хамт устгана — нэг гүйлгээгээр, тал дундаа
+  // зогсох боломжгүй. Өөр хэрэгт БАС хамаарах хүн/данс хэвээр үлдэнэ.
+  async deleteCaseDeep(
+    caseFileId: number, mine: ScopeIds, others: ScopeIds
+  ): Promise<CasePurge | null> {
+    const plan = await this.planCasePurge(caseFileId, mine, others);
+    if (!plan) return null;
+    const ids = await this.casePurgeIds(mine, others);
+
+    await this.db.transaction(async (trx) => {
+      for (const id of ids.accountIds) {
+        await this.deleteAccountRows(trx, id);
+      }
+      // Дансгүйгээр ганцаарчлан баримт болгосон гүйлгээ.
+      for (const chunk of chunked(ids.txnIds, 400)) {
+        await trx("bank_transactions").whereIn("id", chunk).del();
+      }
+      for (const chunk of chunked(ids.callIds, 400)) {
+        await trx("call_records").whereIn("id", chunk).del();
+      }
+      for (const chunk of chunked(ids.suspectIds, 400)) {
+        await trx("call_records").whereIn("suspectId", chunk).del();
+        await trx("phone_numbers").whereIn("suspectId", chunk).del();
+        // Холбоосыг ЭХЛЭЭД — suspect_links нь хүн рүү RESTRICT-ээр заадаг тул
+        // үлдээвэл хүний мөрийг устгах үед бүхэл гүйлгээ унана.
+        await trx("suspect_links").whereIn("sourceSuspectId", chunk).del();
+        await trx("suspect_links").whereIn("targetSuspectId", chunk).del();
+        await trx("suspect_tags").whereIn("suspectId", chunk).del();
+        await trx("case_notes").whereIn("suspectId", chunk).del();
+        await trx("evidence_entries")
+          .where({sourceType: "SUSPECT"}).whereIn("sourceId", chunk).del();
+      }
+
+      // Хэргийн өөрийн мөрүүд.
+      const graphIds = (await trx("case_graphs")
+        .where({caseFileId}).pluck("id")) as number[];
+      for (const chunk of chunked(graphIds, 400)) {
+        await trx("suspect_links").whereIn("caseGraphId", chunk).del();
+      }
+      await trx("case_graphs").where({caseFileId}).del();
+      await trx("case_conclusions").where({caseFileId}).del();
+      await trx("case_noise_filters").where({caseFileId}).del();
+      await trx("case_members").where({caseFileId}).del();
+      await trx("case_notes").where({caseFileId}).del();
+      await trx("evidence_entries").where({caseFileId}).del();
+      // Энэ хэргийг нээлттэй байлгаж байсан хүмүүсийн дэлгэц хоосон хэрэг рүү
+      // заасаар үлдэх ёсгүй.
+      await trx("users").where({activeCaseId: caseFileId})
+        .update({activeCaseId: null});
+      for (const chunk of chunked(ids.suspectIds, 400)) {
+        await trx("suspects").whereIn("id", chunk).del();
+      }
+      await trx("case_files").where({id: caseFileId}).del();
     });
+    return plan;
   }
 
   async createPhoneNumber(input: Partial<PhoneNumber>): Promise<PhoneNumber> {
