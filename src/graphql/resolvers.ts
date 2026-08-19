@@ -42,7 +42,9 @@ import {
   MongoliaDefault,
   UnitedStatesDefault,
 } from "../services/amlThresholds";
-import type {BankAccount, BankTransaction, Suspect} from "../models/types";
+import type {
+  BankAccount, BankTransaction, CaseFile, Suspect,
+} from "../models/types";
 import {buildRelations} from "../services/relationService";
 import {
   analyseAccounts, directTransfers,
@@ -123,14 +125,35 @@ interface CaseScope {
 
 async function caseScope(c: GraphQLContext): Promise<CaseScope | null> {
   const active = await c.session.getCurrentCase();
-  if (!active) return null;
-  const entries = await c.evidence.getForCase(active.id);
+  if (active) return scopeForCases(c, [active]);
+  // ⛔ No case open. Only the ADMIN sees everything — for them null means "the
+  // whole database", which is what the dashboard launchpad shows. A DETECTIVE
+  // must NEVER fall through to that: without this, a brand-new account with no
+  // case at all was shown every other investigator's suspects, transactions and
+  // totals. They see the union of the cases they own or were granted — nothing
+  // when they have none.
+  if (!c.user) return scopeForCases(c, []);
+  const ids = await c.auth.accessibleCaseIds(c.user);
+  if (ids === null) return null;
+  const mine = (await c.data.getAllCaseFiles()).filter((cf) => ids.has(cf.id));
+  return scopeForCases(c, mine);
+}
+
+// Membership of one or more cases: what was tagged into them as evidence
+// (imports link their own rows this way), plus the legacy suspects.caseId.
+async function scopeForCases(
+  c: GraphQLContext, cases: CaseFile[]
+): Promise<CaseScope> {
+  const entries = (await Promise.all(
+    cases.map((cf) => c.evidence.getForCase(cf.id)))).flat();
   const by = (t: string) => new Set(
     entries.filter((e) => e.sourceType === t).map((e) => e.sourceId));
   const tagged = by("SUSPECT");
+  const caseIds = new Set(cases.map((cf) => cf.caseId));
   const all = await c.suspects.getAllSuspects();
   const suspectIds = new Set(
-    all.filter((s) => tagged.has(s.id) || s.caseId === active.caseId)
+    all.filter((s) => tagged.has(s.id)
+      || (s.caseId != null && caseIds.has(s.caseId)))
       .map((s) => s.id)
   );
   return {
@@ -138,6 +161,59 @@ async function caseScope(c: GraphQLContext): Promise<CaseScope | null> {
     accountIds: by("BANK_ACCOUNT"),
     txnIds: by("TRANSACTION"),
     callIds: by("CALL_RECORD"),
+  };
+}
+
+// Хяналтын самбарын тоонуудыг ХАРАГДАХ мөрүүдээс нь тоолно. Тусдаа SQL
+// тоолуур бичих нь хамгийн амархан бөгөөд хамгийн аюултай зам: тэр нь эрхийн
+// шүүлтүүрээ мартаад дэлгэц дээрх жагсаалттай зөрөх тоо гаргана.
+async function scopedDashboardStats(
+  c: GraphQLContext, scope: CaseScope
+): Promise<Record<string, unknown>> {
+  const [allSuspects, accounts, txns, calls, links, phones, cases] =
+    await Promise.all([
+      c.suspects.getAllSuspects(),
+      scopedAccounts(c),
+      scopedTransactions(c, false),
+      c.data.getAllCallRecords(),
+      c.data.getAllLinks(),
+      c.data.getAllPhoneNumbers(),
+      c.data.getAllCaseFiles(),
+    ]);
+  const suspects = allSuspects.filter((s) => scope.suspectIds.has(s.id));
+  const myCalls = calls.filter((r) =>
+    (r.suspectId != null && scope.suspectIds.has(r.suspectId))
+    || scope.callIds.has(r.id));
+  const myLinks = links.filter((l) =>
+    scope.suspectIds.has(l.sourceSuspectId)
+    && scope.suspectIds.has(l.targetSuspectId));
+  const myPhones = phones.filter((p) =>
+    p.suspectId != null && scope.suspectIds.has(p.suspectId));
+  const accessible = c.user
+    ? await c.auth.accessibleCaseIds(c.user) : new Set<number>();
+  const myCases = accessible === null
+    ? cases : cases.filter((cf) => accessible.has(cf.id));
+  const times = txns.map((t) => t.timestamp).sort();
+  const callTimes = myCalls.map((r) => r.startTime).sort();
+  return {
+    totalSuspects       : suspects.length,
+    activeSuspects      : suspects.filter((s) => s.status === "ACTIVE").length,
+    totalBankAccounts   : accounts.length,
+    totalTransactions   : txns.length,
+    totalPhoneNumbers   : myPhones.length,
+    totalCallRecords    : myCalls.length,
+    totalLinks          : myLinks.length,
+    openCases           : myCases.filter((cf) =>
+      cf.status === "OPEN" || cf.status === "ACTIVE").length,
+    highRiskSuspects    : suspects.filter((s) =>
+      s.riskLevel === "HIGH" || s.riskLevel === "CRITICAL").length,
+    flaggedTransactions : txns.filter((t) =>
+      t.flagStatus === "FLAGGED" || t.flagStatus === "SUSPICIOUS").length,
+    earliestTransaction : times[0] ?? null,
+    latestTransaction   : times[times.length - 1] ?? null,
+    totalTransactionVolume: txns.reduce((n, t) => n + Number(t.amount), 0),
+    earliestCall        : callTimes[0] ?? null,
+    latestCall          : callTimes[callTimes.length - 1] ?? null,
   };
 }
 
@@ -227,8 +303,15 @@ export const resolvers = {
     },
     suspect: (_p: unknown, a: {id: number}, c: GraphQLContext) =>
       c.suspects.getSuspectById(a.id),
-    dashboardStats: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.data.getDashboardStats(),
+    // Хяналтын самбарын тоонууд. ADMIN with no case open counts the whole
+    // database (one cheap SQL pass). Everyone else counts EXACTLY the rows
+    // their scope lets them see — the same helpers the lists use, so the
+    // cards can never show a bigger number than the pages behind them.
+    dashboardStats: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const scope = await caseScope(c);
+      if (!scope) return c.data.getDashboardStats();
+      return scopedDashboardStats(c, scope);
+    },
     appVersion: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.update.version(),
     updateLog: (_p: unknown, _a: unknown, c: GraphQLContext) => {
@@ -350,8 +433,12 @@ export const resolvers = {
       requireAdmin(c);
       return c.auth.caseMembers(a.caseFileId);
     },
-    globalPeople: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.people.getGlobalPeople(),
+    // Субьектийн жагсаалт — хэрэг дамнасан НЭГДСЭН бүртгэл, өөрөөр хэлбэл
+    // бүх мөрдөгчийн хүмүүс нэг дор. Тиймээс зөвхөн хэлтсийн даргад.
+    globalPeople: (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireAdmin(c);
+      return c.people.getGlobalPeople();
+    },
     analysisResults: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.data.getAllAnalysisResults(),
     auditEvents: (_p: unknown, a: {limit?: number}, c: GraphQLContext) =>
