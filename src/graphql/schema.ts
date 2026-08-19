@@ -691,6 +691,11 @@ export const typeDefs = /* GraphQL */ `
     totalRows: Int!
     importedRows: Int!
     skippedRows: Int!
+    """
+    Аль хэдийн санд байсан тул дахин ОРООГҮЙ мөрийн тоо. Нэг Excel файлыг
+    хоёр удаа оруулахад бүх мөр нь энд тоологдоно — алдаа биш.
+    """
+    duplicateRows: Int!
     errors: [String!]!
     messages: [String!]!
     detectedProfile: String

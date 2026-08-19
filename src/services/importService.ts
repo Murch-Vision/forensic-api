@@ -66,6 +66,9 @@ export interface ImportSummary {
   totalRows: number;
   importedRows: number;
   skippedRows: number;
+  // Мөрүүд аль хэдийн санд байсан тул дахин ОРООГҮЙ тоо. Нэг файлыг хоёр
+  // удаа оруулахад бүх мөр энд орно — алдаа биш, давхардал.
+  duplicateRows: number;
   errors: string[];
   messages: string[];
   detectedProfile: string | null;
@@ -175,6 +178,28 @@ export class ImportService {
     return Number(id);
   }
 
+  // Данс дээр САНД БАЙГАА мөрүүдийн хурууны хээ, хэдэн удаа давтагдсанаар
+  // нь. Данс бүрт нэг л удаа уншина. Энэ импортод шинээр орж буй мөрийг ЭНД
+  // нэмэхгүй — тийм учраас нэг файл доторх жинхэнэ давхар мөрүүд хоёул орно.
+  private async loadFingerprints(
+    bankAccountId: number,
+    cache: Map<number, Map<string, number>>
+  ): Promise<Map<string, number>> {
+    const hit = cache.get(bankAccountId);
+    if (hit) return hit;
+    const counts = new Map<string, number>();
+    const rows = await this.db("bank_transactions")
+      .where({bankAccountId})
+      .select("timestamp", "amount", "type", "counterpartyAccount",
+        "description");
+    for (const r of rows) {
+      const k = txnFingerprint(r);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    cache.set(bankAccountId, counts);
+    return counts;
+  }
+
   // A Регистрийн дугаар names a real person: reuse the person that already
   // has it or create one. A statement that carries only the registry number
   // still yields a person — an anonymous placeholder until a later row (or
@@ -274,6 +299,12 @@ export class ImportService {
     // Reference numbers are unique per account — collect existing + in-file
     // ones so a manual reference mapping can't trip the unique index.
     const seenRefs = new Set<string>();
+    // Гүйлгээний дугааргүй хуулга ч давхардаж болно: данс бүрийн санд БАЙГАА
+    // мөрүүдийн хурууны хээг (огноо+цаг · орлого/зарлага · дүн · харьцсан
+    // данс · утга) тоолж хадгална. Файлын мөр тэдгээрийн нэгтэй таарвал
+    // алгасна. Тоолж байгаа учир нь: жинхэнэ хуулга дээр яг ижил хоёр мөр
+    // байж БОЛНО — тэгвэл хоёул орно, харин файлыг дахин оруулахад алгасна.
+    const fpCache = new Map<number, Map<string, number>>();
     if (map.reference) {
       const rows = await this.db("bank_transactions")
         .whereNotNull("referenceNumber")
@@ -355,7 +386,7 @@ export class ImportService {
         if (ref) {
           const refKey = `${bankAccountId}|${ref}`;
           if (seenRefs.has(refKey)) {
-            res.skippedRows++;
+            res.duplicateRows++;
             continue;
           }
           seenRefs.add(refKey);
@@ -408,6 +439,16 @@ export class ImportService {
                 : before - (txn.amount as number);
             }
           }
+        }
+        const seen = await this.loadFingerprints(bankAccountId, fpCache);
+        const fp = txnFingerprint(txn);
+        const already = seen.get(fp) ?? 0;
+        if (already > 0) {
+          // Санд байсан хувийг нь "ашиглав" гэж тэмдэглэнэ — ингэснээр файл
+          // дээрх гурав дахь ижил мөр нь сангийн хоёрыг өнгөрөөд орж ирнэ.
+          seen.set(fp, already - 1);
+          res.duplicateRows++;
+          continue;
         }
         rowsToInsert.push(txn);
         res.importedRows++;
@@ -707,19 +748,42 @@ function newSummary(det: DetectionResult): ImportSummary {
   const messages: string[] = [];
   if (det.profile) messages.push(`Танилцсан загвар: ${det.profile.displayName}`);
   return {
-    totalRows: 0, importedRows: 0, skippedRows: 0, errors: [], messages,
+    totalRows: 0, importedRows: 0, skippedRows: 0, duplicateRows: 0,
+    errors: [], messages,
     detectedProfile: det.profile?.displayName ?? null, domain: det.domain,
   };
 }
 
 function empty(message: string): ImportSummary {
   return {
-    totalRows: 0, importedRows: 0, skippedRows: 0, errors: [message],
-    messages: [], detectedProfile: null, domain: null,
+    totalRows: 0, importedRows: 0, skippedRows: 0, duplicateRows: 0,
+    errors: [message], messages: [], detectedProfile: null, domain: null,
   };
 }
 
 // === helpers (ported from ImportService) ================================
+
+// Огноог ижил хэлбэрт оруулна. SQLite нь хадгалсан текстээ буцаадаг бол
+// Postgres нь Date объект буцаадаг — хоёрыг нь харьцуулах гэж байгаа тул
+// секунд хүртэлх ISO текст болгож жигдэлнэ.
+function isoText(v: unknown): string {
+  if (v instanceof Date) return v.toISOString().slice(0, 19);
+  return String(v ?? "").slice(0, 19);
+}
+
+// Нэг гүйлгээг таних хурууны хээ. Гүйлгээний дугаар байхгүй хуулгад ч
+// ажиллах ёстой тул мөрийн УТГААР нь тодорхойлно. Үлдэгдэл орохгүй: банк
+// тэрийг тооцоолж бичдэг тул нэг мөрийг хоёр хуулга дээр өөрөөр үзүүлж
+// болно.
+function txnFingerprint(t: Record<string, unknown>): string {
+  return [
+    isoText(t.timestamp),
+    String(t.type ?? ""),
+    Number(t.amount ?? 0).toFixed(2),
+    String(t.counterpartyAccount ?? "").trim(),
+    String(t.description ?? "").trim(),
+  ].join("|");
+}
 
 // Excel serial epoch: 1899-12-30 (handles the 1900 leap-year bug for >= 60).
 function excelSerialToIso(serial: number): string {
