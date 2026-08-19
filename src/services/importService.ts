@@ -550,6 +550,26 @@ export class ImportService {
     }
     const phonesToAttach = new Map<string, number>(); // number -> suspectId
 
+    // Давхардал. Дуудлагын файл хоёр төрөл байдаг тул таних арга нь ч хоёр:
+    //   · Огноо/цагтай мөр — дуудагч · дуудуулагч · цаг · үргэлжлэх хугацаа.
+    //   · Огноогүй (давтамжийн жагсаалт) мөр — цагийг нь бид өөрсдөө импортын
+    //     мөчөөр тавьдаг тул цагаар нь таних БОЛОМЖГҮЙ: тэр нь дахин
+    //     оруулах бүрд өөр байх учир юу ч таарахгүй. Ийм мөрийн мөн чанар нь
+    //     "А хүн Б рүү N удаа" гэсэн ТОО, тиймээс хосоор нь тоолж, санд аль
+    //     хэдийн байгаа хэсгийг нь дахин оруулахгүй.
+    const knownCalls = new Map<string, number>();   // цагтай мөрүүд
+    const knownPairs = new Map<string, number>();   // хос бүрийн нийт тоо
+    for (const r of await this.db("call_records")
+      .select("callerNumber", "calledNumber", "startTime", "durationSeconds")) {
+      const caller = String(r.callerNumber ?? "");
+      const called = String(r.calledNumber ?? "");
+      const exact = `${caller}|${called}|${isoText(r.startTime)}`
+        + `|${Number(r.durationSeconds ?? 0)}`;
+      knownCalls.set(exact, (knownCalls.get(exact) ?? 0) + 1);
+      const pair = `${caller}|${called}`;
+      knownPairs.set(pair, (knownPairs.get(pair) ?? 0) + 1);
+    }
+
     // No timestamp in the export → stamp every row with the import moment so
     // the required startTime is satisfied (time-based charts won't be meaningful
     // for such data, but the contact/frequency analysis will be).
@@ -578,7 +598,8 @@ export class ImportService {
           continue;
         }
         // Datetime is optional — fall back to the import moment.
-        const dt = tryParseDateOrSerial(get("datetime") ?? "") ?? importDate;
+        const dated = tryParseDateOrSerial(get("datetime") ?? "");
+        const dt = dated ?? importDate;
         let durationSeconds = 0;
         const durRaw = get("duration");
         if (durRaw) {
@@ -605,7 +626,24 @@ export class ImportService {
         const calledNumber = unwrapCallerId(called);
         const suspectId = matchSuspect(callerNumber)
           ?? matchSuspect(calledNumber) ?? subjectSuspectId;
-        for (let i = 0; i < times; i++) {
+        // Аль хэдийн санд байгаа хувийг нь хасна. Цагтай мөрийг яг өөрөөр
+        // нь, огноогүй мөрийг хосынх нь нийт тоогоор.
+        let already = 0;
+        if (dated) {
+          const key = `${callerNumber}|${calledNumber}|${isoText(dt)}`
+            + `|${durationSeconds}`;
+          const left = knownCalls.get(key) ?? 0;
+          already = Math.min(left, times);
+          if (already > 0) knownCalls.set(key, left - already);
+        } else {
+          const pair = `${callerNumber}|${calledNumber}`;
+          const left = knownPairs.get(pair) ?? 0;
+          already = Math.min(left, times);
+          if (already > 0) knownPairs.set(pair, left - already);
+        }
+        const toAdd = times - already;
+        res.duplicateRows += already;
+        for (let i = 0; i < toAdd; i++) {
           rowsToInsert.push({
             callerNumber, calledNumber,
             startTime: dt, durationSeconds, callType: "Voice",
@@ -618,7 +656,7 @@ export class ImportService {
           const hit = nameToSuspect.get(nameRaw.trim().toLowerCase());
           if (hit != null && calledNumber) phonesToAttach.set(calledNumber, hit);
         }
-        res.importedRows += times;
+        res.importedRows += toAdd;
       } catch {
         res.skippedRows++;
       }
