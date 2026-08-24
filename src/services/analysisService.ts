@@ -904,11 +904,12 @@ export class AnalysisService {
   }
 
   // === NETWORK FLOW =====================================================
-  async analyzeNetworkFlow(): Promise<NetworkFlowData> {
-    const suspects = await this.db.getSuspectsWithRelations();
-    const accounts = await this.db.getAllBankAccounts();
-    const allTxns = await this.db.getAllTransactions();
-    return analyzeNetworkFlowCore(suspects, accounts, allTxns);
+  analyzeNetworkFlow(
+    suspects: SuspectWithRelations[],
+    accounts: BankAccount[],
+    transactions: BankTransaction[]
+  ): NetworkFlowData {
+    return analyzeNetworkFlowCore(suspects, accounts, transactions);
   }
 }
 

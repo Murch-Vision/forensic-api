@@ -489,8 +489,19 @@ export const resolvers = {
       c.analysis.getAccountStatistics(a.bankAccountId),
     ruleEngine: (_p: unknown, a: {bankAccountId: number}, c: GraphQLContext) =>
       c.analysis.runRuleEngine(a.bankAccountId),
-    networkFlow: (_p: unknown, _a: unknown, c: GraphQLContext) =>
-      c.analysis.analyzeNetworkFlow(),
+    networkFlow: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const scope = await caseScope(c);
+      const [allSuspects, accounts, transactions] = await Promise.all([
+        c.data.getSuspectsWithRelations(),
+        scopedAccounts(c),
+        scopedTransactions(c, false),
+      ]);
+      const suspects = scope
+        ? allSuspects.filter((s) => scope.suspectIds.has(s.id))
+        : allSuspects;
+      return c.analysis.analyzeNetworkFlow(
+        suspects, accounts, transactions);
+    },
     suspectLocations: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const suspects = await c.suspects.getAllSuspects();
       const active = await c.session.getCurrentCase();
