@@ -49,6 +49,19 @@ function normalizeName(name: string): string {
   return name.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function meaningfulIdentity(value: string | null | undefined): string | null {
+  const text = value?.trim() ?? "";
+  if (!text || /^[-–—_.]+$/.test(text)) return null;
+  if (/^(unknown|null|n\/?a|тодорхойгүй)$/i.test(text)) return null;
+  return text;
+}
+
+function meaningfulName(value: string | null | undefined): string | null {
+  const text = meaningfulIdentity(value);
+  if (!text || /^тодорхойгүй\s*\(/i.test(text)) return null;
+  return text;
+}
+
 // Match numbers on their local significant digits (country codes vary
 // between imports of the same person).
 function normalizePhone(num: string | null): string | null {
@@ -146,8 +159,10 @@ export class PeopleService {
 
     for (const s of suspects) {
       uf.find(s.id);
-      claim(s.id, `name:${normalizeName(s.fullName)}`, "NAME");
-      if (s.nationalId) claim(s.id, `nid:${s.nationalId.trim()}`, "NATIONAL_ID");
+      const name = meaningfulName(s.fullName);
+      if (name) claim(s.id, `name:${normalizeName(name)}`, "NAME");
+      const nationalId = meaningfulIdentity(s.nationalId);
+      if (nationalId) claim(s.id, `nid:${nationalId.toUpperCase()}`, "NATIONAL_ID");
       const nums = new Set<string>();
       const primary = normalizePhone(s.primaryPhone);
       if (primary) nums.add(primary);
@@ -223,7 +238,10 @@ export class PeopleService {
       cases.sort((a, b) => b.taggedAtUtc.localeCompare(a.taggedAtUtc));
       people.push({
         key            : `person-${root}`,
-        fullName       : members[0].fullName,
+        fullName       : members.map((s) => meaningfulName(s.fullName))
+          .find((name): name is string => Boolean(name))
+          ?? [...accountSet].find((number) => Boolean(meaningfulIdentity(number)))
+          ?? members[0].suspectId,
         aliases        : [...aliasSet],
         riskLevel,
         photoData,

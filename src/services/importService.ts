@@ -210,7 +210,7 @@ export class ImportService {
     personName: string | null,
     cache: Map<string, number>
   ): Promise<number | null> {
-    const nationalId = nationalIdRaw.trim().toUpperCase();
+    const nationalId = normalizeIdentity(nationalIdRaw);
     if (!nationalId) return null;
     let suspectId = cache.get(nationalId) ?? null;
     if (suspectId == null) {
@@ -239,6 +239,48 @@ export class ImportService {
       }
       cache.set(nationalId, suspectId);
     }
+    return suspectId;
+  }
+
+  // A statement may omit the owner's registry number (or use placeholders
+  // such as "-"). In that case the account itself is the only stable identity
+  // available: give every account its own subject instead of collapsing every
+  // unknown owner into one fake person.
+  private async ensureAccountPerson(
+    bankAccountId: number,
+    accountNumber: string,
+    personName: string | null,
+    cache: Map<string, number>
+  ): Promise<number> {
+    const key = `account:${bankAccountId}`;
+    const hit = cache.get(key);
+    if (hit != null) return hit;
+
+    const account = await this.db("bank_accounts")
+      .where({id: bankAccountId}).first();
+    if (account?.suspectId != null) {
+      const suspectId = Number(account.suspectId);
+      cache.set(key, suspectId);
+      return suspectId;
+    }
+
+    const importedId = `IMP-ACCOUNT-${bankAccountId}`;
+    const existing = await this.db("suspects")
+      .where({suspectId: importedId}).first();
+    let suspectId: number;
+    if (existing) {
+      suspectId = Number(existing.id);
+    } else {
+      const now = new Date().toISOString();
+      const displayName = meaningfulText(personName) ?? accountNumber.trim();
+      const [id] = await this.db("suspects").insert({
+        suspectId: importedId, fullName: displayName, nationalId: null,
+        riskLevel: "UNKNOWN", status: "ACTIVE",
+        createdAt: now, updatedAt: now,
+      });
+      suspectId = Number(id);
+    }
+    cache.set(key, suspectId);
     return suspectId;
   }
 
@@ -327,9 +369,13 @@ export class ImportService {
         // The statement names its owner: find-or-create the person by
         // Регистрийн дугаар (dedupes people) and attach the account.
         const natId = get("nationalId");
-        if (natId) {
-          const sid = await this.ensurePerson(
-            natId, get("ownerName"), ownerCache);
+        const ownerNationalId = normalizeIdentity(natId);
+        if (ownerNationalId || (acctRaw && meaningfulText(acctRaw))) {
+          const sid = ownerNationalId
+            ? await this.ensurePerson(
+              ownerNationalId, get("ownerName"), ownerCache)
+            : await this.ensureAccountPerson(
+              bankAccountId, acctRaw!, get("ownerName"), ownerCache);
           if (sid != null) {
             ownerIds.add(sid);
             const attachKey = `${bankAccountId}|${sid}`;
@@ -345,9 +391,10 @@ export class ImportService {
         // names their account, create/attach it — this is what lets link
         // generation connect statement owners to their counterparties.
         const cpNatId = get("counterpartyNationalId");
-        if (cpNatId) {
+        const counterpartyNationalId = normalizeIdentity(cpNatId);
+        if (counterpartyNationalId) {
           const cpSid = await this.ensurePerson(
-            cpNatId, get("counterpartyName"), ownerCache);
+            counterpartyNationalId, get("counterpartyName"), ownerCache);
           if (cpSid != null) {
             ownerIds.add(cpSid);
             const cpAcctRaw = get("counterpartyAccount");
@@ -400,8 +447,7 @@ export class ImportService {
           bankAccountId, timestamp: date, description: desc,
           flagStatus: "NORMAL", counterpartyAccount: get("counterpartyAccount"),
           counterpartyName: get("counterpartyName"), runningBalance: 0,
-          counterpartyNationalId: cpNatId
-            ? cpNatId.trim().toUpperCase() : null,
+          counterpartyNationalId,
           referenceNumber: ref || null, category: get("category"),
           channel: get("channel"),
           currency: currencyRaw ? currencyRaw.trim().toUpperCase() : "MNT",
@@ -1074,6 +1120,17 @@ export function cleanAmount(input: string | null): string {
   const fractionalPart = s.slice(decimalAt + 1);
   return integerPart.length === 0
     ? `0.${fractionalPart}` : `${integerPart}.${fractionalPart}`;
+}
+
+function meaningfulText(value: string | null | undefined): string | null {
+  const text = value?.trim() ?? "";
+  if (!text || /^[-–—_.]+$/.test(text)) return null;
+  if (/^(unknown|null|n\/?a|тодорхойгүй)$/i.test(text)) return null;
+  return text;
+}
+
+function normalizeIdentity(value: string | null | undefined): string | null {
+  return meaningfulText(value)?.toUpperCase() ?? null;
 }
 
 function normalizePhone(phone: string): string {
