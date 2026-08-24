@@ -98,6 +98,13 @@ if errorlevel 1 (
     goto :eof
 )
 
+REM Remember whether this project's managed launcher / Node process was
+REM running before pnpm itself starts Node for install/build. The helper may
+REM have arrived in the pull above, which also makes the first update work.
+set "WAS_RUNNING="
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%DIR%\scripts\project-process-windows.ps1" -ProjectDir "%DIR%" -Action Test >nul 2>&1
+if not errorlevel 1 set "WAS_RUNNING=1"
+
 for /f "delims=" %%i in ('!GIT! rev-parse --short HEAD 2^>nul') do set "AFTER=%%i"
 
 if "!BEFORE!"=="!AFTER!" (
@@ -133,13 +140,13 @@ if exist "dist" (
     for /f "delims=" %%i in ('!GIT! rev-parse HEAD 2^>nul') do >"dist\.commit" echo %%i
 )
 
-REM Restart the launcher only if it was already running — this script must not
-REM start services on a machine where they were deliberately stopped.
-tasklist /FI "WINDOWTITLE eq %TITLE%*" 2>nul | find /I "cmd.exe" >nul
-if not errorlevel 1 (
+REM Restart only this checkout's process tree. Hidden boot launchers have no
+REM window title, so WINDOWTITLE-based taskkill cannot find them.
+if defined WAS_RUNNING (
     echo   restarting %TITLE%...
-    taskkill /FI "WINDOWTITLE eq %TITLE%*" /T /F >nul 2>&1
-    start "%TITLE%" /min cmd /c "%DIR%\scripts\start-windows.bat"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%DIR%\scripts\project-process-windows.ps1" -ProjectDir "%DIR%" -Action Stop >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    wscript.exe "%DIR%\scripts\start-hidden-windows.vbs"
 ) else (
     echo   %TITLE% is not running — start it from the Start menu or
     echo   scripts\start-windows.bat
