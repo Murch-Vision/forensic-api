@@ -54,7 +54,8 @@ const BANK_PROFILES: ImportProfile[] = [
       nationalId: ["Регистрийн дугаар", "Регистр"],
       ownerName: ["Харилцагчийн нэр", "Дансны нэр", "Хэрэглэгчийн нэр",
         "Эзэмшигчийн нэр"],
-      currency: ["Валют", "Currency"],
+      currency: ["Валют", "Дансны валют", "Валютын код", "Currency",
+        "Account Currency", "Currency Code"],
     },
   },
   {
@@ -75,7 +76,8 @@ const BANK_PROFILES: ImportProfile[] = [
       nationalId: ["Регистрийн дугаар", "Регистр"],
       ownerName: ["Харилцагчийн нэр", "Дансны нэр", "Хэрэглэгчийн нэр",
         "Эзэмшигчийн нэр"],
-      currency: ["Валют", "Currency"],
+      currency: ["Валют", "Дансны валют", "Валютын код", "Currency",
+        "Account Currency", "Currency Code"],
     },
   },
   {
@@ -89,6 +91,8 @@ const BANK_PROFILES: ImportProfile[] = [
         "Time", "Tran Time", "Огнооны цаг"],
       balance: ["balance"], counterpartyAccount: ["relatedAccount"],
       account: ["account", "accountNumber"],
+      currency: ["Currency", "Account Currency", "Currency Code", "Валют",
+        "Дансны валют", "Валютын код"],
     },
   },
   {
@@ -108,7 +112,8 @@ const BANK_PROFILES: ImportProfile[] = [
       balanceBefore: ["Гүйлгээний өмнөх үлдэгдэл", "Өмнөх үлдэгдэл"],
       nationalId: ["Регистрийн дугаар", "Регистр"],
       ownerName: ["Харилцагчийн нэр", "Дансны нэр", "Хэрэглэгчийн нэр"],
-      currency: ["Валют", "Currency"],
+      currency: ["Валют", "Дансны валют", "Валютын код", "Currency",
+        "Account Currency", "Currency Code"],
     },
   },
   {
@@ -124,6 +129,8 @@ const BANK_PROFILES: ImportProfile[] = [
       counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан дансны нэр"],
       account: ["Данс", "Дансны дугаар"],
+      currency: ["Валют", "Дансны валют", "Валютын код", "Currency",
+        "Account Currency", "Currency Code"],
     },
   },
   {
@@ -148,7 +155,8 @@ const BANK_PROFILES: ImportProfile[] = [
       nationalId: ["Регистрийн дугаар", "Регистр"],
       ownerName: ["Харилцагчийн нэр", "Дансны нэр", "Хэрэглэгчийн нэр",
         "Эзэмшигчийн нэр"],
-      currency: ["Валют", "Currency"],
+      currency: ["Валют", "Дансны валют", "Валютын код", "Currency",
+        "Account Currency", "Currency Code"],
     },
   },
 ];

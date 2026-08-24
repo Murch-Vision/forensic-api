@@ -993,6 +993,10 @@ export function parseTimestamp(input: string): ParsedTimestamp | null {
         hasTime: Math.abs(serial - Math.round(serial)) > 1e-9,
       };
     }
+    // A time-only Excel fraction (0.5) is not a standalone date. In
+    // particular, Date.parse("0 UTC") means January 2000 in V8 and silently
+    // turned a midnight time cell into a fabricated date.
+    return null;
   }
 
   // Compact: YYYYMMDD, optionally followed by HHmm / HHmmss.
@@ -1154,13 +1158,20 @@ function parseWorkbook(
   sheetName? : string | null,
   range      : RowRange = {}
 ): NormalizedTable {
-  const wb = XLSX.read(Buffer.from(base64, "base64"), {
+  const bytes = Buffer.from(base64, "base64");
+  const wb = XLSX.read(bytes, {
     type: "buffer", cellDates: true,
   });
+  // A genuinely separate pass with cellDates:false preserves Excel's serial
+  // numbers. Reusing the cellDates:true workbook with raw:true still returns
+  // Date objects whose epoch depends on the Windows timezone; adjusting those
+  // objects again shifted Mongolian wall clocks by another +8 hours (16:00).
+  const rawWb = XLSX.read(bytes, {type: "buffer", cellDates: false});
   const name = sheetName && wb.SheetNames.includes(sheetName)
     ? sheetName : wb.SheetNames[0];
   const sheet = wb.Sheets[name];
-  if (!sheet) return EMPTY_TABLE;
+  const rawSheet = rawWb.Sheets[name];
+  if (!sheet || !rawSheet) return EMPTY_TABLE;
   // blankrows: TRUE — a dropped blank row would shift every row number below
   // it, and then "мөр 12" here is not the мөр 12 on the analyst's screen. The
   // blanks are removed later, by sliceTable, after the range has been cut.
@@ -1172,19 +1183,20 @@ function parseWorkbook(
   // ways, and the second one cannot be told from a US month-first date. Read
   // the typed values too and let a genuine Date win: it is unambiguous, and it
   // already carries the clock when the cell is a datetime.
-  const typed = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+  const typed = XLSX.utils.sheet_to_json<unknown[]>(rawSheet, {
     header: 1, raw: true, defval: null, blankrows: true,
   });
   const grid: (string | null)[][] = aoa.map((row, r) =>
     (row ?? []).map((c, i) => {
       const t = (typed[r] ?? [])[i];
-      if (t instanceof Date && !Number.isNaN(t.getTime())) {
-        // SheetJS builds the Date in local time; keep the wall clock the
-        // spreadsheet shows rather than shifting it by the server's zone.
-        const wall = t.getTime() - t.getTimezoneOffset() * 60_000;
-        // Serial → Date round-trips land a hair off the second (14:29:59.997);
-        // statements never carry milliseconds, so snap to the second.
-        return new Date(Math.round(wall / 1000) * 1000).toISOString();
+      const address = XLSX.utils.encode_cell({r, c: i});
+      const dateCell = sheet[address];
+      if (dateCell?.v instanceof Date && typeof t === "number") {
+        // Whole/date+time serials use the central parser. A time-only cell is
+        // below the serial date window, so keep its fraction as text and let
+        // applyTimeOfDay attach it to the row's date later.
+        if (t >= SERIAL_MIN) return parseTimestamp(String(t))?.iso ?? String(t);
+        return String(t);
       }
       if (c == null) return null;
       const s = String(c).trim();
