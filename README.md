@@ -39,7 +39,7 @@ no service, no administrator. Everything lives in [`scripts/`](scripts/):
 
 | Script | Purpose |
 | --- | --- |
-| `start-windows.bat` | Launcher — `npm install` (first run), `npm run migrate`, `npm run start`. Also a self-update **restart loop** (honours exit code 42). |
+| `start-windows.bat` | Background launcher — `pnpm install`, `pnpm run migrate`, `pnpm run start`. The Startup installer runs it invisibly through `wscript.exe`; logs remain in `logs\startup.log`. |
 | `install-startup-windows.bat` | Adds the launcher to your Startup folder. |
 | `uninstall-startup-windows.bat` | Removes it. |
 | `self-update.bat` | `git pull` + `npm install` + restart the launcher. |
