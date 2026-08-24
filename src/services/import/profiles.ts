@@ -43,7 +43,8 @@ const BANK_PROFILES: ImportProfile[] = [
     optionalHeaders: ["Харьцсан регистрийн дугаар", "Журнал", "Гүйлгээний дугаар"],
     fieldMap: {
       date: ["Гүйлгээний огноо"], amount: ["Гүйлгээний дүн"],
-      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Time"],
+      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Гүйлгээ хийсэн цаг",
+        "Time", "Tran Time", "Огнооны цаг"],
       description: ["Гүйлгээний утга"], counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр"],
       counterpartyNationalId: ["Харьцсан регистрийн дугаар", "Харьцсан регистр"],
@@ -63,7 +64,8 @@ const BANK_PROFILES: ImportProfile[] = [
     optionalHeaders: [],
     fieldMap: {
       date: ["Гүйлгээний огноо"], amount: ["Гүйлгээний дүн"],
-      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Time"],
+      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Гүйлгээ хийсэн цаг",
+        "Time", "Tran Time", "Огнооны цаг"],
       description: ["Гүйлгээний утга"], counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр"],
       counterpartyNationalId: ["Харьцсан регистрийн дугаар", "Харьцсан регистр"],
@@ -83,6 +85,8 @@ const BANK_PROFILES: ImportProfile[] = [
     optionalHeaders: [],
     fieldMap: {
       date: ["tranDate"], amount: ["amount"], description: ["description"],
+      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Гүйлгээ хийсэн цаг",
+        "Time", "Tran Time", "Огнооны цаг"],
       balance: ["balance"], counterpartyAccount: ["relatedAccount"],
       account: ["account", "accountNumber"],
     },
@@ -94,6 +98,8 @@ const BANK_PROFILES: ImportProfile[] = [
     optionalHeaders: [],
     fieldMap: {
       date: ["Гүйлгээний огноо"], credit: ["Орлого"], debit: ["Зарлага"],
+      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Гүйлгээ хийсэн цаг",
+        "Time", "Tran Time", "Огнооны цаг"],
       balance: ["Үлдэгдэл"], description: ["Гүйлгээний утга"],
       counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан харилцагчийн нэр", "Харьцсан дансны нэр"],
@@ -112,6 +118,8 @@ const BANK_PROFILES: ImportProfile[] = [
     optionalHeaders: [],
     fieldMap: {
       date: ["Огноо"], credit: ["Орлого"], debit: ["Зарлага"],
+      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Гүйлгээ хийсэн цаг",
+        "Time", "Tran Time", "Огнооны цаг"],
       balance: ["Үлдэгдэл"], description: ["Гүйлгээний утга"],
       counterpartyAccount: ["Харьцсан данс"],
       counterpartyName: ["Харьцсан дансны нэр"],
@@ -126,6 +134,8 @@ const BANK_PROFILES: ImportProfile[] = [
       "Гүйлгээний өмнөх үлдэгдэл"],
     fieldMap: {
       date: ["Гүйлгээний огноо", "Огноо"],
+      time: ["Цаг", "Гүйлгээний цаг", "Хугацаа", "Гүйлгээ хийсэн цаг",
+        "Time", "Tran Time", "Огнооны цаг"],
       amount: ["Гүйлгээний дүн", "Дүн"],
       description: ["Гүйлгээний утга", "Утга", "Тайлбар"],
       balance: ["Үлдэгдэл", "Дансны үлдэгдэл", "Гүйлгээний дараах үлдэгдэл"],
@@ -152,7 +162,9 @@ const CDR_PROFILES: ImportProfile[] = [
     fieldMap: {
       caller: ["callerid", "caller", "calling"],
       called: ["callednum", "called"],
-      datetime: ["callstart", "datetime", "starttime"],
+      datetime: ["callstart", "datetime", "starttime", "Огноо",
+        "Дуудлагын огноо"],
+      time: ["Цаг", "Хугацаа эхэлсэн", "starttime_time", "Time"],
       duration: ["duration_min", "duration", "duration minut", "minut"],
       direction: ["direction", "call direction"],
     },
@@ -167,6 +179,7 @@ const ACCESS_LOG_PROFILES: ImportProfile[] = [
     optionalHeaders: [],
     fieldMap: {
       timestamp: ["Transaction Time"], accountId: ["User"],
+      time: ["Transaction Time (time)", "Цаг", "Time"],
       fullName: ["Full Name"], uuid: ["UUID"], fingerprint: ["fingerprint"],
       userAgent: ["userAgent"], ip: ["IP Address"],
     },
@@ -178,6 +191,7 @@ const ACCESS_LOG_PROFILES: ImportProfile[] = [
     optionalHeaders: [],
     fieldMap: {
       timestamp: ["CREATE_TS", "ST_TM"], accountId: ["USER_ID"],
+      time: ["CREATE_TM", "ST_TIME", "Цаг"],
       uuid: ["DEVICE_ID"], ip: ["ORIGINATION"],
       deviceModel: ["MODEL", "DEVICE_NAME"], deviceMake: ["MAKE"],
       os: ["OS"], osVersion: ["OS_VERSION"],

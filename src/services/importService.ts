@@ -368,15 +368,19 @@ export class ImportService {
           res.skippedRows++;
           continue;
         }
-        const parsedDate = tryParseDateOrSerial(dateStr);
+        const parsedDate = parseTimestamp(dateStr);
         if (!parsedDate) {
           res.skippedRows++;
           continue;
         }
-        // The clock lives in its own column on most Mongolian statements.
-        const date = parsedDate.slice(11, 19) === "00:00:00"
-          ? applyTimeOfDay(parsedDate, get("time") ?? "")
-          : parsedDate;
+        // Two shapes in the wild: one datetime cell, or a date cell plus a
+        // separate "Цаг" column. Take the date cell's own clock when it has
+        // one; otherwise (or when it reads midnight) let the time column fill
+        // it in — an absent/unmapped time column leaves the date untouched.
+        const date = parsedDate.hasTime
+          && parsedDate.iso.slice(11, 19) !== "00:00:00"
+          ? parsedDate.iso
+          : applyTimeOfDay(parsedDate.iso, get("time") ?? "");
         const desc = get("description");
         if (desc && desc.includes("Эхний үлдэгдэл")) {
           res.skippedRows++;
@@ -597,8 +601,13 @@ export class ImportService {
           res.skippedRows++;
           continue;
         }
-        // Datetime is optional — fall back to the import moment.
-        const dated = tryParseDateOrSerial(get("datetime") ?? "");
+        // Datetime is optional — fall back to the import moment. Bills split
+        // it either way: one "callstart" cell or a date plus a "Цаг" column.
+        const parsedDt = parseTimestamp(get("datetime") ?? "");
+        const dated = parsedDt == null ? null
+          : (parsedDt.hasTime && parsedDt.iso.slice(11, 19) !== "00:00:00"
+            ? parsedDt.iso
+            : applyTimeOfDay(parsedDt.iso, get("time") ?? ""));
         const dt = dated ?? importDate;
         let durationSeconds = 0;
         const durRaw = get("duration");
@@ -728,11 +737,15 @@ export class ImportService {
           res.skippedRows++;
           continue;
         }
-        const ts = tryParseDateOrSerial(get("timestamp") ?? "");
-        if (!ts) {
+        const parsedTs = parseTimestamp(get("timestamp") ?? "");
+        if (!parsedTs) {
           res.skippedRows++;
           continue;
         }
+        const ts = parsedTs.hasTime
+          && parsedTs.iso.slice(11, 19) !== "00:00:00"
+          ? parsedTs.iso
+          : applyTimeOfDay(parsedTs.iso, get("time") ?? "");
         const ip = get("ip");
         const k = key(ts, acct, ip);
         if (seen.has(k)) {
@@ -823,59 +836,217 @@ function txnFingerprint(t: Record<string, unknown>): string {
   ].join("|");
 }
 
-// Excel serial epoch: 1899-12-30 (handles the 1900 leap-year bug for >= 60).
-function excelSerialToIso(serial: number): string {
-  const ms = Date.UTC(1899, 11, 30) + serial * 86_400_000;
-  return new Date(ms).toISOString();
+// A serial small enough to be a date is still a plausible plain number, so the
+// window is deliberately tight: 1950-01-01 .. 2100-01-01.
+const SERIAL_MIN = 18264;
+const SERIAL_MAX = 73051;
+
+export interface ParsedTimestamp {
+  // Always UTC. A value written without a zone is kept as its wall clock
+  // (14:30 stays 14:30Z) — the statement's clock is what the analyst reads,
+  // and shifting it by the server's local zone silently moved every night
+  // transaction into the previous day.
+  iso: string;
+  // Did the cell actually carry a clock, or only a calendar day? The caller
+  // needs this to decide whether a separate "Цаг" column still applies.
+  hasTime: boolean;
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+function buildIso(
+  y: number, mo: number, d: number,
+  h = 0, mi = 0, s = 0, ms = 0, offsetMinutes = 0
+): string | null {
+  if (y < 1900 || y > 2200) return null;
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  if (h > 23 || mi > 59 || s > 59) return null;
+  const t = Date.UTC(y, mo - 1, d, h, mi, s, ms) - offsetMinutes * 60_000;
+  const back = new Date(t);
+  // Date.UTC rolls overflow over silently (Feb 31 → Mar 3); reject instead of
+  // importing a transaction on a day the statement never mentions. Only safe
+  // to compare when the value had no offset applied.
+  if (offsetMinutes === 0) {
+    if (back.getUTCFullYear() !== y || back.getUTCMonth() + 1 !== mo
+      || back.getUTCDate() !== d) return null;
+  }
+  return back.toISOString();
+}
+
+// "14:30", "14:30:22", "14:30:22.500", "2:05 PM", "1430", "143022" → clock.
+// Returns null when the text holds no clock at all.
+function parseClock(raw: string): {h: number; mi: number; s: number; ms: number}
+  | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const hms = /(\d{1,2})\s*[:.х]\s*(\d{1,2})(?:\s*[:.]\s*(\d{1,2}))?(?:[.,](\d{1,3}))?/
+    .exec(t);
+  if (hms) {
+    let h = Number(hms[1]);
+    const mi = Number(hms[2]);
+    const s = Number(hms[3] ?? "0");
+    const ms = Number((hms[4] ?? "0").padEnd(3, "0"));
+    if (/p\.?m/i.test(t) && h < 12) h += 12;
+    if (/a\.?m/i.test(t) && h === 12) h = 0;
+    if (h > 23 || mi > 59 || s > 59) return null;
+    return {h, mi, s, ms};
+  }
+  // Compact clock with no separator: HHmm / HHmmss.
+  const compact = /^(\d{2})(\d{2})(\d{2})?$/.exec(t);
+  if (compact) {
+    const h = Number(compact[1]);
+    const mi = Number(compact[2]);
+    const s = Number(compact[3] ?? "0");
+    if (h > 23 || mi > 59 || s > 59) return null;
+    return {h, mi, s, ms: 0};
+  }
+  return null;
+}
+
+// A trailing zone: "Z", "+08:00", "-0500". Returns the offset in minutes and
+// the text with the zone cut off.
+function splitZone(text: string): {body: string; offset: number | null} {
+  const z = /(?:\s*(Z)|\s*(GMT|UTC)?\s*([+-])(\d{2}):?(\d{2}))$/i.exec(text);
+  if (!z) return {body: text, offset: null};
+  if (z[1]) return {body: text.slice(0, z.index), offset: 0};
+  const sign = z[3] === "-" ? -1 : 1;
+  const offset = sign * (Number(z[4]) * 60 + Number(z[5]));
+  return {body: text.slice(0, z.index), offset};
+}
+
+// Statements arrive with the clock in either shape: one "2024-01-15 14:30:22"
+// cell, or a date cell plus a separate "Цаг" cell. Both have to import to the
+// same instant, so ONE parser reads every form we have seen in the wild:
+// ISO, "YYYY/MM/DD", "DD.MM.YYYY", "YYYYMMDD", "YYYYMMDDHHmmss", the Mongolian
+// "2024 оны 01 сарын 15", Excel serials (whole days and day+fraction) and any
+// of those with a trailing clock and/or zone.
+export function parseTimestamp(input: string): ParsedTimestamp | null {
+  let s = (input ?? "").trim();
+  if (!s) return null;
+  // Mongolian long form → "2024-01-15 [clock]".
+  const mn = /^(\d{4})\s*он(?:ы)?\s*(\d{1,2})\s*(?:дугаар|дүгээр|-р|р)?\s*сар(?:ын)?\s*(\d{1,2})\s*(?:-н[ыий]|-ний|-ны)?\s*(?:өдөр)?/i
+    .exec(s);
+  if (mn) {
+    s = `${mn[1]}-${pad(Number(mn[2]))}-${pad(Number(mn[3]))}`
+      + s.slice(mn[0].length);
+    s = s.trim();
+  }
+
+  const {body, offset} = splitZone(s);
+  const text = body.trim();
+
+  // Excel serial. Whole number = a day; a fraction carries the clock.
+  if (/^\d{1,5}([.,]\d+)?$/.test(text)) {
+    const serial = Number(text.replace(",", "."));
+    if (Number.isFinite(serial) && serial >= SERIAL_MIN && serial <= SERIAL_MAX) {
+      // Round to the nearest second: 0.6034722… days is 14:29:59.9997 raw.
+      const ms = Math.round((Date.UTC(1899, 11, 30) + serial * 86_400_000)
+        / 1000) * 1000;
+      return {
+        iso: new Date(ms).toISOString(),
+        hasTime: Math.abs(serial - Math.round(serial)) > 1e-9,
+      };
+    }
+  }
+
+  // Compact: YYYYMMDD, optionally followed by HHmm / HHmmss.
+  const compact = /^(\d{4})(\d{2})(\d{2})(?:[T\s]?(\d{2})(\d{2})(\d{2})?)?$/
+    .exec(text);
+  if (compact) {
+    const hasTime = compact[4] != null;
+    const iso = buildIso(
+      Number(compact[1]), Number(compact[2]), Number(compact[3]),
+      Number(compact[4] ?? "0"), Number(compact[5] ?? "0"),
+      Number(compact[6] ?? "0"), 0, offset ?? 0);
+    if (iso) return {iso, hasTime};
+  }
+
+  // Separated date, either order, with any of - / . separators.
+  let y: number | null = null;
+  let mo = 0;
+  let d = 0;
+  let rest = "";
+  const ymd = /^(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})/.exec(text);
+  if (ymd) {
+    y = Number(ymd[1]);
+    mo = Number(ymd[2]);
+    d = Number(ymd[3]);
+    rest = text.slice(ymd[0].length);
+  } else {
+    const dmy = /^(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{2,4})/.exec(text);
+    if (dmy) {
+      const a = Number(dmy[1]);
+      const b = Number(dmy[2]);
+      y = Number(dmy[3]);
+      if (y < 100) y += y < 70 ? 2000 : 1900;
+      // Day-first is the local convention; only an impossible day (>12 in the
+      // second slot, or a first slot that cannot be a month) settles it.
+      if (a > 12 && b <= 12) {
+        d = a;
+        mo = b;
+      } else if (b > 12 && a <= 12) {
+        mo = a;
+        d = b;
+      } else {
+        d = a;
+        mo = b;
+      }
+      rest = text.slice(dmy[0].length);
+    }
+  }
+  if (y != null) {
+    const clock = parseClock(rest.replace(/^[T\s,]+/, ""));
+    const iso = buildIso(y, mo, d, clock?.h ?? 0, clock?.mi ?? 0,
+      clock?.s ?? 0, clock?.ms ?? 0, offset ?? 0);
+    // A date that read cleanly but does not exist (2024-02-31) is a broken
+    // row — never hand it to Date.parse, which would roll it into March.
+    return iso ? {iso, hasTime: clock != null} : null;
+  }
+
+  // Last resort: whatever the runtime can read (e.g. "15 Jan 2024"). Naive
+  // values are pinned to UTC so they match every branch above.
+  const native = Date.parse(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s) ? s : `${s} UTC`);
+  if (!Number.isNaN(native)) {
+    const iso = new Date(native).toISOString();
+    return {iso, hasTime: parseClock(s) != null};
+  }
+  return null;
 }
 
 // Statements keep the clock in its own column ("Цаг"), so the date column alone
 // parses to midnight. Reading only the date made EVERY transaction 00:00, which
 // flattened the hourly activity chart to a single bar and would have reported
 // 100% of transactions as "шөнийн гүйлгээ". Accepts "14:35", "14:35:22",
-// "2:05 PM" and the Excel fraction-of-a-day a time cell arrives as.
+// "2:05 PM", "1435", a whole timestamp repeated in the time cell, and the
+// Excel fraction-of-a-day a time cell arrives as.
 export function applyTimeOfDay(isoDate: string, raw: string): string {
   const t = (raw ?? "").trim();
   if (!t) return isoDate;
   const day = isoDate.slice(0, 10);
 
-  const hms = /^(\d{1,2}):(\d{2})(?::(\d{2}))?/.exec(t);
-  if (hms) {
-    let h = Number(hms[1]);
-    const m = Number(hms[2]);
-    const sec = Number(hms[3] ?? "0");
-    if (/pm/i.test(t) && h < 12) h += 12;
-    if (/am/i.test(t) && h === 12) h = 0;
-    if (h > 23 || m > 59 || sec > 59) return isoDate;
-    const p = (n: number) => String(n).padStart(2, "0");
-    return `${day}T${p(h)}:${p(m)}:${p(sec)}.000Z`;
+  // A pure decimal below 1 is an Excel time cell (a fraction of one day) and a
+  // decimal above the serial floor is a whole Excel datetime — neither is a
+  // clock, and reading "0.5" as 00:05 instead of 12:00 was silently wrong.
+  // Everything between them ("14.30") is a bank writing the clock with a dot.
+  const rawDecimal = /^\d+[.,]\d+$/.test(t) ? Number(t.replace(",", ".")) : NaN;
+  const decimal = Number.isFinite(rawDecimal)
+    && (rawDecimal < 1 || rawDecimal >= SERIAL_MIN) ? rawDecimal : null;
+  const clock = decimal == null ? parseClock(t) : null;
+  if (clock) {
+    return `${day}T${pad(clock.h)}:${pad(clock.mi)}:${pad(clock.s)}`
+      + `.${String(clock.ms).padStart(3, "0")}Z`;
   }
 
-  // Excel time cell: a fraction of one day (0.5 = 12:00).
-  const frac = Number(t);
-  if (Number.isFinite(frac) && frac > 0 && frac < 1) {
-    const ms = Math.round(frac * 86_400_000);
+  // Excel time cell: a fraction of one day (0.5 = 12:00). A full datetime
+  // serial (45301.6) lands here too — only its fraction matters.
+  const frac = decimal ?? Number(t.replace(",", "."));
+  if (Number.isFinite(frac) && frac > 0) {
+    const dayFraction = frac - Math.floor(frac);
+    if (dayFraction === 0) return isoDate;
+    const ms = Math.round(dayFraction * 86_400) * 1000;
     return new Date(Date.parse(`${day}T00:00:00.000Z`) + ms).toISOString();
   }
   return isoDate;
-}
-
-export function tryParseDateOrSerial(input: string): string | null {
-  const s = (input ?? "").trim();
-  if (!s) return null;
-  const parsed = Date.parse(s.replace(" ", "T"));
-  if (!Number.isNaN(parsed)) return new Date(parsed).toISOString();
-  const direct = Date.parse(s);
-  if (!Number.isNaN(direct)) return new Date(direct).toISOString();
-  const serial = Number(s);
-  if (!Number.isNaN(serial) && serial > 1 && serial < 100_000) {
-    try {
-      return excelSerialToIso(serial);
-    } catch {
-      return null;
-    }
-  }
-  return null;
 }
 
 export function cleanAmount(input: string | null): string {
@@ -926,7 +1097,9 @@ function parseWorkbook(
   sheetName? : string | null,
   range      : RowRange = {}
 ): NormalizedTable {
-  const wb = XLSX.read(Buffer.from(base64, "base64"), {type: "buffer"});
+  const wb = XLSX.read(Buffer.from(base64, "base64"), {
+    type: "buffer", cellDates: true,
+  });
   const name = sheetName && wb.SheetNames.includes(sheetName)
     ? sheetName : wb.SheetNames[0];
   const sheet = wb.Sheets[name];
@@ -937,8 +1110,25 @@ function parseWorkbook(
   const aoa = XLSX.utils.sheet_to_json<(string | number | null)[]>(sheet, {
     header: 1, raw: false, defval: null, blankrows: true,
   });
-  const grid: (string | null)[][] = aoa.map((row) =>
-    (row ?? []).map((c) => {
+  // The formatted text of a real date cell is whatever number format the bank
+  // saved it with — "1/15/24" and "15.01.24" are the same instant written two
+  // ways, and the second one cannot be told from a US month-first date. Read
+  // the typed values too and let a genuine Date win: it is unambiguous, and it
+  // already carries the clock when the cell is a datetime.
+  const typed = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+    header: 1, raw: true, defval: null, blankrows: true,
+  });
+  const grid: (string | null)[][] = aoa.map((row, r) =>
+    (row ?? []).map((c, i) => {
+      const t = (typed[r] ?? [])[i];
+      if (t instanceof Date && !Number.isNaN(t.getTime())) {
+        // SheetJS builds the Date in local time; keep the wall clock the
+        // spreadsheet shows rather than shifting it by the server's zone.
+        const wall = t.getTime() - t.getTimezoneOffset() * 60_000;
+        // Serial → Date round-trips land a hair off the second (14:29:59.997);
+        // statements never carry milliseconds, so snap to the second.
+        return new Date(Math.round(wall / 1000) * 1000).toISOString();
+      }
       if (c == null) return null;
       const s = String(c).trim();
       return s === "" ? null : s;
