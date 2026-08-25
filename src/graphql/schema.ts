@@ -1171,7 +1171,7 @@ export const typeDefs = /* GraphQL */ `
     correlations(suspectId: Int): [CorrelationHit!]!
     accountStatistics(bankAccountId: Int!): AccountStatistics!
     ruleEngine(bankAccountId: Int!): RuleEngineResult!
-    networkFlow: NetworkFlowData!
+    networkFlow(caseFileId: Int): NetworkFlowData!
     suspectLocations: [SuspectLocation!]!
     benfordObserved(bankAccountId: Int!): [Float!]!
     amlConfig: AmlConfig!

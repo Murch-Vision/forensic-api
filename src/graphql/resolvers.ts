@@ -139,6 +139,23 @@ async function caseScope(c: GraphQLContext): Promise<CaseScope | null> {
   return scopeForCases(c, mine);
 }
 
+// Explicit case scope for queries whose result is cached in the browser.
+// Passing the case id makes both the server request and Apollo's cache key
+// unambiguous when the analyst changes cases.
+async function caseScopeById(
+  c: GraphQLContext, caseFileId: number
+): Promise<CaseScope> {
+  const user = requireUser(c);
+  const target = (await c.data.getAllCaseFiles())
+    .find((cf) => cf.id === caseFileId);
+  if (!target) throw new Error("Хэрэг олдсонгүй.");
+  const accessible = await c.auth.accessibleCaseIds(user);
+  if (accessible !== null && !accessible.has(caseFileId)) {
+    throw new Error("Энэ хэрэгт хандах эрхгүй байна.");
+  }
+  return scopeForCases(c, [target]);
+}
+
 // Membership of one or more cases: what was tagged into them as evidence
 // (imports link their own rows this way), plus the legacy suspects.caseId.
 async function scopeForCases(
@@ -489,16 +506,38 @@ export const resolvers = {
       c.analysis.getAccountStatistics(a.bankAccountId),
     ruleEngine: (_p: unknown, a: {bankAccountId: number}, c: GraphQLContext) =>
       c.analysis.runRuleEngine(a.bankAccountId),
-    networkFlow: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const scope = await caseScope(c);
-      const [allSuspects, accounts, transactions] = await Promise.all([
-        c.data.getSuspectsWithRelations(),
-        scopedAccounts(c),
-        scopedTransactions(c, false),
-      ]);
+    networkFlow: async (
+      _p: unknown, a: {caseFileId?: number | null}, c: GraphQLContext
+    ) => {
+      const scope = a.caseFileId == null
+        ? await caseScope(c) : await caseScopeById(c, a.caseFileId);
+      const [allSuspects, allAccounts, allTransactions, ignored] =
+        await Promise.all([
+          c.data.getSuspectsWithRelations(),
+          c.data.getAllBankAccounts(),
+          c.data.getAllTransactions(),
+          ignoredTxnIds(c),
+        ]);
       const suspects = scope
         ? allSuspects.filter((s) => scope.suspectIds.has(s.id))
         : allSuspects;
+      // A person appearing as a counterparty may also own statement accounts
+      // imported into a different case. Those accounts must not be pulled into
+      // this flow merely because the person is visible here. Prefer accounts
+      // explicitly tagged to this case; suspect ownership is only the legacy
+      // fallback for old cases that have no BANK_ACCOUNT evidence entries.
+      const explicitAccountScope = scope && scope.accountIds.size > 0;
+      const accounts = scope
+        ? allAccounts.filter((account) => explicitAccountScope
+          ? scope.accountIds.has(account.id)
+          : account.suspectId != null
+            && scope.suspectIds.has(account.suspectId))
+        : allAccounts;
+      const accountIds = new Set(accounts.map((account) => account.id));
+      const transactions = allTransactions.filter((transaction) =>
+        !ignored.has(transaction.id)
+        && (!scope || accountIds.has(transaction.bankAccountId)
+          || scope.txnIds.has(transaction.id)));
       return c.analysis.analyzeNetworkFlow(
         suspects, accounts, transactions);
     },
