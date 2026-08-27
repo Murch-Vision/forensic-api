@@ -733,16 +733,18 @@ export class ReportService {
       : "—";
     pdfKv(doc, [
       ["Хэрэг", `${input.caseId} · ${input.caseName}`],
-      ["Шинжилсэн данс", input.analyses.map((a) => a.accountNumber).join(", ") || "—"],
-      ["Данс эзэмшигч", [...new Set(input.analyses.map((a) => a.ownerName).filter(Boolean))].join(", ") || "—"],
       ["Хамрах хугацаа", period],
     ]);
+    sectionBar(doc, "ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ");
+    pdfRows(doc, ["№", "Дансны дугаар", "Эзэмшигч"], [40, 180, 295],
+      input.analyses.map((a, i) => [String(i + 1), a.accountNumber,
+        a.ownerName || "Эзэмшигч тодорхойгүй"]), 99);
 
     sectionBar(doc, "ТАЙЛАНГИЙН БҮТЭЦ");
     pdfRows(doc, ["№", "Шинжилгээний хэсэг"], [55, 460], [
       ...input.analyses.map((a, i) => [String(i + 1), `Данс ${a.accountNumber} — дэлгэрэнгүй шинжилгээ`]),
       [String(input.analyses.length + 1), "Данснуудын холбоос ба шууд мөнгөн урсгал"],
-      [String(input.analyses.length + 2), "Мөрдөгчийн дүгнэлт"],
+      [String(input.analyses.length + 2), "Автомат болон ерөнхий дүгнэлт"],
     ]);
 
     for (const [index, a] of input.analyses.entries()) {
@@ -780,17 +782,117 @@ export class ReportService {
       input.transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
 
     doc.addPage(); doc.y = 48;
-    sectionBar(doc, `${input.analyses.length + 2}. МӨРДӨГЧИЙН ДҮГНЭЛТ`);
-    const conclusionFor = (id: number | null) => input.conclusions.find((c) => c.bankAccountId === id)?.text?.trim();
+    sectionBar(doc, `${input.analyses.length + 2}. АВТОМАТ ДҮГНЭЛТ`);
+    const conclusionFor = (id: number | null) => input.conclusions
+      .find((c) => c.bankAccountId === id)?.text?.trim();
     for (const a of input.analyses) {
-      doc.fontSize(10).fillColor(DARK_BLUE).text(`Данс ${a.accountNumber}`, ML, doc.y + 8);
-      doc.fontSize(9).fillColor(INK).text(conclusionFor(a.accountId) || "Дүгнэлт бичигдээгүй.", ML, doc.y + 5, {width: CW});
-      doc.y += 10;
+      pdfConclusionHeading(doc,
+        `${a.ownerName || "Эзэмшигч тодорхойгүй"} · ${a.accountNumber}`);
+      pdfConclusionText(doc, automaticAccountConclusion(a));
+      const written = conclusionFor(a.accountId);
+      if (written) {
+        doc.fontSize(8.5).fillColor(MUTED).text("Мөрдөгчийн тэмдэглэл",
+          ML, doc.y + 3);
+        pdfConclusionText(doc, written);
+      }
     }
-    doc.fontSize(10).fillColor(DARK_BLUE).text("Холбоосын дүгнэлт", ML, doc.y + 8);
-    doc.fontSize(9).fillColor(INK).text(conclusionFor(null) || "Дүгнэлт бичигдээгүй.", ML, doc.y + 5, {width: CW});
+    sectionBar(doc, "УДИРДЛАГАД ЗОРИУЛСАН ЕРӨНХИЙ ДҮГНЭЛТ");
+    pdfConclusionText(doc, automaticGeneralConclusion(input));
+    const generalWritten = conclusionFor(null);
+    if (generalWritten) {
+      doc.fontSize(8.5).fillColor(MUTED).text("Мөрдөгчийн ерөнхий тэмдэглэл",
+        ML, doc.y + 3);
+      pdfConclusionText(doc, generalWritten);
+    }
     drawFooters(doc); doc.end(); return done;
   }
+}
+
+function pdfConclusionHeading(doc: PDFKit.PDFDocument, text: string): void {
+  if (doc.y > doc.page.height - 100) { doc.addPage(); doc.y = 48; }
+  doc.fontSize(10).fillColor(DARK_BLUE).text(text, ML, doc.y + 8,
+    {width: CW});
+  doc.y += 5;
+}
+
+function pdfConclusionText(doc: PDFKit.PDFDocument, text: string): void {
+  doc.fontSize(9).fillColor(INK).text(text, ML, doc.y + 3,
+    {width: CW, lineGap: 2});
+  doc.y += 8;
+}
+
+function automaticAccountConclusion(a: AccountAnalysis): string {
+  if (a.txnCount === 0) {
+    return "Энэ дансанд шинжлэх гүйлгээ бүртгэгдээгүй байна.";
+  }
+  const owner = a.ownerName || "Эзэмшигч нь тодорхойгүй хүн";
+  const flow = a.netTotal >= 0
+    ? `орлого нь зарлагаасаа ${mnt(Math.abs(a.netTotal))}-өөр их`
+    : `зарлага нь орлогоосоо ${mnt(Math.abs(a.netTotal))}-өөр их`;
+  const parts = [
+    `${owner}-ийн ${a.accountNumber} дугаартай дансанд ${num(a.txnCount)} `
+      + `гүйлгээ бүртгэгдсэн. Нийт ${mnt(a.creditTotal)} орж, `
+      + `${mnt(a.debitTotal)} гарсан тул ${flow} байна.`,
+  ];
+  const top = a.topCounterparties[0];
+  if (top) {
+    parts.push(`Хамгийн олон харилцсан тал нь ${top.name}`
+      + `${top.account ? ` (${top.account})` : ""} бөгөөд `
+      + `${num(top.txnCount)} удаа гүйлгээ хийсэн.`);
+  }
+  const peaks = [
+    a.peakMonth ? `${a.peakMonth} сард` : null,
+    a.peakWeekday ? `${a.peakWeekday} гарагт` : null,
+    a.hasTimeOfDay && a.peakHour ? `${a.peakHour} цагт` : null,
+  ].filter(Boolean);
+  if (peaks.length) {
+    parts.push(`Гүйлгээний хөдөлгөөн ${peaks.join(", ")} хамгийн идэвхтэй байв.`);
+  }
+  if (a.hasTimeOfDay && a.nightCount > 0) {
+    parts.push(`Шөнийн цагаар ${num(a.nightCount)} гүйлгээ хийгдэж, `
+      + `нийт дүн нь ${mnt(a.nightTotal)} байна.`);
+  }
+  return parts.join(" ");
+}
+
+function automaticGeneralConclusion(input: {
+  analyses: AccountAnalysis[];
+  mutualRelations: RelationRow[];
+  transfers: DirectTransfer[];
+}): string {
+  if (!input.analyses.length) {
+    return "Энэ хэрэгт шинжилгээ хийх дансны хуулга бүртгэгдээгүй байна.";
+  }
+  const txnCount = input.analyses.reduce((sum, a) => sum + a.txnCount, 0);
+  const income = input.analyses.reduce((sum, a) => sum + a.creditTotal, 0);
+  const outgoing = input.analyses.reduce((sum, a) => sum + a.debitTotal, 0);
+  const busiest = [...input.analyses].sort((a, b) => b.txnCount - a.txnCount)[0];
+  const parts = [
+    `Энэ тайланд ${num(input.analyses.length)} дансны ${num(txnCount)} `
+      + `гүйлгээг нэгтгэн үзлээ. Эдгээр дансанд нийт ${mnt(income)} орж, `
+      + `${mnt(outgoing)} гарсан байна.`,
+    `Хамгийн олон хөдөлгөөнтэй нь ${busiest.ownerName || "эзэмшигч тодорхойгүй"}`
+      + ` хүний ${busiest.accountNumber} дугаартай данс бөгөөд `
+      + `${num(busiest.txnCount)} гүйлгээтэй.`,
+  ];
+  if (input.mutualRelations.length) {
+    parts.push(`${num(input.mutualRelations.length)} харилцагч хоёр буюу `
+      + `түүнээс олон шинжилсэн данстай давхар харилцсан байна.`);
+  }
+  if (input.transfers.length) {
+    const count = input.transfers.reduce((sum, t) => sum + t.txnCount, 0);
+    const total = input.transfers.reduce((sum, t) => sum + t.total, 0);
+    const top = [...input.transfers].sort((a, b) => b.total - a.total)[0];
+    parts.push(`Шинжилсэн данснуудын хооронд ${num(count)} шууд гүйлгээгээр `
+      + `${mnt(total)} шилжсэн. Хамгийн их шууд урсгал ${top.fromLabel}-аас `
+      + `${top.toLabel} руу чиглэсэн байна.`);
+  } else {
+    parts.push("Шинжилсэн данснуудын хооронд шууд мөнгөн шилжүүлэг илрээгүй.");
+  }
+  parts.push("Эдгээр нь банкны хуулгад тулгуурласан тоон нэгтгэл бөгөөд "
+    + "анхаарал татсан харилцаа, мөнгөн урсгалыг дараагийн шалгалтаар "
+    + "баримттай нь нягтлах шаардлагатай.");
+  return parts.join(" ");
 }
 
 function pdfKv(doc: PDFKit.PDFDocument, rows: [string, string][]): void {
@@ -802,12 +904,15 @@ function pdfKv(doc: PDFKit.PDFDocument, rows: [string, string][]): void {
   doc.y += 4;
 }
 
-function pdfRows(doc: PDFKit.PDFDocument, heads: string[], widths: number[], rows: string[][]): void {
+function pdfRows(
+  doc: PDFKit.PDFDocument, heads: string[], widths: number[], rows: string[][],
+  mutedFrom = 2
+): void {
   const cols: LedgerCol[] = []; let x = ML;
   heads.forEach((label, i) => { cols.push({label, x, w: widths[i], align: i > 1 && /Гүйлгээ|Орлого|Зарлага|Дүн|Зөрүү/.test(label) ? "right" : "left"}); x += widths[i]; });
   drawTableHead(doc, cols);
   if (!rows.length) { doc.fontSize(8.5).fillColor(MUTED).text("Мэдээлэл алга", ML + 6, doc.y); doc.y += 16; return; }
-  rows.forEach((row, i) => { const y = ensureRow(doc, cols); if (i % 2) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA); row.forEach((v, n) => cell(doc, v, cols[n], y, n > 1 ? MUTED : INK)); doc.y = y + 13; });
+  rows.forEach((row, i) => { const y = ensureRow(doc, cols); if (i % 2) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA); row.forEach((v, n) => cell(doc, v, cols[n], y, n >= mutedFrom ? MUTED : INK)); doc.y = y + 13; });
 }
 
 function pdfBuckets(doc: PDFKit.PDFDocument, title: string, buckets: import("./accountAnalysisService").ActivityBucket[]): void {
