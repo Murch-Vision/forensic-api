@@ -767,8 +767,12 @@ export class ReportService {
         ["Орлого, зарлагын зөрүү", mnt(a.netTotal)],
         ["Шөнийн гүйлгээ", a.hasTimeOfDay ? `${num(a.nightCount)} · ${mnt(a.nightTotal)}` : "Хуулганд цагийн мэдээлэл байхгүй"],
       ]);
-      sectionBar(doc, "ХАРИЛЦСАН ТАЛУУДЫН ГҮЙЛГЭЭ");
-      pdfRows(doc, ["Харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Үнэлгээ"],
+      sectionBar(doc, "ХАРИЛЦСАН ДАНСНУУД");
+      doc.fontSize(8.5).fillColor(MUTED).text(
+        `Эх данс: ${a.accountNumber}  ·  Эзэмшигч: ${a.ownerName || "Тодорхойгүй"}`,
+        ML, doc.y, {width: CW});
+      doc.y += 7;
+      pdfRows(doc, ["Харилцсан тал", "Харилцсан данс", "Гүйлгээ", "Орлого", "Зарлага", "Үнэлгээ"],
         [130, 90, 48, 82, 82, 83], a.topCounterparties.slice(0, 15).map((r) => [
           r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), r.rating,
         ]));
@@ -826,7 +830,7 @@ export class ReportService {
     doc.switchToPage(0); doc.y = contentsY;
     pdfContentsTable(doc, [
       ["1", "Данс тус бүрийн орлого, зарлага, гүйлгээний тоон нэгтгэл", accountPages],
-      ["2", "Харилцсан талуудын гүйлгээ", accountPages],
+      ["2", "Данс тус бүрийн харилцсан дансны жагсаалт (хамгийн их хөдөлгөөнтэй 15)", accountPages],
       ["3", "Цаг, өдөр, сарын идэвхжил", accountPages],
       ["4", "Данснуудын холбоос ба шууд мөнгөн урсгал", relationPages],
       ["5", "Данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт", `${conclusionPage}-р хуудаснаас`],
