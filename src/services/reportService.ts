@@ -752,10 +752,10 @@ export class ReportService {
     pdfAccountCards(doc, input.analyses);
 
     doc.y += 18;
-    sectionBar(doc, "ДАНСНЫ ДҮН ШИНЖИЛГЭЭНИЙ АГУУЛГА");
+    sectionBar(doc, "АГУУЛГА");
     const contentsY = doc.y;
-    const contentsRowCount = input.analyses.length + 2;
-    doc.y += 28 + contentsRowCount * 64 + 4;
+    const contentsRowCount = input.analyses.length + 3;
+    doc.y += contentsRowCount * 38 + 12;
 
     const accountPageRanges: Array<{start: number; end: number}> = [];
     for (const [index, a] of input.analyses.entries()) {
@@ -845,22 +845,20 @@ export class ReportService {
       : `${relationPage}–${conclusionPage - 1}-р хуудас`;
     doc.switchToPage(0); doc.y = contentsY;
     pdfContentsTable(doc, [
+      ["1", "Дансны дүн шинжилгээ",
+        accountPageRanges.length
+          ? pageRange(accountPageRanges[0].start,
+            accountPageRanges[accountPageRanges.length - 1].end)
+          : "—"],
       ...input.analyses.map((analysis, index) => [
         `1.${index + 1}`,
-        `${analysis.ownerName || "Эзэмшигч тодорхойгүй"}\n`
-          + `Данс: ${analysis.accountNumber}\n`
-          + "Хуулгын нэгтгэл, их давтамжтай талуудыг мөнгөн дүнгээр эрэмбэлсэн жагсаалт, "
-          + "өндөр дүнтэй харилцаа, цаг/өдөр/сарын идэвхжил",
-        `${pageRange(accountPageRanges[index].start,
-          accountPageRanges[index].end)}-р хуудас`,
+        `${analysis.ownerName || "Эзэмшигч тодорхойгүй"} · `
+          + `${analysis.accountNumber} дугаартай данс`,
+        pageRange(accountPageRanges[index].start,
+          accountPageRanges[index].end),
       ]),
-      ["2",
-        "Данснуудын холбоосын дүн шинжилгээ\n"
-          + "(дундын харилцагч, шинжилсэн данснуудын хоорондын шууд гүйлгээ)", relationPages],
-      ["3",
-        "Дүн шинжилгээгээр илэрсэн нөхцөл байдал\n"
-          + "(данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт)",
-        `${conclusionPage}-р хуудаснаас`],
+      ["2", "Данснуудын холбоос", relationPages.replace(/-р хуудас/g, "")],
+      ["3", "Дүгнэлт", `${conclusionPage}–`],
     ]);
     drawFooters(doc); doc.end(); return done;
   }
@@ -1045,35 +1043,38 @@ function pdfAccountCards(doc: PDFKit.PDFDocument,
 }
 
 function pdfContentsTable(doc: PDFKit.PDFDocument, rows: string[][]): void {
-  const widths = [36, 359, 120];
-  const headerHeight = 28, rowHeight = 64;
-  const x0 = ML, y0 = doc.y;
-  doc.rect(x0, y0, CW, headerHeight).fill(TABLE_HEAD);
-  const headers = ["№", "Данс эзэмшигч ба хийсэн дүн шинжилгээ",
-    "Хуудас №"];
-  let x = x0;
-  headers.forEach((header, index) => {
-    doc.fontSize(9.5).fillColor("#FFFFFF").text(header, x + 6, y0 + 8,
-      {width: widths[index] - 12, align: index === 0 ? "center" : "left",
+  let y = doc.y + 3;
+  rows.forEach(([number, title, pages]) => {
+    const chapter = !number.includes(".");
+    const indent = chapter ? 0 : 18;
+    if (chapter) {
+      y += 7;
+      doc.moveTo(ML, y).lineTo(ML + CW, y)
+        .lineWidth(0.7).strokeColor("#D7E0E8").stroke();
+      y += 10;
+    }
+    const numberWidth = chapter ? 28 : 36;
+    const titleX = ML + indent + numberWidth;
+    doc.fillColor(chapter ? DARK_BLUE : MUTED)
+      .fontSize(chapter ? 11 : 9.5)
+      .text(number, ML + indent, y, {width: numberWidth - 5,
         lineBreak: false});
-    x += widths[index];
+    doc.fillColor(chapter ? DARK_BLUE : INK)
+      .fontSize(chapter ? 11 : 9.5)
+      .text(title, titleX, y, {width: 335 - indent, lineBreak: false,
+        ellipsis: true});
+    const leaderY = y + (chapter ? 8 : 7);
+    doc.moveTo(ML + 385, leaderY).lineTo(ML + CW - 66, leaderY)
+      .lineWidth(0.6).dash(1, {space: 2}).strokeColor("#AAB6C2").stroke()
+      .undash();
+    doc.fillColor(chapter ? DARK_BLUE : INK)
+      .fontSize(chapter ? 10.5 : 9.5)
+      .text(pages, ML + CW - 60, y, {width: 60, align: "right",
+        lineBreak: false});
+    y += chapter ? 28 : 25;
   });
-  rows.forEach((row, rowIndex) => {
-    const y = y0 + headerHeight + rowIndex * rowHeight;
-    doc.rect(x0, y, CW, rowHeight).fill(rowIndex % 2 ? "#F8FAFC" : "#FFFFFF");
-    doc.rect(x0, y, CW, rowHeight).lineWidth(0.7).strokeColor("#9CA3AF").stroke();
-    let cellX = x0;
-    row.forEach((value, index) => {
-      if (index > 0) doc.moveTo(cellX, y).lineTo(cellX, y + rowHeight)
-        .lineWidth(0.7).strokeColor("#9CA3AF").stroke();
-      doc.fontSize(index === 1 ? 9.5 : 9).fillColor(INK).text(value,
-        cellX + 7, y + 8, {width: widths[index] - 14,
-          align: index === 0 ? "center" : "left", height: rowHeight - 14,
-          ellipsis: true});
-      cellX += widths[index];
-    });
-  });
-  doc.y = y0 + headerHeight + rows.length * rowHeight + 4;
+  doc.y = y + 4;
+  doc.fillColor(INK);
 }
 
 function pdfRows(
