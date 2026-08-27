@@ -644,7 +644,7 @@ export const resolvers = {
         analyses, mutualRelations: rel.relations.filter((r) => r.mutual),
         transfers: directTransfers(accounts, txns), conclusions,
       });
-      const filename = `Dansnii-Dun-Shinjilgee-${active.caseId}.pdf`.replace(/[^A-Za-z0-9._-]/g, "-");
+      const filename = `Tailan-${active.caseId}.pdf`.replace(/[^A-Za-z0-9._-]/g, "-");
       await c.audit.record("Report.Generated", `File:${filename}`);
       return {filename, mimeType: "application/pdf", base64: buf.toString("base64")};
     },
