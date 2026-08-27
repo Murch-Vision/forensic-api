@@ -246,25 +246,24 @@ export class ReportService {
     return done;
   }
 
-  // Account-inspection report (Mongolian). Every transaction counted here has
-  // a marked suspect on one side of it — the report is about the suspects and
-  // who they moved money with, never the case at large. Scope by threshold:
-  //   minAmount = 0  → the people flagged UNDER_INVESTIGATION.
-  //   minAmount > 0  → the flagged people PLUS whoever they transacted with
-  //                    at/above the threshold, flagged or not.
-  // Both sides are counted because statements are imported for a handful of
-  // account holders, so a suspect's counterparties only ever appear as a
-  // counterparty string on someone else's statement. Ordered by time.
-  async generateMarkedSuspectsPdf(minAmount = 0): Promise<Buffer> {
+  // Transaction report for imported suspects. Suspect marking/status is a
+  // deprecated workflow and must never control who appears here. The resolver
+  // passes the active case's suspect and transaction ids as the report scope.
+  async generateMarkedSuspectsPdf(
+    minAmount = 0,
+    scope: {suspectIds?: number[]; transactionIds?: number[]} = {}
+  ): Promise<Buffer> {
     const everyone = await this.db.getSuspectsWithRelations();
-    const isMarked = (s: {status: string}) =>
-      s.status === "UNDER_INVESTIGATION";
-    const markedIds = new Set(everyone.filter(isMarked).map((s) => s.id));
+    const suspectIds = scope.suspectIds
+      ? new Set(scope.suspectIds) : new Set(everyone.map((s) => s.id));
+    const transactionIds = scope.transactionIds
+      ? new Set(scope.transactionIds) : null;
 
     // A transaction qualifies when the counterparty has a bank account number
     // (anyone, not just marked suspects) and the amount clears the threshold.
     const qualifies = (t: BankTransaction): boolean =>
       t.amount >= minAmount
+      && (!transactionIds || transactionIds.has(t.id))
       && !!(t.counterpartyAccount && t.counterpartyAccount.trim());
 
     // One pass over the ledger instead of a query per subject — with no
@@ -297,14 +296,6 @@ export class ReportService {
       const cpAccount = byAccountNumber.get((t.counterpartyAccount ?? "").trim());
       const cpSid = cpAccount?.suspectId ?? undefined;
 
-      // Only money that a suspect actually touched. Without this the report
-      // fills up with people who merely transact with each other and have no
-      // connection to the investigation.
-      const touchesSuspect =
-        (holderSid != null && markedIds.has(holderSid))
-        || (cpSid != null && markedIds.has(cpSid));
-      if (!touchesSuspect) continue;
-
       add(holderSid, t);
 
       // The far side of the same transaction, when we can identify whose
@@ -321,13 +312,9 @@ export class ReportService {
       });
     }
 
-    // ONLY the flagged suspects get a section. Their counterparties are already
-    // named on every ledger row — giving each one its own section as well was
-    // hundreds of pages of noise.
-    const candidates = everyone.filter(isMarked);
+    const candidates = everyone.filter((s) => suspectIds.has(s.id));
     if (candidates.length === 0) {
-      throw new Error(
-        "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
+      throw new Error("Энэ хэрэгт импортолсон сэжигтэн алга.");
     }
 
     const blocks = candidates.map((s) => {
@@ -353,7 +340,7 @@ export class ReportService {
       : "—";
     const thresholdNote = minAmount > 0 ? `      Босго: ≥ ${mnt(minAmount)}` : "";
     doc.fontSize(9.5).fillColor(INK).text(
-      `Тэмдэглэсэн сэжигтэн: ${blocks.length}      ` +
+      `Сэжигтэн: ${blocks.length}      ` +
       `Нийт гүйлгээ: ${totalTxns}      Хугацаа: ${span}${thresholdNote}`,
       ML, doc.y, {width: CW, align: "center", lineBreak: false});
     doc.y += 20;
