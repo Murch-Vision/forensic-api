@@ -772,9 +772,10 @@ export class ReportService {
         `Эх данс: ${a.accountNumber}  ·  Эзэмшигч: ${a.ownerName || "Тодорхойгүй"}`,
         ML, doc.y, {width: CW});
       doc.y += 7;
-      pdfRows(doc, ["Харилцсан тал", "Харилцсан данс", "Гүйлгээ", "Орлого", "Зарлага", "Үнэлгээ"],
-        [130, 90, 48, 82, 82, 83], a.topCounterparties.slice(0, 15).map((r) => [
-          r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), r.rating,
+      pdfRows(doc, ["Эх данс", "Харилцсан данс", "Харилцсан тал", "Гүйлгээ", "Орлого", "Зарлага"],
+        [92, 92, 121, 40, 85, 85], a.topCounterparties.slice(0, 15).map((r) => [
+          a.accountNumber, r.account ?? "Дугааргүй", r.name,
+          num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal),
         ]));
       sectionBar(doc, "ИДЭВХЖИЛ");
       if (a.hasTimeOfDay) pdfBuckets(doc, "Цагаар", a.byHour);
