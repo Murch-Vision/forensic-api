@@ -755,7 +755,7 @@ export class ReportService {
     sectionBar(doc, "ДАНСНЫ ДҮН ШИНЖИЛГЭЭНИЙ АГУУЛГА");
     const contentsY = doc.y;
     const contentsRowCount = 6;
-    doc.y += 26 + contentsRowCount * 58 + 4;
+    doc.y += 28 + contentsRowCount * 64 + 4;
 
     const accountPageRanges: Array<{start: number; end: number}> = [];
     for (const [index, a] of input.analyses.entries()) {
@@ -1031,13 +1031,13 @@ function pdfAccountCards(doc: PDFKit.PDFDocument,
 
 function pdfContentsTable(doc: PDFKit.PDFDocument, rows: string[][]): void {
   const widths = [40, 355, 120];
-  const headerHeight = 26, rowHeight = 58;
+  const headerHeight = 28, rowHeight = 64;
   const x0 = ML, y0 = doc.y;
   doc.rect(x0, y0, CW, headerHeight).fill(TABLE_HEAD);
   const headers = ["№", "Хийсэн дүн шинжилгээний ажил", "Хуудас №"];
   let x = x0;
   headers.forEach((header, index) => {
-    doc.fontSize(8.5).fillColor("#FFFFFF").text(header, x + 6, y0 + 8,
+    doc.fontSize(9.5).fillColor("#FFFFFF").text(header, x + 6, y0 + 8,
       {width: widths[index] - 12, align: index === 0 ? "center" : "left",
         lineBreak: false});
     x += widths[index];
@@ -1050,8 +1050,8 @@ function pdfContentsTable(doc: PDFKit.PDFDocument, rows: string[][]): void {
     row.forEach((value, index) => {
       if (index > 0) doc.moveTo(cellX, y).lineTo(cellX, y + rowHeight)
         .lineWidth(0.7).strokeColor("#9CA3AF").stroke();
-      doc.fontSize(index === 1 ? 8.2 : 7.8).fillColor(INK).text(value,
-        cellX + 7, y + 7, {width: widths[index] - 14,
+      doc.fontSize(index === 1 ? 9.5 : 9).fillColor(INK).text(value,
+        cellX + 7, y + 8, {width: widths[index] - 14,
           align: index === 0 ? "center" : "left", height: rowHeight - 14,
           ellipsis: true});
       cellX += widths[index];
