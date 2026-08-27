@@ -749,24 +749,12 @@ export class ReportService {
       ["Хамрах хугацаа", period],
     ]);
     sectionBar(doc, "ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ");
-    pdfRows(doc, ["№", "Дансны дугаар", "Эзэмшигч"], [40, 180, 295],
-      input.analyses.map((a, i) => [String(i + 1), a.accountNumber,
-        a.ownerName || "Эзэмшигч тодорхойгүй"]), 99);
+    pdfAccountCards(doc, input.analyses);
 
-    const accountPages = input.analyses.length
-      ? input.analyses.length === 1 ? "2-р хуудас"
-        : `2–${input.analyses.length + 1}-р хуудас`
-      : "—";
-    const relationPage = input.analyses.length + 2;
-    const conclusionPage = relationPage + 1;
+    doc.y += 18;
     sectionBar(doc, "ТАЙЛАНГИЙН АГУУЛГА");
-    pdfRows(doc, ["№", "Хийсэн шинжилгээ", "Хуудас"], [40, 365, 110], [
-      ["1", "Данс тус бүрийн орлого, зарлага, гүйлгээний тоон нэгтгэл", accountPages],
-      ["2", "Харилцсан талуудын гүйлгээ", accountPages],
-      ["3", "Цаг, өдөр, сарын идэвхжил", accountPages],
-      ["4", "Данснуудын холбоос ба шууд мөнгөн урсгал", `${relationPage}-р хуудас`],
-      ["5", "Данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт", `${conclusionPage}-р хуудаснаас`],
-    ], 99);
+    const contentsY = doc.y;
+    doc.y += 26 + 5 * 42 + 4;
 
     for (const [index, a] of input.analyses.entries()) {
       doc.addPage(); doc.y = 48;
@@ -793,6 +781,7 @@ export class ReportService {
     }
 
     doc.addPage(); doc.y = 48;
+    const relationPage = doc.bufferedPageRange().count;
     sectionBar(doc, `${input.analyses.length + 1}. ДАНСНУУДЫН ХОЛБООС`);
     pdfRows(doc, ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
       [130, 95, 48, 82, 82, 78], input.mutualRelations.slice(0, 60).map((r) => [
@@ -803,6 +792,7 @@ export class ReportService {
       input.transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
 
     doc.addPage(); doc.y = 48;
+    const conclusionPage = doc.bufferedPageRange().count;
     sectionBar(doc, `${input.analyses.length + 2}. ДҮГНЭЛТ`);
     const conclusionFor = (id: number | null) => input.conclusions
       .find((c) => c.bankAccountId === id)?.text?.trim();
@@ -828,6 +818,19 @@ export class ReportService {
         ML, doc.y + 3);
       pdfConclusionText(doc, generalWritten);
     }
+    const accountPages = relationPage === 3 ? "2-р хуудас"
+      : `2–${relationPage - 1}-р хуудас`;
+    const relationPages = conclusionPage === relationPage + 1
+      ? `${relationPage}-р хуудас`
+      : `${relationPage}–${conclusionPage - 1}-р хуудас`;
+    doc.switchToPage(0); doc.y = contentsY;
+    pdfContentsTable(doc, [
+      ["1", "Данс тус бүрийн орлого, зарлага, гүйлгээний тоон нэгтгэл", accountPages],
+      ["2", "Харилцсан талуудын гүйлгээ", accountPages],
+      ["3", "Цаг, өдөр, сарын идэвхжил", accountPages],
+      ["4", "Данснуудын холбоос ба шууд мөнгөн урсгал", relationPages],
+      ["5", "Данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт", `${conclusionPage}-р хуудаснаас`],
+    ]);
     drawFooters(doc); doc.end(); return done;
   }
 }
@@ -982,6 +985,63 @@ function pdfKv(doc: PDFKit.PDFDocument, rows: [string, string][]): void {
     doc.y += 5;
   }
   doc.y += 4;
+}
+
+function pdfAccountCards(doc: PDFKit.PDFDocument,
+  analyses: AccountAnalysis[]): void {
+  if (!analyses.length) {
+    doc.fontSize(9).fillColor(MUTED).text("Шинжилсэн данс бүртгэгдээгүй.", ML, doc.y);
+    doc.y += 18;
+    return;
+  }
+  const gap = 12, width = (CW - gap) / 2, height = 38;
+  const baseY = doc.y;
+  analyses.forEach((a, index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    const x = ML + column * (width + gap);
+    const y = baseY + row * (height + 8);
+    doc.roundedRect(x, y, width, height, 3).fill(BLUE_TINT);
+    doc.rect(x, y, 4, height).fill(ACCENT_CYAN);
+    doc.fontSize(7.5).fillColor(MUTED).text(`${index + 1}. ДАНС`, x + 12, y + 6,
+      {width: width - 20, lineBreak: false});
+    doc.fontSize(8.5).fillColor(DARK_BLUE).text(a.accountNumber, x + 58, y + 6,
+      {width: width - 66, align: "right", lineBreak: false});
+    doc.fontSize(8.5).fillColor(INK).text(a.ownerName || "Эзэмшигч тодорхойгүй",
+      x + 12, y + 21, {width: width - 20, lineBreak: false});
+  });
+  doc.y = baseY + Math.ceil(analyses.length / 2) * (height + 8) - 8;
+}
+
+function pdfContentsTable(doc: PDFKit.PDFDocument, rows: string[][]): void {
+  const widths = [40, 355, 120];
+  const headerHeight = 26, rowHeight = 42;
+  const x0 = ML, y0 = doc.y;
+  doc.rect(x0, y0, CW, headerHeight).fill(TABLE_HEAD);
+  const headers = ["№", "Хийсэн шинжилгээ", "Хуудас"];
+  let x = x0;
+  headers.forEach((header, index) => {
+    doc.fontSize(8.5).fillColor("#FFFFFF").text(header, x + 6, y0 + 8,
+      {width: widths[index] - 12, align: index === 0 ? "center" : "left",
+        lineBreak: false});
+    x += widths[index];
+  });
+  rows.forEach((row, rowIndex) => {
+    const y = y0 + headerHeight + rowIndex * rowHeight;
+    doc.rect(x0, y, CW, rowHeight).fill(rowIndex % 2 ? "#F8FAFC" : "#FFFFFF");
+    doc.rect(x0, y, CW, rowHeight).lineWidth(0.7).strokeColor("#9CA3AF").stroke();
+    let cellX = x0;
+    row.forEach((value, index) => {
+      if (index > 0) doc.moveTo(cellX, y).lineTo(cellX, y + rowHeight)
+        .lineWidth(0.7).strokeColor("#9CA3AF").stroke();
+      doc.fontSize(index === 1 ? 8.5 : 8).fillColor(INK).text(value,
+        cellX + 7, y + 10, {width: widths[index] - 14,
+          align: index === 0 ? "center" : "left", height: rowHeight - 14,
+          ellipsis: true});
+      cellX += widths[index];
+    });
+  });
+  doc.y = y0 + headerHeight + rows.length * rowHeight + 4;
 }
 
 function pdfRows(
