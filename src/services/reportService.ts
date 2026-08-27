@@ -312,9 +312,14 @@ export class ReportService {
       });
     }
 
-    const candidates = everyone.filter((s) => suspectIds.has(s.id));
+    // The threshold exists to remove noise from BOTH the ledger and its people
+    // summary. Never emit a zero-transaction person or an empty person section.
+    const candidates = everyone.filter((s) => suspectIds.has(s.id)
+      && (bySuspect.get(s.id)?.length ?? 0) > 0);
     if (candidates.length === 0) {
-      throw new Error("Энэ хэрэгт импортолсон сэжигтэн алга.");
+      throw new Error(minAmount > 0
+        ? "Сонгосон босгоос дээш гүйлгээтэй сэжигтэн алга."
+        : "Энэ хэрэгт тайланд оруулах гүйлгээтэй сэжигтэн алга.");
     }
 
     const blocks = candidates.map((s) => {
