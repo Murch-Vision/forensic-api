@@ -755,7 +755,7 @@ export class ReportService {
     sectionBar(doc, "ДАНСНЫ ДҮН ШИНЖИЛГЭЭНИЙ АГУУЛГА");
     const contentsY = doc.y;
     const contentsRowCount = 6;
-    doc.y += 26 + contentsRowCount * 50 + 4;
+    doc.y += 26 + contentsRowCount * 58 + 4;
 
     const accountPageRanges: Array<{start: number; end: number}> = [];
     for (const [index, a] of input.analyses.entries()) {
@@ -832,14 +832,9 @@ export class ReportService {
     }
     const pageRange = (start: number, end: number): string => start === end
       ? String(start) : `${start}–${end}`;
-    const accountLabels = ["А", "Б", "В", "Г", "Д", "Е", "Ё", "Ж"];
     const accountPageItems = accountPageRanges.map((range, index) =>
-      `${accountLabels[index] ?? index + 1}: ${pageRange(range.start, range.end)}`);
-    const accountPages = accountPageItems.reduce<string[]>((lines, item, index) => {
-      if (index % 2 === 0) lines.push(item);
-      else lines[lines.length - 1] += `; ${item}`;
-      return lines;
-    }, []).join("\n") + (accountPageItems.length ? "-р хуудас" : "—");
+      `${index + 1}-р данс: ${pageRange(range.start, range.end)}-р хуудас`);
+    const accountPages = accountPageItems.join("\n") || "—";
     const relationPages = conclusionPage === relationPage + 1
       ? `${relationPage}-р хуудас`
       : `${relationPage}–${conclusionPage - 1}-р хуудас`;
@@ -1036,7 +1031,7 @@ function pdfAccountCards(doc: PDFKit.PDFDocument,
 
 function pdfContentsTable(doc: PDFKit.PDFDocument, rows: string[][]): void {
   const widths = [40, 355, 120];
-  const headerHeight = 26, rowHeight = 50;
+  const headerHeight = 26, rowHeight = 58;
   const x0 = ML, y0 = doc.y;
   doc.rect(x0, y0, CW, headerHeight).fill(TABLE_HEAD);
   const headers = ["№", "Хийсэн дүн шинжилгээний ажил", "Хуудас №"];
