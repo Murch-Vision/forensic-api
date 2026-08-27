@@ -831,11 +831,15 @@ export class ReportService {
       pdfConclusionText(doc, generalWritten);
     }
     const pageRange = (start: number, end: number): string => start === end
-      ? `${start}-р хуудас`
-      : `${start}–${end}-р хуудас`;
-    const accountPages = accountPageRanges.map((range, index) =>
-      `${input.analyses[index]?.accountNumber ?? `${index + 1}-р данс`}: `
-      + pageRange(range.start, range.end)).join("\n") || "—";
+      ? String(start) : `${start}–${end}`;
+    const accountLabels = ["А", "Б", "В", "Г", "Д", "Е", "Ё", "Ж"];
+    const accountPageItems = accountPageRanges.map((range, index) =>
+      `${accountLabels[index] ?? index + 1}: ${pageRange(range.start, range.end)}`);
+    const accountPages = accountPageItems.reduce<string[]>((lines, item, index) => {
+      if (index % 2 === 0) lines.push(item);
+      else lines[lines.length - 1] += `; ${item}`;
+      return lines;
+    }, []).join("\n") + (accountPageItems.length ? "-р хуудас" : "—");
     const relationPages = conclusionPage === relationPage + 1
       ? `${relationPage}-р хуудас`
       : `${relationPage}–${conclusionPage - 1}-р хуудас`;
