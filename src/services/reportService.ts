@@ -752,12 +752,15 @@ export class ReportService {
     pdfAccountCards(doc, input.analyses);
 
     doc.y += 18;
-    sectionBar(doc, "ТАЙЛАНГИЙН АГУУЛГА");
+    sectionBar(doc, "ДАНСНЫ ДҮН ШИНЖИЛГЭЭНИЙ АГУУЛГА");
     const contentsY = doc.y;
-    doc.y += 26 + 5 * 42 + 4;
+    const contentsRowCount = 6;
+    doc.y += 26 + contentsRowCount * 50 + 4;
 
+    const accountPageRanges: Array<{start: number; end: number}> = [];
     for (const [index, a] of input.analyses.entries()) {
       doc.addPage(); doc.y = 48;
+      const accountStartPage = doc.bufferedPageRange().count;
       sectionBar(doc, `${index + 1}. ДАНС ${a.accountNumber}`);
       doc.fontSize(11).fillColor(DARK_BLUE).text(a.ownerName || "Эзэмшигч тодорхойгүй", ML, doc.y);
       doc.y += 18;
@@ -783,6 +786,10 @@ export class ReportService {
       pdfBuckets(doc, "Өдрөөр", a.byWeekday);
       pdfBuckets(doc, "Сараар", a.byMonth);
       doc.fontSize(9).fillColor(INK).text(narrative(a), ML, doc.y + 6, {width: CW});
+      accountPageRanges.push({
+        start: accountStartPage,
+        end: doc.bufferedPageRange().count,
+      });
     }
 
     doc.addPage(); doc.y = 48;
@@ -823,18 +830,23 @@ export class ReportService {
         ML, doc.y + 3);
       pdfConclusionText(doc, generalWritten);
     }
-    const accountPages = relationPage === 3 ? "2-р хуудас"
-      : `2–${relationPage - 1}-р хуудас`;
+    const pageRange = (start: number, end: number): string => start === end
+      ? `${start}-р хуудас`
+      : `${start}–${end}-р хуудас`;
+    const accountPages = accountPageRanges.map((range, index) =>
+      `${input.analyses[index]?.accountNumber ?? `${index + 1}-р данс`}: `
+      + pageRange(range.start, range.end)).join("\n") || "—";
     const relationPages = conclusionPage === relationPage + 1
       ? `${relationPage}-р хуудас`
       : `${relationPage}–${conclusionPage - 1}-р хуудас`;
     doc.switchToPage(0); doc.y = contentsY;
     pdfContentsTable(doc, [
-      ["1", "Данс тус бүрийн орлого, зарлага, гүйлгээний тоон нэгтгэл", accountPages],
-      ["2", "Данс тус бүрийн харилцсан дансны жагсаалт (хамгийн их хөдөлгөөнтэй 15)", accountPages],
-      ["3", "Цаг, өдөр, сарын идэвхжил", accountPages],
-      ["4", "Данснуудын холбоос ба шууд мөнгөн урсгал", relationPages],
-      ["5", "Данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт", `${conclusionPage}-р хуудаснаас`],
+      ["1", "Дансны хуулганы дэлгэрэнгүй мэдээлэл\n(нийт гүйлгээ, харилцагч, орлого, зарлага, зөрүү, шөнийн гүйлгээ)", accountPages],
+      ["2", "Нийт харилцсан талуудын гүйлгээний давтамжийн жагсаалт\n(хамгийн их хөдөлгөөнтэй 15 харилцсан данс)", accountPages],
+      ["3", "Хамгийн өндөр дүнгээр орлого, зарлага хийсэн харилцаа\n(жагсаалт хэлбэрээр)", accountPages],
+      ["4", "Орлого, зарлагын идэвхжилийн шинжилгээ\n(цаг, өдөр, сараар)", accountPages],
+      ["5", "Данснуудын холбоосын дүн шинжилгээ\n(дундын харилцагч, шууд мөнгөн урсгал)", relationPages],
+      ["6", "Дүн шинжилгээгээр илэрсэн нөхцөл байдал\n(данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт)", `${conclusionPage}-р хуудаснаас`],
     ]);
     drawFooters(doc); doc.end(); return done;
   }
@@ -1020,10 +1032,10 @@ function pdfAccountCards(doc: PDFKit.PDFDocument,
 
 function pdfContentsTable(doc: PDFKit.PDFDocument, rows: string[][]): void {
   const widths = [40, 355, 120];
-  const headerHeight = 26, rowHeight = 42;
+  const headerHeight = 26, rowHeight = 50;
   const x0 = ML, y0 = doc.y;
   doc.rect(x0, y0, CW, headerHeight).fill(TABLE_HEAD);
-  const headers = ["№", "Хийсэн шинжилгээ", "Хуудас"];
+  const headers = ["№", "Хийсэн дүн шинжилгээний ажил", "Хуудас №"];
   let x = x0;
   headers.forEach((header, index) => {
     doc.fontSize(8.5).fillColor("#FFFFFF").text(header, x + 6, y0 + 8,
@@ -1039,8 +1051,8 @@ function pdfContentsTable(doc: PDFKit.PDFDocument, rows: string[][]): void {
     row.forEach((value, index) => {
       if (index > 0) doc.moveTo(cellX, y).lineTo(cellX, y + rowHeight)
         .lineWidth(0.7).strokeColor("#9CA3AF").stroke();
-      doc.fontSize(index === 1 ? 8.5 : 8).fillColor(INK).text(value,
-        cellX + 7, y + 10, {width: widths[index] - 14,
+      doc.fontSize(index === 1 ? 8.2 : 7.8).fillColor(INK).text(value,
+        cellX + 7, y + 7, {width: widths[index] - 14,
           align: index === 0 ? "center" : "left", height: rowHeight - 14,
           ellipsis: true});
       cellX += widths[index];
