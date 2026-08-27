@@ -761,7 +761,7 @@ export class ReportService {
     for (const [index, a] of input.analyses.entries()) {
       doc.addPage(); doc.y = 48;
       const accountStartPage = doc.bufferedPageRange().count;
-      sectionBar(doc, `${index + 1}. ДАНС ${a.accountNumber}`);
+      majorSectionBar(doc, `${index + 1}. ДАНС ${a.accountNumber}`);
       doc.fontSize(11).fillColor(DARK_BLUE).text(a.ownerName || "Эзэмшигч тодорхойгүй", ML, doc.y);
       doc.y += 18;
       pdfKv(doc, [
@@ -770,14 +770,18 @@ export class ReportService {
         ["Орлого, зарлагын зөрүү", mnt(a.netTotal)],
         ["Шөнийн гүйлгээ", a.hasTimeOfDay ? `${num(a.nightCount)} · ${mnt(a.nightTotal)}` : "Хуулганд цагийн мэдээлэл байхгүй"],
       ]);
-      sectionBar(doc, "ГҮЙЛГЭЭНИЙ ДАВТАМЖААР ТОП 15 ХАРИЛЦСАН ТАЛ");
+      const frequentCounterparties = a.topCounterparties
+        .filter((r) => r.rating.includes("Их давтамж"))
+        .sort((x, y) => (y.creditTotal + y.debitTotal)
+          - (x.creditTotal + x.debitTotal));
+      sectionBar(doc, `ИХ ДАВТАМЖТАЙ ХАРИЛЦСАН ТАЛУУД (${frequentCounterparties.length})`);
       doc.fontSize(8.5).fillColor(MUTED).text(
-        `Гүйлгээний тоогоор буурахаар эрэмбэлсэн · Эх данс: `
+        `10-аас дээш гүйлгээтэй талуудыг нийт мөнгөн дүнгээр эрэмбэлсэн · Эх данс: `
           + `${a.accountNumber} · Эзэмшигч: ${a.ownerName || "Тодорхойгүй"}`,
         ML, doc.y, {width: CW});
       doc.y += 7;
       pdfRows(doc, ["Эх данс", "Харилцсан данс", "Харилцсан тал", "Гүйлгээ", "Орлого", "Зарлага"],
-        [92, 92, 121, 40, 85, 85], a.topCounterparties.slice(0, 15).map((r) => [
+        [92, 92, 121, 40, 85, 85], frequentCounterparties.map((r) => [
           a.accountNumber, r.account ?? "Дугааргүй", r.name,
           num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal),
         ]));
@@ -795,18 +799,18 @@ export class ReportService {
 
     doc.addPage(); doc.y = 48;
     const relationPage = doc.bufferedPageRange().count;
-    sectionBar(doc, `${input.analyses.length + 1}. ДАНСНУУДЫН ХОЛБООС`);
+    majorSectionBar(doc, `${input.analyses.length + 1}. ДАНСНУУДЫН ХОЛБООС`);
     pdfRows(doc, ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
       [130, 95, 48, 82, 82, 78], input.mutualRelations.slice(0, 60).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
       ]));
-    sectionBar(doc, "ШУУД МӨНГӨН УРСГАЛ");
+    sectionBar(doc, "ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ");
     pdfRows(doc, ["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"], [185, 185, 55, 90],
       input.transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
 
     doc.addPage(); doc.y = 48;
     const conclusionPage = doc.bufferedPageRange().count;
-    sectionBar(doc, `${input.analyses.length + 2}. ДҮГНЭЛТ`);
+    majorSectionBar(doc, `${input.analyses.length + 2}. ДҮГНЭЛТ`);
     const conclusionFor = (id: number | null) => input.conclusions
       .find((c) => c.bankAccountId === id)?.text?.trim();
     for (const a of input.analyses) {
@@ -842,14 +846,14 @@ export class ReportService {
         String(index + 1),
         `${analysis.ownerName || "Эзэмшигч тодорхойгүй"}\n`
           + `Данс: ${analysis.accountNumber}\n`
-          + "Хуулгын нэгтгэл, гүйлгээний давтамжаар топ 15 харилцсан тал, "
+          + "Хуулгын нэгтгэл, их давтамжтай талуудыг мөнгөн дүнгээр эрэмбэлсэн жагсаалт, "
           + "өндөр дүнтэй харилцаа, цаг/өдөр/сарын идэвхжил",
         `${pageRange(accountPageRanges[index].start,
           accountPageRanges[index].end)}-р хуудас`,
       ]),
       [String(input.analyses.length + 1),
         "Данснуудын холбоосын дүн шинжилгээ\n"
-          + "(дундын харилцагч, шууд мөнгөн урсгал)", relationPages],
+          + "(дундын харилцагч, шинжилсэн данснуудын хоорондын шууд гүйлгээ)", relationPages],
       [String(input.analyses.length + 2),
         "Дүн шинжилгээгээр илэрсэн нөхцөл байдал\n"
           + "(данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт)",
@@ -968,7 +972,7 @@ function relationFindings(input: {
     const top = [...input.transfers].sort((a, b) => b.total - a.total)[0];
     parts.push(`Шинжилсэн данснуудын хооронд ${num(count)} шууд гүйлгээгээр `
       + `${mnt(total)} шилжсэн.`);
-    parts.push(`Хамгийн их шууд мөнгөн урсгал ${top.fromLabel}-аас `
+    parts.push(`Хамгийн өндөр дүнтэй шууд гүйлгээний чиглэл ${top.fromLabel}-аас `
       + `${top.toLabel} руу чиглэсэн байна.`);
   } else {
     parts.push("Шинжилсэн данснуудын хооронд шууд мөнгөн шилжүүлэг илрээгүй.");
@@ -997,7 +1001,7 @@ function generalFindings(input: {
       + `${num(busiest.txnCount)} гүйлгээтэй.`,
   ];
   parts.push("Эдгээр нь банкны хуулгад тулгуурласан тоон нэгтгэл бөгөөд "
-    + "анхаарал татсан харилцаа, мөнгөн урсгалыг дараагийн шалгалтаар "
+    + "анхаарал татсан харилцаа, гүйлгээг дараагийн шалгалтаар "
     + "баримттай нь нягтлах шаардлагатай.");
   return parts;
 }
@@ -1336,6 +1340,18 @@ function sectionBar(doc: PDFKit.PDFDocument, title: string): void {
   doc.fillColor(DARK_BLUE).fontSize(12)
     .text(title, ML + 10, y - 1, {lineBreak: false});
   doc.y = y + 22;
+  doc.fillColor(INK);
+}
+
+function majorSectionBar(doc: PDFKit.PDFDocument, title: string): void {
+  if (doc.y > doc.page.height - 120) { doc.addPage(); doc.y = 48; }
+  const y = doc.y + 7;
+  doc.rect(ML, y, 6, 18).fill(ACCENT_CYAN);
+  doc.fillColor(DARK_BLUE).fontSize(15)
+    .text(title, ML + 14, y - 2, {lineBreak: false});
+  doc.moveTo(ML, y + 24).lineTo(ML + CW, y + 24).lineWidth(1)
+    .strokeColor("#B8C6D4").stroke();
+  doc.y = y + 33;
   doc.fillColor(INK);
 }
 

@@ -633,7 +633,7 @@ export const resolvers = {
       const analyses = analyseAccounts(accounts, txns, subjects, {
         nightFrom: aml.nightHoursStart, nightTo: aml.nightHoursEnd,
         highValueFloor: aml.highValueTxnFloor,
-      }, 30);
+      }, 1_000_000);
       const rel = buildRelations(txns, accounts, subjects);
       const buf = await c.reports.generateVerdictPdf({
         caseId: active.caseId, caseName: active.caseName,
