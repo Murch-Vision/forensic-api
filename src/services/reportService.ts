@@ -761,9 +761,10 @@ export class ReportService {
     for (const [index, a] of input.analyses.entries()) {
       doc.addPage(); doc.y = 48;
       const accountStartPage = doc.bufferedPageRange().count;
-      accountSectionBar(doc, `${index + 1}. ДАНС`, a.accountNumber);
-      doc.fontSize(11).fillColor(DARK_BLUE).text(a.ownerName || "Эзэмшигч тодорхойгүй", ML, doc.y);
-      doc.y += 18;
+      if (index === 0) majorSectionBar(doc, "1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ");
+      const owner = a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ";
+      accountSectionBar(doc, `1.${index + 1}`,
+        `${owner} · ${a.accountNumber} ДУГААРТАЙ ДАНС`);
       pdfKv(doc, [
         ["Нийт гүйлгээ", num(a.txnCount)], ["Харилцагч", num(a.counterpartyCount)],
         ["Нийт орлого", mnt(a.creditTotal)], ["Нийт зарлага", mnt(a.debitTotal)],
@@ -799,23 +800,25 @@ export class ReportService {
 
     doc.addPage(); doc.y = 48;
     const relationPage = doc.bufferedPageRange().count;
-    majorSectionBar(doc, `${input.analyses.length + 1}. ДАНСНУУДЫН ХОЛБООС`);
+    majorSectionBar(doc, "2. ДАНСНУУДЫН ХОЛБООС");
+    sectionBar(doc, "2.1 ДУНДЫН ХАРИЛЦАГЧИД");
     pdfRows(doc, ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
       [130, 95, 48, 82, 82, 78], input.mutualRelations.slice(0, 60).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
       ]));
-    sectionBar(doc, "ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ");
+    sectionBar(doc, "2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ");
     pdfRows(doc, ["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"], [185, 185, 55, 90],
       input.transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
 
     doc.addPage(); doc.y = 48;
     const conclusionPage = doc.bufferedPageRange().count;
-    majorSectionBar(doc, `${input.analyses.length + 2}. ДҮГНЭЛТ`);
+    majorSectionBar(doc, "3. ДҮГНЭЛТ");
     const conclusionFor = (id: number | null) => input.conclusions
       .find((c) => c.bankAccountId === id)?.text?.trim();
-    for (const a of input.analyses) {
+    for (const [index, a] of input.analyses.entries()) {
       pdfConclusionHeading(doc,
-        `${a.ownerName || "Эзэмшигч тодорхойгүй"} · ${a.accountNumber}`);
+        `3.${index + 1} ${a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ"} · `
+          + `${a.accountNumber} ДУГААРТАЙ ДАНС`);
       pdfNumberedFindings(doc, accountFindings(a));
       const written = conclusionFor(a.accountId);
       if (written) {
@@ -824,10 +827,10 @@ export class ReportService {
         pdfConclusionText(doc, written);
       }
     }
-    sectionBar(doc, "ХОЛБООСЫН ДҮГНЭЛТ");
+    sectionBar(doc, `3.${input.analyses.length + 1} ХОЛБООСЫН ДҮГНЭЛТ`);
     pdfNumberedFindings(doc, relationFindings(input));
     if (doc.y > doc.page.height - 220) { doc.addPage(); doc.y = 48; }
-    sectionBar(doc, "ЕРӨНХИЙ ДҮГНЭЛТ");
+    sectionBar(doc, `3.${input.analyses.length + 2} ЕРӨНХИЙ ДҮГНЭЛТ`);
     pdfNumberedFindings(doc, generalFindings(input));
     const generalWritten = conclusionFor(null);
     if (generalWritten) {
@@ -843,7 +846,7 @@ export class ReportService {
     doc.switchToPage(0); doc.y = contentsY;
     pdfContentsTable(doc, [
       ...input.analyses.map((analysis, index) => [
-        String(index + 1),
+        `1.${index + 1}`,
         `${analysis.ownerName || "Эзэмшигч тодорхойгүй"}\n`
           + `Данс: ${analysis.accountNumber}\n`
           + "Хуулгын нэгтгэл, их давтамжтай талуудыг мөнгөн дүнгээр эрэмбэлсэн жагсаалт, "
@@ -851,10 +854,10 @@ export class ReportService {
         `${pageRange(accountPageRanges[index].start,
           accountPageRanges[index].end)}-р хуудас`,
       ]),
-      [String(input.analyses.length + 1),
+      ["2",
         "Данснуудын холбоосын дүн шинжилгээ\n"
           + "(дундын харилцагч, шинжилсэн данснуудын хоорондын шууд гүйлгээ)", relationPages],
-      [String(input.analyses.length + 2),
+      ["3",
         "Дүн шинжилгээгээр илэрсэн нөхцөл байдал\n"
           + "(данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт)",
         `${conclusionPage}-р хуудаснаас`],
@@ -1357,16 +1360,17 @@ function majorSectionBar(doc: PDFKit.PDFDocument, title: string): void {
 }
 
 function accountSectionBar(
-  doc: PDFKit.PDFDocument, label: string, accountNumber: string
+  doc: PDFKit.PDFDocument, label: string, title: string
 ): void {
   if (doc.y > doc.page.height - 120) { doc.addPage(); doc.y = 48; }
   const y = doc.y + 6;
   doc.roundedRect(ML, y, CW, 38, 5).fill("#E8F1F8");
-  doc.roundedRect(ML + 8, y + 7, 72, 24, 3).fill(ACCENT_CYAN);
+  doc.roundedRect(ML + 8, y + 7, 48, 24, 3).fill(ACCENT_CYAN);
   doc.fillColor(DARK_BLUE).fontSize(10.5)
-    .text(label, ML + 15, y + 13, {width: 58, align: "center", lineBreak: false});
-  doc.fillColor(DARK_BLUE).fontSize(15)
-    .text(accountNumber, ML + 94, y + 10, {width: CW - 108, lineBreak: false});
+    .text(label, ML + 12, y + 13, {width: 40, align: "center", lineBreak: false});
+  doc.fillColor(DARK_BLUE).fontSize(11.5)
+    .text(title, ML + 68, y + 11, {width: CW - 80, lineBreak: false,
+      ellipsis: true});
   doc.y = y + 49;
   doc.fillColor(INK);
 }
