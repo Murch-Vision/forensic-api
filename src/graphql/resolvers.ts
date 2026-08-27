@@ -668,15 +668,10 @@ export const resolvers = {
     reportMarkedSuspectsPdf: async (
       _p: unknown, a: {minAmount?: number}, c: GraphQLContext
     ) => {
-      const caseAccounts = await scopedAccounts(c);
-      const ownerIds = [...new Set(caseAccounts
-        .map((account) => account.suspectId)
-        .filter((id): id is number => id != null))];
-      const buf = await c.reports.generateMarkedSuspectsPdf(
-        a.minAmount ?? 0, ownerIds);
-      const filename = "Main-People-Report.pdf";
+      const buf = await c.reports.generateMarkedSuspectsPdf(a.minAmount ?? 0);
+      const filename = "MarkedSuspects-Transactions.pdf";
       await c.audit.record("Report.Generated", `File:${filename}`,
-        "Imported data main people report");
+        "Marked suspects transaction report");
       return {filename, mimeType: "application/pdf", base64: buf.toString("base64")};
     },
     reportExcel: async (_p: unknown, _a: unknown, c: GraphQLContext) => {

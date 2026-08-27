@@ -1191,7 +1191,7 @@ export const typeDefs = /* GraphQL */ `
     reportPdf: ReportFile!
     "Per-suspect financial PDF: profile, income/outgoing totals and the transaction ledger. minAmount hides transactions below the given amount."
     reportSuspectPdf(suspectId: Int!, minAmount: Int): ReportFile!
-    "Active-case PDF: imported statement owners, their totals and counterparties."
+    "Financial PDF: combined summary + a section each. Without minAmount it covers the marked suspects (status UNDER_INVESTIGATION); with minAmount it covers EVERYONE holding a transaction at/above that amount, flagged or not."
     reportMarkedSuspectsPdf(minAmount: Int): ReportFile!
     reportExcel: ReportFile!
     reportWord: ReportFile!
