@@ -854,36 +854,74 @@ function pdfNumberedFindings(doc: PDFKit.PDFDocument, findings: string[]): void 
 
 function accountFindings(a: AccountAnalysis): string[] {
   if (a.txnCount === 0) {
-    return ["Энэ дансанд шинжлэх гүйлгээ бүртгэгдээгүй байна."];
+    return [
+      "Энэ дансанд шинжлэх гүйлгээ бүртгэгдээгүй байна.",
+      "Орлогын гүйлгээ бүртгэгдээгүй байна.",
+      "Зарлагын гүйлгээ бүртгэгдээгүй байна.",
+      "Харилцсан тал бүртгэгдээгүй байна.",
+      "Хамгийн өндөр дүнтэй харилцсан талыг тодорхойлох мэдээлэл алга.",
+      "Цагийн идэвхжилийг тодорхойлох мэдээлэл алга.",
+      "Өдрийн идэвхжилийг тодорхойлох мэдээлэл алга.",
+      "Сарын идэвхжилийг тодорхойлох мэдээлэл алга.",
+      "Шөнийн гүйлгээг тодорхойлох мэдээлэл алга.",
+      "Дүгнэлт гаргахад дансны хуулгын мэдээлэл шаардлагатай.",
+    ];
   }
   const owner = a.ownerName || "Эзэмшигч нь тодорхойгүй хүн";
   const flow = a.netTotal >= 0
     ? `орлого нь зарлагаасаа ${mnt(Math.abs(a.netTotal))}-өөр их`
     : `зарлага нь орлогоосоо ${mnt(Math.abs(a.netTotal))}-өөр их`;
-  const parts = [
-    `${owner}-ийн ${a.accountNumber} дугаартай дансанд ${num(a.txnCount)} `
-      + `гүйлгээ бүртгэгдсэн. Нийт ${mnt(a.creditTotal)} орж, `
-      + `${mnt(a.debitTotal)} гарсан тул ${flow} байна.`,
+  const period = a.firstTxn && a.lastTxn
+    ? `${formatDateLike(a.firstTxn)}-ээс ${formatDateLike(a.lastTxn)} хүртэлх`
+    : "хуулгад бүртгэгдсэн";
+  const topFrequency = a.topCounterparties[0];
+  const topAmount = [...a.topCounterparties]
+    .sort((x, y) => (y.creditTotal + y.debitTotal)
+      - (x.creditTotal + x.debitTotal))[0];
+  const peakBucket = (label: string | null,
+    buckets: import("./accountAnalysisService").ActivityBucket[]) =>
+    label ? buckets.find((b) => b.label === label) : undefined;
+  const hour = peakBucket(a.peakHour, a.byHour);
+  const weekday = peakBucket(a.peakWeekday, a.byWeekday);
+  const month = peakBucket(a.peakMonth, a.byMonth);
+  const notable = a.topCounterparties.filter((r) => r.rating !== "Ердийн");
+  return [
+    `${owner}-ийн ${a.accountNumber} дугаартай дансны ${period} `
+      + `${num(a.txnCount)} гүйлгээг шинжилсэн.`,
+    `${num(a.creditCount)} орлогын гүйлгээгээр ${mnt(a.creditTotal)} орж, `
+      + `${num(a.debitCount)} зарлагын гүйлгээгээр ${mnt(a.debitTotal)} гарсан.`,
+    `Орлого, зарлагын зөрүүгээр ${flow} байна.`,
+    topFrequency
+      ? `Хамгийн олон харилцсан тал нь ${topFrequency.name}`
+        + `${topFrequency.account ? ` (${topFrequency.account})` : ""} бөгөөд `
+        + `${num(topFrequency.txnCount)} удаа гүйлгээ хийсэн.`
+      : "Харилцсан талын мэдээлэл бүртгэгдээгүй байна.",
+    topAmount
+      ? `Хамгийн өндөр мөнгөн дүнтэй харилцсан тал нь ${topAmount.name}`
+        + `${topAmount.account ? ` (${topAmount.account})` : ""} бөгөөд нийт `
+        + `${mnt(topAmount.creditTotal + topAmount.debitTotal)}-ийн хөдөлгөөнтэй.`
+      : "Харилцсан талуудын мөнгөн дүнг харьцуулах мэдээлэл алга.",
+    a.hasTimeOfDay && hour
+      ? `${hour.label} цагт хамгийн олон буюу ${num(hour.count)} гүйлгээ, `
+        + `${mnt(hour.creditTotal + hour.debitTotal)}-ийн хөдөлгөөн бүртгэгдсэн.`
+      : "Хуулганд цагийн мэдээлэлгүй тул цагийн идэвхжилийг тооцоогүй.",
+    weekday
+      ? `${weekday.label} өдөр хамгийн олон буюу ${num(weekday.count)} гүйлгээ, `
+        + `${mnt(weekday.creditTotal + weekday.debitTotal)}-ийн хөдөлгөөн бүртгэгдсэн.`
+      : "Өдрийн идэвхжилийг тодорхойлох мэдээлэл алга.",
+    month
+      ? `${month.label} сард хамгийн олон буюу ${num(month.count)} гүйлгээ, `
+        + `${mnt(month.creditTotal + month.debitTotal)}-ийн хөдөлгөөн бүртгэгдсэн.`
+      : "Сарын идэвхжилийг тодорхойлох мэдээлэл алга.",
+    a.hasTimeOfDay
+      ? `Шөнийн цагаар ${num(a.nightCount)} гүйлгээ хийгдэж, нийт дүн нь `
+        + `${mnt(a.nightTotal)} байна.`
+      : "Хуулганд цагийн мэдээлэлгүй тул шөнийн гүйлгээг тооцоогүй.",
+    notable.length
+      ? `Давтамж эсвэл мөнгөн дүнгээр анхаарал татсан ${num(notable.length)} `
+        + "харилцсан талын данс, нэр, гүйлгээний утгыг баримттай нь нягтлах шаардлагатай."
+      : "Давтамж болон мөнгөн дүнгийн тоон үзүүлэлтээр тусгайлан анхаарал татсан харилцсан тал илрээгүй.",
   ];
-  const top = a.topCounterparties[0];
-  if (top) {
-    parts.push(`Хамгийн олон харилцсан тал нь ${top.name}`
-      + `${top.account ? ` (${top.account})` : ""} бөгөөд `
-      + `${num(top.txnCount)} удаа гүйлгээ хийсэн.`);
-  }
-  const peaks = [
-    a.peakMonth ? `${a.peakMonth} сард` : null,
-    a.peakWeekday ? `${a.peakWeekday} гарагт` : null,
-    a.hasTimeOfDay && a.peakHour ? `${a.peakHour} цагт` : null,
-  ].filter(Boolean);
-  if (peaks.length) {
-    parts.push(`Гүйлгээний хөдөлгөөн ${peaks.join(", ")} хамгийн идэвхтэй байв.`);
-  }
-  if (a.hasTimeOfDay && a.nightCount > 0) {
-    parts.push(`Шөнийн цагаар ${num(a.nightCount)} гүйлгээ хийгдэж, `
-      + `нийт дүн нь ${mnt(a.nightTotal)} байна.`);
-  }
-  return parts;
 }
 
 function relationFindings(input: {
