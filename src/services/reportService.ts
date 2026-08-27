@@ -753,6 +753,21 @@ export class ReportService {
       input.analyses.map((a, i) => [String(i + 1), a.accountNumber,
         a.ownerName || "Эзэмшигч тодорхойгүй"]), 99);
 
+    const accountPages = input.analyses.length
+      ? input.analyses.length === 1 ? "2-р хуудас"
+        : `2–${input.analyses.length + 1}-р хуудас`
+      : "—";
+    const relationPage = input.analyses.length + 2;
+    const conclusionPage = relationPage + 1;
+    sectionBar(doc, "ТАЙЛАНГИЙН АГУУЛГА");
+    pdfRows(doc, ["№", "Хийсэн шинжилгээ", "Хуудас"], [40, 365, 110], [
+      ["1", "Данс тус бүрийн орлого, зарлага, гүйлгээний тоон нэгтгэл", accountPages],
+      ["2", "Харилцсан талуудын гүйлгээ", accountPages],
+      ["3", "Цаг, өдөр, сарын идэвхжил", accountPages],
+      ["4", "Данснуудын холбоос ба шууд мөнгөн урсгал", `${relationPage}-р хуудас`],
+      ["5", "Данс тус бүрийн, холбоосын болон ерөнхий дүгнэлт", `${conclusionPage}-р хуудаснаас`],
+    ], 99);
+
     for (const [index, a] of input.analyses.entries()) {
       doc.addPage(); doc.y = 48;
       sectionBar(doc, `${index + 1}. ДАНС ${a.accountNumber}`);
