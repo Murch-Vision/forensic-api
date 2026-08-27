@@ -622,6 +622,32 @@ export const resolvers = {
         base64: buf.toString("base64"),
       };
     },
+    reportVerdictPdf: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const active = await c.session.getCurrentCase();
+      if (!active) throw new Error("Хэрэг сонгоогүй байна");
+      const [txns, accounts, subjects, conclusions] = await Promise.all([
+        scopedTransactions(c, false), scopedAccounts(c),
+        caseSubjectNationalIds(c), c.conclusions.getForCase(active.id),
+      ]);
+      const aml = AmlThresholds.current;
+      const analyses = analyseAccounts(accounts, txns, subjects, {
+        nightFrom: aml.nightHoursStart, nightTo: aml.nightHoursEnd,
+        highValueFloor: aml.highValueTxnFloor,
+      }, 30);
+      const rel = buildRelations(txns, accounts, subjects);
+      const buf = await c.reports.generateVerdictPdf({
+        caseId: active.caseId, caseName: active.caseName,
+        period: {
+          from: analyses.reduce<string | null>((min, a) => !min || (a.firstTxn && a.firstTxn < min) ? a.firstTxn : min, null),
+          to: analyses.reduce<string | null>((max, a) => !max || (a.lastTxn && a.lastTxn > max) ? a.lastTxn : max, null),
+        },
+        analyses, mutualRelations: rel.relations.filter((r) => r.mutual),
+        transfers: directTransfers(accounts, txns), conclusions,
+      });
+      const filename = `Dansnii-Dun-Shinjilgee-${active.caseId}.pdf`.replace(/[^A-Za-z0-9._-]/g, "-");
+      await c.audit.record("Report.Generated", `File:${filename}`);
+      return {filename, mimeType: "application/pdf", base64: buf.toString("base64")};
+    },
     reportSuspectPdf: async (
       _p: unknown, a: {suspectId: number; minAmount?: number}, c: GraphQLContext
     ) => {

@@ -1200,6 +1200,8 @@ export const typeDefs = /* GraphQL */ `
     of the client's template. Figures are tables, not screenshots.
     """
     reportVerdictDocx: ReportFile!
+    """Дансны дүн шинжилгээ — active case data rendered as an official PDF."""
+    reportVerdictPdf: ReportFile!
     screenSuspect(id: Int!): [SanctionsHit!]!
     sanctionsStatus: SanctionsStatus!
     sanctionsRefreshLogs(take: Int): [SanctionsRefreshLog!]!

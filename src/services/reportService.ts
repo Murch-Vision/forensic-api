@@ -726,6 +726,112 @@ export class ReportService {
     const doc = new Document({sections: [{children}]});
     return Packer.toBuffer(doc);
   }
+
+  // Court-file friendly PDF built from the same case-scoped aggregates as the
+  // analysis screen. The client's draft supplies the document flow only; the
+  // visual system and every finding below come from Forensic's own data.
+  async generateVerdictPdf(input: {
+    caseId: string;
+    caseName: string;
+    period: {from: string | null; to: string | null};
+    analyses: AccountAnalysis[];
+    mutualRelations: RelationRow[];
+    transfers: DirectTransfer[];
+    conclusions: CaseConclusion[];
+  }): Promise<Buffer> {
+    const {doc, done} = startDoc();
+    formalHeader(doc, "Дансны дүн шинжилгээний тайлан");
+    const period = input.period.from && input.period.to
+      ? `${formatDateLike(input.period.from)} — ${formatDateLike(input.period.to)}`
+      : "—";
+    pdfKv(doc, [
+      ["Хэрэг", `${input.caseId} · ${input.caseName}`],
+      ["Шинжилсэн данс", input.analyses.map((a) => a.accountNumber).join(", ") || "—"],
+      ["Данс эзэмшигч", [...new Set(input.analyses.map((a) => a.ownerName).filter(Boolean))].join(", ") || "—"],
+      ["Хамрах хугацаа", period],
+    ]);
+
+    sectionBar(doc, "ТАЙЛАНГИЙН БҮТЭЦ");
+    pdfRows(doc, ["№", "Шинжилгээний хэсэг"], [55, 460], [
+      ...input.analyses.map((a, i) => [String(i + 1), `Данс ${a.accountNumber} — дэлгэрэнгүй шинжилгээ`]),
+      [String(input.analyses.length + 1), "Данснуудын холбоос ба шууд мөнгөн урсгал"],
+      [String(input.analyses.length + 2), "Мөрдөгчийн дүгнэлт"],
+    ]);
+
+    for (const [index, a] of input.analyses.entries()) {
+      doc.addPage(); doc.y = 48;
+      sectionBar(doc, `${index + 1}. ДАНС ${a.accountNumber}`);
+      doc.fontSize(11).fillColor(DARK_BLUE).text(a.ownerName || "Эзэмшигч тодорхойгүй", ML, doc.y);
+      doc.y += 18;
+      pdfKv(doc, [
+        ["Нийт гүйлгээ", num(a.txnCount)], ["Харилцагч", num(a.counterpartyCount)],
+        ["Нийт орлого", mnt(a.creditTotal)], ["Нийт зарлага", mnt(a.debitTotal)],
+        ["Орлого, зарлагын зөрүү", mnt(a.netTotal)],
+        ["Шөнийн гүйлгээ", a.hasTimeOfDay ? `${num(a.nightCount)} · ${mnt(a.nightTotal)}` : "Хуулганд цагийн мэдээлэл байхгүй"],
+      ]);
+      sectionBar(doc, "ГОЛ ХАРИЛЦАГЧИД");
+      pdfRows(doc, ["Харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Үнэлгээ"],
+        [130, 90, 48, 82, 82, 83], a.topCounterparties.slice(0, 30).map((r) => [
+          r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), r.rating,
+        ]));
+      sectionBar(doc, "ИДЭВХЖИЛ");
+      if (a.hasTimeOfDay) pdfBuckets(doc, "Цагаар", a.byHour);
+      else doc.fontSize(8.5).fillColor(MUTED).text("Цагийн мэдээлэлгүй тул цагийн идэвхжил тооцоогүй.", ML, doc.y), doc.y += 16;
+      pdfBuckets(doc, "Гарагаар", a.byWeekday);
+      pdfBuckets(doc, "Сараар", a.byMonth);
+      doc.fontSize(9).fillColor(INK).text(narrative(a), ML, doc.y + 6, {width: CW});
+    }
+
+    doc.addPage(); doc.y = 48;
+    sectionBar(doc, `${input.analyses.length + 1}. ДАНСНУУДЫН ХОЛБООС`);
+    pdfRows(doc, ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
+      [130, 95, 48, 82, 82, 78], input.mutualRelations.slice(0, 60).map((r) => [
+        r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
+      ]));
+    sectionBar(doc, "ШУУД МӨНГӨН УРСГАЛ");
+    pdfRows(doc, ["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"], [185, 185, 55, 90],
+      input.transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
+
+    doc.addPage(); doc.y = 48;
+    sectionBar(doc, `${input.analyses.length + 2}. МӨРДӨГЧИЙН ДҮГНЭЛТ`);
+    const conclusionFor = (id: number | null) => input.conclusions.find((c) => c.bankAccountId === id)?.text?.trim();
+    for (const a of input.analyses) {
+      doc.fontSize(10).fillColor(DARK_BLUE).text(`Данс ${a.accountNumber}`, ML, doc.y + 8);
+      doc.fontSize(9).fillColor(INK).text(conclusionFor(a.accountId) || "Дүгнэлт бичигдээгүй.", ML, doc.y + 5, {width: CW});
+      doc.y += 10;
+    }
+    doc.fontSize(10).fillColor(DARK_BLUE).text("Холбоосын дүгнэлт", ML, doc.y + 8);
+    doc.fontSize(9).fillColor(INK).text(conclusionFor(null) || "Дүгнэлт бичигдээгүй.", ML, doc.y + 5, {width: CW});
+    drawFooters(doc); doc.end(); return done;
+  }
+}
+
+function pdfKv(doc: PDFKit.PDFDocument, rows: [string, string][]): void {
+  for (const [label, value] of rows) {
+    doc.fontSize(9).fillColor(MUTED).text(label, ML, doc.y, {width: 140, continued: false});
+    doc.fillColor(INK).text(value, ML + 145, doc.y - 10.5, {width: CW - 145});
+    doc.y += 5;
+  }
+  doc.y += 4;
+}
+
+function pdfRows(doc: PDFKit.PDFDocument, heads: string[], widths: number[], rows: string[][]): void {
+  const cols: LedgerCol[] = []; let x = ML;
+  heads.forEach((label, i) => { cols.push({label, x, w: widths[i], align: i > 1 && /Гүйлгээ|Орлого|Зарлага|Дүн|Зөрүү/.test(label) ? "right" : "left"}); x += widths[i]; });
+  drawTableHead(doc, cols);
+  if (!rows.length) { doc.fontSize(8.5).fillColor(MUTED).text("Мэдээлэл алга", ML + 6, doc.y); doc.y += 16; return; }
+  rows.forEach((row, i) => { const y = ensureRow(doc, cols); if (i % 2) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA); row.forEach((v, n) => cell(doc, v, cols[n], y, n > 1 ? MUTED : INK)); doc.y = y + 13; });
+}
+
+function pdfBuckets(doc: PDFKit.PDFDocument, title: string, buckets: import("./accountAnalysisService").ActivityBucket[]): void {
+  const active = buckets.filter((b) => b.count > 0); const max = Math.max(1, ...active.map((b) => b.count));
+  doc.fontSize(9).fillColor(DARK_BLUE).text(title, ML, doc.y + 5); doc.y += 5;
+  for (const b of active.slice(0, 24)) { if (doc.y > doc.page.height - 60) { doc.addPage(); doc.y = 48; }
+    const y = doc.y; doc.fontSize(7.5).fillColor(MUTED).text(b.label, ML, y, {width: 58, lineBreak: false});
+    doc.rect(ML + 62, y + 1, 360 * b.count / max, 7).fill(ACCENT_CYAN);
+    doc.fillColor(INK).text(`${num(b.count)} · ${mnt(b.creditTotal + b.debitTotal)}`, ML + 430, y, {width: 85, align: "right", lineBreak: false}); doc.y = y + 11;
+  }
+  if (!active.length) { doc.fontSize(8).fillColor(MUTED).text("Мэдээлэл алга", ML + 62, doc.y); doc.y += 13; }
 }
 
 function num(n: number): string {
