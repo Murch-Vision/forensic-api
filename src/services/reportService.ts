@@ -770,7 +770,7 @@ export class ReportService {
         ["Орлого, зарлагын зөрүү", mnt(a.netTotal)],
         ["Шөнийн гүйлгээ", a.hasTimeOfDay ? `${num(a.nightCount)} · ${mnt(a.nightTotal)}` : "Хуулганд цагийн мэдээлэл байхгүй"],
       ]);
-      sectionBar(doc, "ХАРИЛЦСАН ДАНСНУУД");
+      sectionBar(doc, "ХАРИЛЦСАН ТАЛУУДЫН ГҮЙЛГЭЭ");
       doc.fontSize(8.5).fillColor(MUTED).text(
         `Эх данс: ${a.accountNumber}  ·  Эзэмшигч: ${a.ownerName || "Тодорхойгүй"}`,
         ML, doc.y, {width: CW});
