@@ -815,7 +815,7 @@ export class ReportService {
       pdfNumberedFindings(doc, accountFindings(a));
       const written = conclusionFor(a.accountId);
       if (written) {
-        doc.fontSize(8.5).fillColor(MUTED).text("Мөрдөгчийн тэмдэглэл",
+        doc.fontSize(9.5).fillColor(MUTED).text("Мөрдөгчийн тэмдэглэл",
           ML, doc.y + 3);
         pdfConclusionText(doc, written);
       }
@@ -827,7 +827,7 @@ export class ReportService {
     pdfNumberedFindings(doc, generalFindings(input));
     const generalWritten = conclusionFor(null);
     if (generalWritten) {
-      doc.fontSize(8.5).fillColor(MUTED).text("Мөрдөгчийн ерөнхий тэмдэглэл",
+      doc.fontSize(9.5).fillColor(MUTED).text("Мөрдөгчийн ерөнхий тэмдэглэл",
         ML, doc.y + 3);
       pdfConclusionText(doc, generalWritten);
     }
@@ -860,21 +860,21 @@ export class ReportService {
 }
 
 function pdfConclusionHeading(doc: PDFKit.PDFDocument, text: string): void {
-  if (doc.y > doc.page.height - 100) { doc.addPage(); doc.y = 48; }
-  doc.fontSize(10).fillColor(DARK_BLUE).text(text, ML, doc.y + 8,
+  if (doc.y > doc.page.height - 115) { doc.addPage(); doc.y = 48; }
+  doc.fontSize(11.5).fillColor(DARK_BLUE).text(text, ML, doc.y + 9,
     {width: CW});
-  doc.y += 5;
+  doc.y += 7;
 }
 
 function pdfConclusionText(doc: PDFKit.PDFDocument, text: string): void {
-  doc.fontSize(9).fillColor(INK).text(text, ML, doc.y + 3,
-    {width: CW, lineGap: 2});
-  doc.y += 8;
+  doc.fontSize(10.5).fillColor(INK).text(text, ML, doc.y + 4,
+    {width: CW, lineGap: 3});
+  doc.y += 10;
 }
 
 function pdfNumberedFindings(doc: PDFKit.PDFDocument, findings: string[]): void {
   findings.forEach((finding, index) => {
-    if (doc.y > doc.page.height - 85) { doc.addPage(); doc.y = 48; }
+    if (doc.y > doc.page.height - 105) { doc.addPage(); doc.y = 48; }
     pdfConclusionText(doc, `${index + 1}. ${finding}`);
   });
 }
