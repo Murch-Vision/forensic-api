@@ -770,9 +770,10 @@ export class ReportService {
         ["Орлого, зарлагын зөрүү", mnt(a.netTotal)],
         ["Шөнийн гүйлгээ", a.hasTimeOfDay ? `${num(a.nightCount)} · ${mnt(a.nightTotal)}` : "Хуулганд цагийн мэдээлэл байхгүй"],
       ]);
-      sectionBar(doc, "ХАРИЛЦСАН ТАЛУУДЫН ГҮЙЛГЭЭ");
+      sectionBar(doc, "ГҮЙЛГЭЭНИЙ ДАВТАМЖААР ТОП 15 ХАРИЛЦСАН ТАЛ");
       doc.fontSize(8.5).fillColor(MUTED).text(
-        `Эх данс: ${a.accountNumber}  ·  Эзэмшигч: ${a.ownerName || "Тодорхойгүй"}`,
+        `Гүйлгээний тоогоор буурахаар эрэмбэлсэн · Эх данс: `
+          + `${a.accountNumber} · Эзэмшигч: ${a.ownerName || "Тодорхойгүй"}`,
         ML, doc.y, {width: CW});
       doc.y += 7;
       pdfRows(doc, ["Эх данс", "Харилцсан данс", "Харилцсан тал", "Гүйлгээ", "Орлого", "Зарлага"],
@@ -841,7 +842,8 @@ export class ReportService {
         String(index + 1),
         `${analysis.ownerName || "Эзэмшигч тодорхойгүй"}\n`
           + `Данс: ${analysis.accountNumber}\n`
-          + "Хуулгын нэгтгэл, харилцсан талуудын гүйлгээ, өндөр дүнтэй харилцаа, цаг/өдөр/сарын идэвхжил",
+          + "Хуулгын нэгтгэл, гүйлгээний давтамжаар топ 15 харилцсан тал, "
+          + "өндөр дүнтэй харилцаа, цаг/өдөр/сарын идэвхжил",
         `${pageRange(accountPageRanges[index].start,
           accountPageRanges[index].end)}-р хуудас`,
       ]),
