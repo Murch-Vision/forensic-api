@@ -933,7 +933,7 @@ function accountFindings(a: AccountAnalysis): string[] {
         + `${mnt(hour.creditTotal + hour.debitTotal)}-ийн хөдөлгөөн бүртгэгдсэн.`
       : "Хуулганд цагийн мэдээлэлгүй тул цагийн идэвхжилийг тооцоогүй.",
     weekday
-      ? `${weekday.label} өдөр хамгийн олон буюу ${num(weekday.count)} гүйлгээ, `
+      ? `${weekday.label} гаригт хамгийн олон буюу ${num(weekday.count)} гүйлгээ, `
         + `${mnt(weekday.creditTotal + weekday.debitTotal)}-ийн хөдөлгөөн бүртгэгдсэн.`
       : "Өдрийн идэвхжилийг тодорхойлох мэдээлэл алга.",
     month
@@ -1199,7 +1199,7 @@ function narrative(a: AccountAnalysis): string {
   if (a.peakMonth) {
     parts.push(`Мөнгөн урсгал ${a.peakMonth} сард хамгийн идэвхтэй байна`);
   }
-  if (a.peakWeekday) parts.push(`${a.peakWeekday} гарагт идэвхжинэ`);
+  if (a.peakWeekday) parts.push(`${a.peakWeekday} гаригт идэвхжинэ`);
   if (a.hasTimeOfDay && a.peakHour) {
     parts.push(`${a.peakHour} цагт идэвхжинэ`);
   }
