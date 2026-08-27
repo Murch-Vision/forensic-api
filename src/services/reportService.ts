@@ -251,13 +251,17 @@ export class ReportService {
   // passes the active case's suspect and transaction ids as the report scope.
   async generateMarkedSuspectsPdf(
     minAmount = 0,
-    scope: {suspectIds?: number[]; transactionIds?: number[]} = {}
+    scope: {
+      suspectIds?: number[]; accountIds?: number[]; transactionIds?: number[];
+    } = {}
   ): Promise<Buffer> {
     const everyone = await this.db.getSuspectsWithRelations();
     const suspectIds = scope.suspectIds
       ? new Set(scope.suspectIds) : new Set(everyone.map((s) => s.id));
     const transactionIds = scope.transactionIds
       ? new Set(scope.transactionIds) : null;
+    const reportAccountIds = scope.accountIds
+      ? new Set(scope.accountIds) : null;
 
     // A transaction qualifies when the counterparty has a bank account number
     // (anyone, not just marked suspects) and the amount clears the threshold.
@@ -314,8 +318,12 @@ export class ReportService {
 
     // The threshold exists to remove noise from BOTH the ledger and its people
     // summary. Never emit a zero-transaction person or an empty person section.
-    const candidates = everyone.filter((s) => suspectIds.has(s.id)
-      && (bySuspect.get(s.id)?.length ?? 0) > 0);
+    const candidates = everyone
+      .filter((s) => suspectIds.has(s.id)
+        && (bySuspect.get(s.id)?.length ?? 0) > 0)
+      .map((s) => ({...s, bankAccounts: reportAccountIds
+        ? s.bankAccounts.filter((account) => reportAccountIds.has(account.id))
+        : s.bankAccounts}));
     if (candidates.length === 0) {
       throw new Error(minAmount > 0
         ? "Сонгосон босгоос дээш гүйлгээтэй сэжигтэн алга."

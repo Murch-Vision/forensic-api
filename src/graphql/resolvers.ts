@@ -668,11 +668,20 @@ export const resolvers = {
     reportMarkedSuspectsPdf: async (
       _p: unknown, a: {minAmount?: number}, c: GraphQLContext
     ) => {
-      const [scope, txns] = await Promise.all([
-        caseScope(c), scopedTransactions(c, false),
+      const [accounts, txns] = await Promise.all([
+        scopedAccounts(c), scopedTransactions(c, false),
       ]);
+      // Statement accounts are the accounts that own imported transaction
+      // rows. Counterparty-only accounts must stay ledger details, never grow
+      // into hundreds of report subjects/sections.
+      const transactionAccountIds = new Set(txns.map((t) => t.bankAccountId));
+      const statementAccounts = accounts.filter((account) =>
+        transactionAccountIds.has(account.id));
       const buf = await c.reports.generateMarkedSuspectsPdf(a.minAmount ?? 0, {
-        suspectIds: scope ? [...scope.suspectIds] : undefined,
+        suspectIds: [...new Set(statementAccounts
+          .map((account) => account.suspectId)
+          .filter((id): id is number => id != null))],
+        accountIds: statementAccounts.map((account) => account.id),
         transactionIds: txns.map((t) => t.id),
       });
       const filename = "Suspects-Transactions.pdf";
