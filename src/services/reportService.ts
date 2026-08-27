@@ -1351,11 +1351,12 @@ function sectionBar(doc: PDFKit.PDFDocument, title: string): void {
 function majorSectionBar(doc: PDFKit.PDFDocument, title: string): void {
   if (doc.y > doc.page.height - 120) { doc.addPage(); doc.y = 48; }
   const y = doc.y + 6;
-  doc.roundedRect(ML, y, CW, 34, 4).fill(DARK_BLUE);
-  doc.rect(ML, y, 7, 34).fill(ACCENT_CYAN);
-  doc.fillColor("#FFFFFF").fontSize(15)
-    .text(title, ML + 18, y + 8, {lineBreak: false});
-  doc.y = y + 47;
+  doc.rect(ML, y, 5, 20).fill(ACCENT_CYAN);
+  doc.fillColor(DARK_BLUE).fontSize(14)
+    .text(title, ML + 14, y + 1, {lineBreak: false});
+  doc.moveTo(ML, y + 28).lineTo(ML + CW, y + 28)
+    .lineWidth(0.8).strokeColor("#B8C6D4").stroke();
+  doc.y = y + 37;
   doc.fillColor(INK);
 }
 
@@ -1363,15 +1364,17 @@ function accountSectionBar(
   doc: PDFKit.PDFDocument, label: string, title: string
 ): void {
   if (doc.y > doc.page.height - 120) { doc.addPage(); doc.y = 48; }
-  const y = doc.y + 6;
-  doc.roundedRect(ML, y, CW, 38, 5).fill("#E8F1F8");
-  doc.roundedRect(ML + 8, y + 7, 48, 24, 3).fill(ACCENT_CYAN);
+  const y = doc.y + 5;
+  doc.roundedRect(ML, y + 1, 34, 18, 3).fill("#DDF5F8");
+  doc.fillColor("#007F90").fontSize(9.5)
+    .text(label, ML + 3, y + 5,
+      {width: 28, align: "center", lineBreak: false});
   doc.fillColor(DARK_BLUE).fontSize(10.5)
-    .text(label, ML + 12, y + 13, {width: 40, align: "center", lineBreak: false});
-  doc.fillColor(DARK_BLUE).fontSize(11.5)
-    .text(title, ML + 68, y + 11, {width: CW - 80, lineBreak: false,
+    .text(title, ML + 45, y + 4, {width: CW - 45, lineBreak: false,
       ellipsis: true});
-  doc.y = y + 49;
+  doc.moveTo(ML, y + 25).lineTo(ML + CW, y + 25)
+    .lineWidth(0.6).strokeColor("#D7E0E8").stroke();
+  doc.y = y + 33;
   doc.fillColor(INK);
 }
 
