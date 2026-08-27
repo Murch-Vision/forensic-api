@@ -761,7 +761,7 @@ export class ReportService {
     for (const [index, a] of input.analyses.entries()) {
       doc.addPage(); doc.y = 48;
       const accountStartPage = doc.bufferedPageRange().count;
-      majorSectionBar(doc, `${index + 1}. ДАНС ${a.accountNumber}`);
+      accountSectionBar(doc, `${index + 1}. ДАНС`, a.accountNumber);
       doc.fontSize(11).fillColor(DARK_BLUE).text(a.ownerName || "Эзэмшигч тодорхойгүй", ML, doc.y);
       doc.y += 18;
       pdfKv(doc, [
@@ -1335,23 +1335,39 @@ function sectionBar(doc: PDFKit.PDFDocument, title: string): void {
     doc.addPage();
     doc.y = 48;
   }
-  const y = doc.y + 6;
-  doc.rect(ML, y, 4, 13).fill(ACCENT_CYAN);
-  doc.fillColor(DARK_BLUE).fontSize(12)
-    .text(title, ML + 10, y - 1, {lineBreak: false});
-  doc.y = y + 22;
+  const y = doc.y + 8;
+  doc.fillColor(DARK_BLUE).fontSize(10.5)
+    .text(title, ML, y, {lineBreak: false});
+  const titleWidth = Math.min(CW, doc.widthOfString(title));
+  doc.moveTo(ML, y + 16).lineTo(ML + Math.max(42, titleWidth), y + 16)
+    .lineWidth(2).strokeColor(ACCENT_CYAN).stroke();
+  doc.y = y + 25;
   doc.fillColor(INK);
 }
 
 function majorSectionBar(doc: PDFKit.PDFDocument, title: string): void {
   if (doc.y > doc.page.height - 120) { doc.addPage(); doc.y = 48; }
-  const y = doc.y + 7;
-  doc.rect(ML, y, 6, 18).fill(ACCENT_CYAN);
+  const y = doc.y + 6;
+  doc.roundedRect(ML, y, CW, 34, 4).fill(DARK_BLUE);
+  doc.rect(ML, y, 7, 34).fill(ACCENT_CYAN);
+  doc.fillColor("#FFFFFF").fontSize(15)
+    .text(title, ML + 18, y + 8, {lineBreak: false});
+  doc.y = y + 47;
+  doc.fillColor(INK);
+}
+
+function accountSectionBar(
+  doc: PDFKit.PDFDocument, label: string, accountNumber: string
+): void {
+  if (doc.y > doc.page.height - 120) { doc.addPage(); doc.y = 48; }
+  const y = doc.y + 6;
+  doc.roundedRect(ML, y, CW, 38, 5).fill("#E8F1F8");
+  doc.roundedRect(ML + 8, y + 7, 72, 24, 3).fill(ACCENT_CYAN);
+  doc.fillColor(DARK_BLUE).fontSize(10.5)
+    .text(label, ML + 15, y + 13, {width: 58, align: "center", lineBreak: false});
   doc.fillColor(DARK_BLUE).fontSize(15)
-    .text(title, ML + 14, y - 2, {lineBreak: false});
-  doc.moveTo(ML, y + 24).lineTo(ML + CW, y + 24).lineWidth(1)
-    .strokeColor("#B8C6D4").stroke();
-  doc.y = y + 33;
+    .text(accountNumber, ML + 94, y + 10, {width: CW - 108, lineBreak: false});
+  doc.y = y + 49;
   doc.fillColor(INK);
 }
 
