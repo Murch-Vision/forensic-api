@@ -246,30 +246,23 @@ export class ReportService {
     return done;
   }
 
-  // Account-inspection report (Mongolian). Every transaction counted here has
-  // a marked suspect on one side of it — the report is about the suspects and
-  // who they moved money with, never the case at large. Scope by threshold:
-  //   minAmount = 0  → the people flagged UNDER_INVESTIGATION.
-  //   minAmount > 0  → the flagged people PLUS whoever they transacted with
-  //                    at/above the threshold, flagged or not.
-  // Both sides are counted because statements are imported for a handful of
-  // account holders, so a suspect's counterparties only ever appear as a
-  // counterparty string on someone else's statement. Ordered by time.
-  async generateMarkedSuspectsPdf(minAmount = 0): Promise<Buffer> {
+  // Main-subject report: one section for every person whose own bank statement
+  // was imported. Suspect status is deliberately irrelevant — imported account
+  // ownership is the evidence that makes someone a main person in this report.
+  async generateMarkedSuspectsPdf(
+    minAmount = 0, allowedSuspectIds?: number[]
+  ): Promise<Buffer> {
     const everyone = await this.db.getSuspectsWithRelations();
-    const isMarked = (s: {status: string}) =>
-      s.status === "UNDER_INVESTIGATION";
-    const markedIds = new Set(everyone.filter(isMarked).map((s) => s.id));
-
-    // A transaction qualifies when the counterparty has a bank account number
-    // (anyone, not just marked suspects) and the amount clears the threshold.
+    // Missing counterparty details do not remove an imported statement row.
     const qualifies = (t: BankTransaction): boolean =>
-      t.amount >= minAmount
-      && !!(t.counterpartyAccount && t.counterpartyAccount.trim());
+      t.amount >= minAmount;
 
     // One pass over the ledger instead of a query per subject — with no
     // threshold the candidate set is small, but above one it is everybody.
     const accounts = await this.db.getAllBankAccounts();
+    const allTransactions = await this.db.getAllTransactions();
+    const statementAccountIds = new Set(allTransactions
+      .map((t) => t.bankAccountId));
     const suspectByAccount = new Map<number, number>();
     const byAccountNumber = new Map<string, BankAccount>();
     const accountById = new Map<number, BankAccount>();
@@ -279,6 +272,9 @@ export class ReportService {
       const num = a.accountNumber?.trim();
       if (num) byAccountNumber.set(num, a);
     }
+    const statementOwnerIds = new Set(accounts
+      .filter((a) => statementAccountIds.has(a.id) && a.suspectId != null)
+      .map((a) => a.suspectId as number));
 
     // A transaction has TWO parties, and only one of them owns the statement
     // it was imported from. Attributing it to the account holder alone caps the
@@ -291,19 +287,11 @@ export class ReportService {
       list.push(t);
       bySuspect.set(sid, list);
     };
-    for (const t of await this.db.getAllTransactions()) {
+    for (const t of allTransactions) {
       if (!qualifies(t)) continue;
       const holderSid = suspectByAccount.get(t.bankAccountId);
       const cpAccount = byAccountNumber.get((t.counterpartyAccount ?? "").trim());
       const cpSid = cpAccount?.suspectId ?? undefined;
-
-      // Only money that a suspect actually touched. Without this the report
-      // fills up with people who merely transact with each other and have no
-      // connection to the investigation.
-      const touchesSuspect =
-        (holderSid != null && markedIds.has(holderSid))
-        || (cpSid != null && markedIds.has(cpSid));
-      if (!touchesSuspect) continue;
 
       add(holderSid, t);
 
@@ -321,13 +309,13 @@ export class ReportService {
       });
     }
 
-    // ONLY the flagged suspects get a section. Their counterparties are already
-    // named on every ledger row — giving each one its own section as well was
-    // hundreds of pages of noise.
-    const candidates = everyone.filter(isMarked);
+    // Counterparties stay in the ledger; only imported statement owners get a
+    // full person section, keeping the report centred on the source data.
+    const allowed = allowedSuspectIds ? new Set(allowedSuspectIds) : null;
+    const candidates = everyone.filter((s) => statementOwnerIds.has(s.id)
+      && (!allowed || allowed.has(s.id)));
     if (candidates.length === 0) {
-      throw new Error(
-        "Тэмдэглэсэн сэжигтэн алга. Эхлээд хүнийг сэжигтэн болгож тэмдэглэнэ үү.");
+      throw new Error("Энэ хэрэгт тайлан гаргах банкны хуулга импортлоогүй байна.");
     }
 
     const blocks = candidates.map((s) => {
@@ -343,7 +331,7 @@ export class ReportService {
       || a.suspect.fullName.localeCompare(b.suspect.fullName));
 
     const {doc, done} = startDoc();
-    formalHeader(doc, "Дансанд үзлэг хийсэн тухай тайлан");
+    formalHeader(doc, "Импортолсон өгөгдлийн гол хүмүүсийн тайлан");
 
     // Report-level totals line (count + overall date span + threshold).
     const totalTxns = blocks.reduce((a, b) => a + b.txns.length, 0);
@@ -353,16 +341,16 @@ export class ReportService {
       : "—";
     const thresholdNote = minAmount > 0 ? `      Босго: ≥ ${mnt(minAmount)}` : "";
     doc.fontSize(9.5).fillColor(INK).text(
-      `Тэмдэглэсэн сэжигтэн: ${blocks.length}      ` +
+      `Гол хүн: ${blocks.length}      ` +
       `Нийт гүйлгээ: ${totalTxns}      Хугацаа: ${span}${thresholdNote}`,
       ML, doc.y, {width: CW, align: "center", lineBreak: false});
     doc.y += 20;
 
     // Cover breakdown table (no combined cards, no net — per request). Now
     // carries a bank-account count column.
-    sectionBar(doc, `СЭЖИГТНҮҮД (${blocks.length})`);
+    sectionBar(doc, `ГОЛ ХҮМҮҮС (${blocks.length})`);
     const summaryCols: LedgerCol[] = [
-      {label: "Сэжигтэн", x: 40, w: 128, align: "left"},
+      {label: "Гол хүн", x: 40, w: 128, align: "left"},
       {label: "Данс", x: 168, w: 34, align: "right"},
       {label: "Гүйлгээ", x: 202, w: 40, align: "right"},
       {label: "Эхэлсэн", x: 242, w: 70, align: "left"},
