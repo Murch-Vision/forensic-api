@@ -613,9 +613,10 @@ export const resolvers = {
         transfers: directTransfers(accounts, txns),
         conclusions,
       });
-      await c.audit.record("Report.Generated", `File:Tailan-${active.caseId}.docx`);
+      await c.audit.record("Report.Generated",
+        `File:Dansnii-Dun-Shinjilgee-${active.caseId}.docx`);
       return {
-        filename: `Tailan-${active.caseId}.docx`
+        filename: `Dansnii-Dun-Shinjilgee-${active.caseId}.docx`
           .replace(/[^A-Za-z0-9._-]/g, "-"),
         mimeType: "application/vnd.openxmlformats-officedocument."
           + "wordprocessingml.document",
