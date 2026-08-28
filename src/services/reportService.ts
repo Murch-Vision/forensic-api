@@ -577,20 +577,11 @@ export class ReportService {
     // Keep the Word export aligned with generateVerdictPdf. Everything is
     // native Word text/tables so investigators can edit it; no PDF footer,
     // workstation label, timestamp, or screenshot is embedded.
-    children.push(verdictTitle("ТАЙЛАН"));
-    children.push(kvTable([
-      ["Хэрэг", `${input.caseId} · ${input.caseName}`],
-      ["Хамрах хугацаа", input.period.from && input.period.to
-        ? `${formatDateLike(input.period.from)} — `
-          + formatDateLike(input.period.to)
-        : "—"],
-    ]));
+    children.push(...verdictFormalHeader(input.caseId, input.caseName,
+      input.period));
     children.push(verdictMajorHeading("ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ"));
-    children.push(gridTable(["№", "Данс", "Эзэмшигч"], analyses.map((a, i) => [
-      String(i + 1), a.accountNumber,
-      a.ownerName || "Эзэмшигч тодорхойгүй",
-    ]), [1, 6, 8]));
-    children.push(verdictMajorHeading("АГУУЛГА"));
+    children.push(accountCardsTable(analyses));
+    children.push(verdictMajorHeading("ДАНСНЫ ДҮН ШИНЖИЛГЭЭНИЙ АГУУЛГА"));
     children.push(gridTable(["№", "Бүлэг"], [
       ["1", "Дансны дүн шинжилгээ"],
       ...analyses.map((a, i) => [`1.${i + 1}`,
@@ -1233,32 +1224,164 @@ function gridTable(
 function verdictTitle(text: string): Paragraph {
   return new Paragraph({
     alignment: AlignmentType.CENTER,
-    spacing: {before: 120, after: 280},
-    border: {bottom: {style: BorderStyle.SINGLE, size: 18,
-      color: DOCX_NAVY}},
-    children: [new TextRun({text, bold: true, size: 38,
+    spacing: {before: 80, after: 220},
+    children: [new TextRun({text, bold: true, size: 34,
       color: DOCX_NAVY_DARK, font: "Arial"})],
+  });
+}
+
+function noBorders(): {
+  top: {style: typeof BorderStyle.NONE; size: number; color: string};
+  bottom: {style: typeof BorderStyle.NONE; size: number; color: string};
+  left: {style: typeof BorderStyle.NONE; size: number; color: string};
+  right: {style: typeof BorderStyle.NONE; size: number; color: string};
+  insideHorizontal: {style: typeof BorderStyle.NONE; size: number;
+    color: string};
+  insideVertical: {style: typeof BorderStyle.NONE; size: number;
+    color: string};
+} {
+  const edge = {style: BorderStyle.NONE, size: 0, color: "FFFFFF"};
+  return {top: edge, bottom: edge, left: edge, right: edge,
+    insideHorizontal: edge, insideVertical: edge};
+}
+
+function plainCell(text: string, width: number,
+  align: typeof AlignmentType[keyof typeof AlignmentType] = AlignmentType.LEFT,
+  color = DOCX_INK, bold = false): TableCell {
+  return new TableCell({
+    width: {size: width, type: WidthType.DXA},
+    margins: {top: 25, bottom: 25, left: 0, right: 0},
+    borders: noBorders(),
+    children: [new Paragraph({
+      alignment: align,
+      spacing: {before: 0, after: 0, line: 230},
+      children: [new TextRun({text, color, bold, size: 19,
+        font: "Arial"})],
+    })],
+  });
+}
+
+function verdictFormalHeader(caseId: string, caseName: string,
+  period: {from: string | null; to: string | null}): (Paragraph | Table)[] {
+  const [dateLine1, dateLine2] = mnDateLines(new Date().toISOString());
+  const thirds = widthsFor([1, 1, 1]);
+  const header = new Table({
+    width: {size: 100, type: WidthType.PERCENTAGE},
+    layout: TableLayoutType.FIXED,
+    columnWidths: thirds,
+    borders: noBorders(),
+    rows: [new TableRow({children: [
+      plainCell(`${dateLine1}\n${dateLine2}`, thirds[0]),
+      plainCell("Дугаар .......", thirds[1], AlignmentType.CENTER),
+      plainCell("Улаанбаатар\nхот", thirds[2], AlignmentType.RIGHT),
+    ]})],
+  });
+  const divider = new Paragraph({
+    spacing: {before: 70, after: 150},
+    border: {bottom: {style: BorderStyle.SINGLE, size: 8,
+      color: DOCX_NAVY_DARK}},
+  });
+  const metaWidths = widthsFor([3, 7]);
+  const meta = new Table({
+    width: {size: 100, type: WidthType.PERCENTAGE},
+    layout: TableLayoutType.FIXED,
+    columnWidths: metaWidths,
+    borders: noBorders(),
+    rows: [
+      new TableRow({children: [
+        plainCell("Хэрэг", metaWidths[0], AlignmentType.LEFT, DOCX_MUTED),
+        plainCell(`${caseId} · ${caseName}`, metaWidths[1]),
+      ]}),
+      new TableRow({children: [
+        plainCell("Хамрах хугацаа", metaWidths[0], AlignmentType.LEFT,
+          DOCX_MUTED),
+        plainCell(period.from && period.to
+          ? `${formatDateLike(period.from)} — ${formatDateLike(period.to)}`
+          : "—", metaWidths[1]),
+      ]}),
+    ],
+  });
+  return [verdictTitle("Тайлан"), header, divider, meta];
+}
+
+function accountCardsTable(analyses: AccountAnalysis[]): Table {
+  const gap = 240;
+  const cardWidth = Math.floor((PAGE_DXA - gap) / 2);
+  const widths = [cardWidth, gap, cardWidth];
+  const rows: TableRow[] = [];
+  for (let index = 0; index < analyses.length; index += 2) {
+    const cards = [analyses[index], analyses[index + 1]];
+    const cardCell = (a: AccountAnalysis | undefined,
+      cardIndex: number): TableCell => {
+      if (!a) return plainCell("", cardWidth);
+      return new TableCell({
+        width: {size: cardWidth, type: WidthType.DXA},
+        verticalAlign: VerticalAlign.CENTER,
+        margins: {top: 105, bottom: 105, left: 150, right: 130},
+        shading: {fill: DOCX_PALE_BLUE},
+        borders: {
+          ...noBorders(),
+          left: {style: BorderStyle.SINGLE, size: 24, color: "00B8D0"},
+        },
+        children: [
+          new Paragraph({
+            spacing: {before: 0, after: 55},
+            children: [
+              new TextRun({text: `${cardIndex + 1}. ДАНС`, size: 16,
+                color: DOCX_MUTED, font: "Arial"}),
+              new TextRun({text: `     ${a.accountNumber}`, size: 17,
+                bold: true, color: DOCX_NAVY_DARK, font: "Arial"}),
+            ],
+          }),
+          new Paragraph({
+            spacing: {before: 0, after: 0},
+            children: [new TextRun({
+              text: a.ownerName || "Эзэмшигч тодорхойгүй",
+              size: 18, color: DOCX_INK, font: "Arial",
+            })],
+          }),
+        ],
+      });
+    };
+    rows.push(new TableRow({
+      cantSplit: true,
+      children: [cardCell(cards[0], index), plainCell("", gap),
+        cardCell(cards[1], index + 1)],
+    }));
+  }
+  if (!rows.length) {
+    rows.push(new TableRow({children: [plainCell("Мэдээлэл алга",
+      cardWidth), plainCell("", gap), plainCell("", cardWidth)]}));
+  }
+  return new Table({
+    width: {size: 100, type: WidthType.PERCENTAGE},
+    layout: TableLayoutType.FIXED,
+    columnWidths: widths,
+    borders: noBorders(),
+    rows,
   });
 }
 
 function verdictMajorHeading(text: string): Paragraph {
   return new Paragraph({
     keepNext: true,
-    shading: {fill: DOCX_NAVY},
     spacing: {before: 300, after: 130},
-    indent: {left: 140, right: 100},
+    border: {bottom: {style: BorderStyle.SINGLE, size: 14,
+      color: "00B8D0"}},
     children: [new TextRun({text, bold: true, size: 24,
-      color: "FFFFFF", font: "Arial"})],
+      color: DOCX_NAVY_DARK, font: "Arial"})],
   });
 }
 
 function verdictAccountHeading(text: string): Paragraph {
   return new Paragraph({
     keepNext: true,
+    shading: {fill: DOCX_PALE_BLUE},
     spacing: {before: 240, after: 120},
-    border: {bottom: {style: BorderStyle.SINGLE, size: 8,
-      color: DOCX_NAVY}},
-    children: [new TextRun({text, bold: true, size: 23,
+    indent: {left: 130, right: 80},
+    border: {left: {style: BorderStyle.SINGLE, size: 20,
+      color: "00B8D0"}},
+    children: [new TextRun({text, bold: true, size: 22,
       color: DOCX_NAVY_DARK, font: "Arial"})],
   });
 }
