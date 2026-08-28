@@ -17,6 +17,7 @@ import {
   BorderStyle,
   Document,
   HeadingLevel,
+  HeightRule,
   Packer,
   PageBreak,
   Paragraph,
@@ -1438,25 +1439,26 @@ function bucketTable(title: string, buckets: {
     // Apple Pages expands nested Word tables into giant rows and can hide the
     // shaded bar entirely. A short run of editable block glyphs is stable in
     // Word, Pages and LibreOffice while preserving the PDF-style bar chart.
-    const barLength = Math.max(1, Math.round(34 * b.count / max));
+    const barLength = Math.max(1, Math.round(58 * b.count / max));
     rows.push(new TableRow({
       cantSplit: true,
+      height: {value: 280, rule: HeightRule.EXACT},
       children: [
-        plainCell(b.label, widths[0], AlignmentType.LEFT, DOCX_MUTED),
+        activityCell(b.label, widths[0], AlignmentType.LEFT, DOCX_MUTED),
         new TableCell({
           width: {size: widths[1], type: WidthType.DXA},
           verticalAlign: VerticalAlign.CENTER,
           borders: noBorders(),
-          margins: {top: 12, bottom: 12, left: 0, right: 100},
+          margins: {top: 0, bottom: 0, left: 0, right: 100},
           children: [new Paragraph({
-            spacing: {before: 0, after: 0, line: 180},
+            spacing: {before: 0, after: 0, line: 120},
             children: [new TextRun({
               text: "\u2588".repeat(barLength),
-              color: "00B8D0", size: 14, font: "Arial",
+              color: "00B8D0", size: 10, font: "Arial",
             })],
           })],
         }),
-        plainCell(`${num(b.count)} · `
+        activityCell(`${num(b.count)} · `
           + mnt(b.creditTotal + b.debitTotal), widths[2],
         AlignmentType.RIGHT, DOCX_INK),
       ],
@@ -1475,6 +1477,22 @@ function bucketTable(title: string, buckets: {
     columnWidths: widths,
     borders: noBorders(),
     rows,
+  });
+}
+
+function activityCell(text: string, width: number,
+  align: typeof AlignmentType[keyof typeof AlignmentType],
+  color: string): TableCell {
+  return new TableCell({
+    width: {size: width, type: WidthType.DXA},
+    verticalAlign: VerticalAlign.CENTER,
+    margins: {top: 0, bottom: 0, left: 0, right: 0},
+    borders: noBorders(),
+    children: [new Paragraph({
+      alignment: align,
+      spacing: {before: 0, after: 0, line: 180},
+      children: [new TextRun({text, color, size: 16, font: "Arial"})],
+    })],
   });
 }
 
