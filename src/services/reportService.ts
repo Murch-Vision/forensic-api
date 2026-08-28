@@ -14,6 +14,7 @@ import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import {
   AlignmentType,
+  BorderStyle,
   Document,
   HeadingLevel,
   Packer,
@@ -24,6 +25,7 @@ import {
   TableLayoutType,
   TableRow,
   TextRun,
+  VerticalAlign,
   WidthType,
 } from "docx";
 import type {DataService} from "./dataService";
@@ -570,30 +572,25 @@ export class ReportService {
       conclusions.find((c) => c.bankAccountId === accountId)?.text?.trim()
         ?? "";
     const numbered = (findings: string[]): Paragraph[] => findings.map(
-      (finding, index) => new Paragraph({
-        spacing: {after: 100},
-        children: [new TextRun({
-          text: `${index + 1}. ${finding}`, size: 22, font: "Arial",
-        })],
-      }));
+      (finding, index) => findingParagraph(index + 1, finding));
 
     // Keep the Word export aligned with generateVerdictPdf. Everything is
     // native Word text/tables so investigators can edit it; no PDF footer,
     // workstation label, timestamp, or screenshot is embedded.
-    children.push(centered("ТАЙЛАН", 18, "000000"));
-    children.push(new Paragraph({text: ""}));
-    children.push(field("Хэрэг", `${input.caseId} · ${input.caseName}`));
-    children.push(field("Хамрах хугацаа",
-      input.period.from && input.period.to
+    children.push(verdictTitle("ТАЙЛАН"));
+    children.push(kvTable([
+      ["Хэрэг", `${input.caseId} · ${input.caseName}`],
+      ["Хамрах хугацаа", input.period.from && input.period.to
         ? `${formatDateLike(input.period.from)} — `
           + formatDateLike(input.period.to)
-        : "—"));
-    children.push(heading("ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ", 14));
+        : "—"],
+    ]));
+    children.push(verdictMajorHeading("ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ"));
     children.push(gridTable(["№", "Данс", "Эзэмшигч"], analyses.map((a, i) => [
       String(i + 1), a.accountNumber,
       a.ownerName || "Эзэмшигч тодорхойгүй",
     ]), [1, 6, 8]));
-    children.push(heading("АГУУЛГА", 14));
+    children.push(verdictMajorHeading("АГУУЛГА"));
     children.push(gridTable(["№", "Бүлэг"], [
       ["1", "Дансны дүн шинжилгээ"],
       ...analyses.map((a, i) => [`1.${i + 1}`,
@@ -605,10 +602,12 @@ export class ReportService {
     children.push(new Paragraph({children: [new PageBreak()]}));
 
     analyses.forEach((a, i) => {
-      if (i === 0) children.push(heading("1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ", 14));
-      children.push(heading(`1.${i + 1} `
+      if (i === 0) {
+        children.push(verdictMajorHeading("1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ"));
+      }
+      children.push(verdictAccountHeading(`1.${i + 1} `
         + `${a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ"} · `
-        + `${a.accountNumber} ДУГААРТАЙ ДАНС`, 13));
+        + `${a.accountNumber} ДУГААРТАЙ ДАНС`));
       children.push(kvTable([
         ["Нийт гүйлгээ", num(a.txnCount)],
         ["Харилцагч", num(a.counterpartyCount)],
@@ -623,7 +622,7 @@ export class ReportService {
         .filter((r) => r.rating.includes("Их давтамж"))
         .sort((x, y) => (y.creditTotal + y.debitTotal)
           - (x.creditTotal + x.debitTotal));
-      children.push(subheading(`ИХ ДАВТАМЖТАЙ ХАРИЛЦСАН ТАЛУУД `
+      children.push(verdictSubheading(`ИХ ДАВТАМЖТАЙ ХАРИЛЦСАН ТАЛУУД `
         + `(${frequentCounterparties.length})`));
       children.push(gridTable(
         ["Эх данс", "Харилцсан данс", "Харилцсан тал", "Гүйлгээ",
@@ -631,7 +630,7 @@ export class ReportService {
         frequentCounterparties.map((r) => [a.accountNumber,
           r.account ?? "Дугааргүй", r.name, num(r.txnCount),
           mnt(r.creditTotal), mnt(r.debitTotal)]), [5, 5, 7, 3, 5, 5]));
-      children.push(subheading("ИДЭВХЖИЛ"));
+      children.push(verdictSubheading("ИДЭВХЖИЛ"));
       if (a.hasTimeOfDay) {
         children.push(bucketTable("Цагаар", a.byHour));
       } else {
@@ -645,8 +644,8 @@ export class ReportService {
       children.push(new Paragraph({children: [new PageBreak()]}));
     });
 
-    children.push(heading("2. ДАНСНУУДЫН ХОЛБООС", 14));
-    children.push(subheading("2.1 ДУНДЫН ХАРИЛЦАГЧИД"));
+    children.push(verdictMajorHeading("2. ДАНСНУУДЫН ХОЛБООС"));
+    children.push(verdictSubheading("2.1 ДУНДЫН ХАРИЛЦАГЧИД"));
     children.push(gridTable(
       ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага",
         "Зөрүү"],
@@ -654,7 +653,7 @@ export class ReportService {
         r.name, r.account ?? "—", num(r.txnCount),
         mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
       ]), [6, 5, 2, 4, 4, 4]));
-    children.push(subheading(
+    children.push(verdictSubheading(
       "2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ"));
     children.push(gridTable(["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"],
       transfers.slice(0, 60).map((t) => [
@@ -662,34 +661,50 @@ export class ReportService {
       [7, 7, 2, 4]));
     children.push(new Paragraph({children: [new PageBreak()]}));
 
-    children.push(heading("3. ДҮГНЭЛТ", 14));
+    children.push(verdictMajorHeading("3. ДҮГНЭЛТ"));
     for (const [index, a] of analyses.entries()) {
-      children.push(subheading(`3.${index + 1} `
+      children.push(verdictAccountHeading(`3.${index + 1} `
         + `${a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ"} · `
         + `${a.accountNumber} ДУГААРТАЙ ДАНС`));
       children.push(...numbered(accountFindings(a)));
       const written = conclusionFor(a.accountId);
       if (written) {
-        children.push(subheading("Мөрдөгчийн тэмдэглэл"));
+        children.push(verdictSubheading("Мөрдөгчийн тэмдэглэл"));
         children.push(new Paragraph({children: [new TextRun({
           text: written, size: 22, font: "Arial",
         })]}));
       }
     }
-    children.push(heading(`3.${analyses.length + 1} `
-      + "ХОЛБООСЫН ДҮГНЭЛТ", 13));
+    children.push(verdictMajorHeading(`3.${analyses.length + 1} `
+      + "ХОЛБООСЫН ДҮГНЭЛТ"));
     children.push(...numbered(relationFindings(input)));
-    children.push(heading(`3.${analyses.length + 2} ЕРӨНХИЙ ДҮГНЭЛТ`, 13));
+    children.push(verdictMajorHeading(
+      `3.${analyses.length + 2} ЕРӨНХИЙ ДҮГНЭЛТ`));
     children.push(...numbered(generalFindings(input)));
     const generalWritten = conclusionFor(null);
     if (generalWritten) {
-      children.push(subheading("Мөрдөгчийн ерөнхий тэмдэглэл"));
+      children.push(verdictSubheading("Мөрдөгчийн ерөнхий тэмдэглэл"));
       children.push(new Paragraph({children: [new TextRun({
         text: generalWritten, size: 22, font: "Arial",
       })]}));
     }
 
-    const doc = new Document({sections: [{children}]});
+    const doc = new Document({
+      styles: {
+        default: {
+          document: {
+            run: {font: "Arial", size: 21, color: DOCX_INK},
+            paragraph: {spacing: {line: 276, after: 80}},
+          },
+        },
+      },
+      sections: [{
+        properties: {
+          page: {margin: {top: 900, right: 900, bottom: 900, left: 900}},
+        },
+        children,
+      }],
+    });
     return Packer.toBuffer(doc);
   }
 
@@ -1093,7 +1108,14 @@ function note(text: string): Paragraph {
 // Every table MUST declare its column widths: with only a percentage width on
 // the table, Word guesses and Pages collapses each column to a single character,
 // which turned the whole document into vertical strips of letters.
-const PAGE_DXA = 9026;
+const PAGE_DXA = 10106;
+const DOCX_NAVY = "16324F";
+const DOCX_NAVY_DARK = "0F2438";
+const DOCX_INK = "24303D";
+const DOCX_MUTED = "607080";
+const DOCX_LINE = "CBD5DF";
+const DOCX_ZEBRA = "F3F6F9";
+const DOCX_PALE_BLUE = "EAF1F8";
 
 // 600 DXA (~0.42") is the floor: below roughly a quarter inch a cell wraps a
 // two-digit number one character per line, which is what made the first draft of
@@ -1118,11 +1140,29 @@ function widthsFor(weights: number[]): number[] {
   return lifted;
 }
 
-function docxCell(text: string, dxa: number, bold = false): TableCell {
+function docxCell(text: string, dxa: number, opts: {
+  bold?: boolean;
+  fill?: string;
+  color?: string;
+  align?: typeof AlignmentType[keyof typeof AlignmentType];
+  size?: number;
+} = {}): TableCell {
   return new TableCell({
     width: {size: dxa, type: WidthType.DXA},
-    children: [new Paragraph({children: [
-      new TextRun({text, bold, size: 20, font: "Arial"})]})],
+    verticalAlign: VerticalAlign.CENTER,
+    margins: {top: 95, bottom: 95, left: 110, right: 110},
+    shading: opts.fill ? {fill: opts.fill} : undefined,
+    children: [new Paragraph({
+      alignment: opts.align,
+      spacing: {before: 0, after: 0, line: 240},
+      children: [new TextRun({
+        text,
+        bold: opts.bold,
+        size: opts.size ?? 19,
+        color: opts.color ?? DOCX_INK,
+        font: "Arial",
+      })],
+    })],
   });
 }
 
@@ -1131,14 +1171,30 @@ function table(colWidths: number[], rows: TableRow[]): Table {
     width: {size: 100, type: WidthType.PERCENTAGE},
     layout: TableLayoutType.FIXED,
     columnWidths: colWidths,
+    borders: {
+      top: {style: BorderStyle.SINGLE, size: 4, color: DOCX_LINE},
+      bottom: {style: BorderStyle.SINGLE, size: 4, color: DOCX_LINE},
+      left: {style: BorderStyle.SINGLE, size: 4, color: DOCX_LINE},
+      right: {style: BorderStyle.SINGLE, size: 4, color: DOCX_LINE},
+      insideHorizontal: {style: BorderStyle.SINGLE, size: 3,
+        color: DOCX_LINE},
+      insideVertical: {style: BorderStyle.SINGLE, size: 3,
+        color: DOCX_LINE},
+    },
     rows,
   });
 }
 
 function kvTable(rows: [string, string][]): Table {
   const w = widthsFor([4, 6]);
-  return table(w, rows.map(([k, v]) => new TableRow({
-    children: [docxCell(k, w[0], true), docxCell(v, w[1])]})));
+  return table(w, rows.map(([k, v], index) => new TableRow({
+    cantSplit: true,
+    children: [
+      docxCell(k, w[0], {bold: true, fill: DOCX_PALE_BLUE,
+        color: DOCX_NAVY_DARK}),
+      docxCell(v, w[1], {fill: index % 2 ? DOCX_ZEBRA : "FFFFFF"}),
+    ],
+  })));
 }
 
 // `weights` sizes the columns relative to each other — a name column needs far
@@ -1148,13 +1204,84 @@ function gridTable(
 ): Table {
   const w = widthsFor(weights ?? headers.map(() => 1));
   return table(w, [
-    new TableRow({children: headers.map((h, i) => docxCell(h, w[i], true))}),
+    new TableRow({
+      tableHeader: true,
+      cantSplit: true,
+      children: headers.map((h, i) => docxCell(h, w[i], {
+        bold: true, fill: DOCX_NAVY, color: "FFFFFF", size: 18,
+        align: h === "№" ? AlignmentType.CENTER : AlignmentType.LEFT,
+      })),
+    }),
     ...(rows.length > 0
-      ? rows.map((r) => new TableRow({
-        children: r.map((v, i) => docxCell(v, w[i] ?? w[0]))}))
+      ? rows.map((r, rowIndex) => new TableRow({
+        cantSplit: true,
+        children: r.map((v, i) => docxCell(v, w[i] ?? w[0], {
+          fill: rowIndex % 2 ? DOCX_ZEBRA : "FFFFFF",
+          align: headers[i] === "№"
+            ? AlignmentType.CENTER
+            : /Гүйлгээ|Орлого|Зарлага|Дүн|Зөрүү/.test(headers[i] ?? "")
+              ? AlignmentType.RIGHT : AlignmentType.LEFT,
+        })),
+      }))
       : [new TableRow({children: headers.map((_h, i) =>
-        docxCell(i === 0 ? "—" : "", w[i]))})]),
+        docxCell(i === 0 ? "Мэдээлэл алга" : "", w[i], {
+          fill: "FFFFFF", color: DOCX_MUTED,
+        }))})]),
   ]);
+}
+
+function verdictTitle(text: string): Paragraph {
+  return new Paragraph({
+    alignment: AlignmentType.CENTER,
+    spacing: {before: 120, after: 280},
+    border: {bottom: {style: BorderStyle.SINGLE, size: 18,
+      color: DOCX_NAVY}},
+    children: [new TextRun({text, bold: true, size: 38,
+      color: DOCX_NAVY_DARK, font: "Arial"})],
+  });
+}
+
+function verdictMajorHeading(text: string): Paragraph {
+  return new Paragraph({
+    keepNext: true,
+    shading: {fill: DOCX_NAVY},
+    spacing: {before: 300, after: 130},
+    indent: {left: 140, right: 100},
+    children: [new TextRun({text, bold: true, size: 24,
+      color: "FFFFFF", font: "Arial"})],
+  });
+}
+
+function verdictAccountHeading(text: string): Paragraph {
+  return new Paragraph({
+    keepNext: true,
+    spacing: {before: 240, after: 120},
+    border: {bottom: {style: BorderStyle.SINGLE, size: 8,
+      color: DOCX_NAVY}},
+    children: [new TextRun({text, bold: true, size: 23,
+      color: DOCX_NAVY_DARK, font: "Arial"})],
+  });
+}
+
+function verdictSubheading(text: string): Paragraph {
+  return new Paragraph({
+    keepNext: true,
+    spacing: {before: 230, after: 90},
+    children: [new TextRun({text, bold: true, size: 21,
+      color: DOCX_NAVY, font: "Arial"})],
+  });
+}
+
+function findingParagraph(number: number, text: string): Paragraph {
+  return new Paragraph({
+    spacing: {before: 35, after: 90, line: 276},
+    indent: {left: 360, hanging: 300},
+    children: [
+      new TextRun({text: `${number}. `, bold: true, size: 21,
+        color: DOCX_NAVY, font: "Arial"}),
+      new TextRun({text, size: 21, color: DOCX_INK, font: "Arial"}),
+    ],
+  });
 }
 
 function bucketTable(title: string, buckets: {
