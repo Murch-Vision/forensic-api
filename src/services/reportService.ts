@@ -12,12 +12,13 @@ import {createHash} from "crypto";
 import PDFDocument from "pdfkit";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
+import sharp from "sharp";
 import {
   AlignmentType,
   BorderStyle,
   Document,
   HeadingLevel,
-  HeightRule,
+  ImageRun,
   Packer,
   PageBreak,
   Paragraph,
@@ -593,7 +594,7 @@ export class ReportService {
     ], [2, 13]));
     children.push(new Paragraph({children: [new PageBreak()]}));
 
-    analyses.forEach((a, i) => {
+    for (const [i, a] of analyses.entries()) {
       if (i === 0) {
         children.push(verdictMajorHeading("1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ"));
       }
@@ -624,17 +625,17 @@ export class ReportService {
           mnt(r.creditTotal), mnt(r.debitTotal)]), [5, 5, 7, 3, 5, 5]));
       children.push(verdictSubheading("ИДЭВХЖИЛ"));
       if (a.hasTimeOfDay) {
-        children.push(bucketTable("Цагаар", a.byHour));
+        children.push(await bucketChart("Цагаар", a.byHour));
       } else {
         children.push(note("Цагийн мэдээлэлгүй тул цагийн идэвхжил "
           + "тооцоогүй."));
       }
-      children.push(bucketTable("Өдрөөр", a.byWeekday));
-      children.push(bucketTable("Сараар", a.byMonth));
+      children.push(await bucketChart("Өдрөөр", a.byWeekday));
+      children.push(await bucketChart("Сараар", a.byMonth));
       children.push(new Paragraph({children: [new TextRun({
         text: narrative(a), size: 22, font: "Arial"})]}));
       children.push(new Paragraph({children: [new PageBreak()]}));
-    });
+    }
 
     children.push(verdictMajorHeading("2. ДАНСНУУДЫН ХОЛБООС"));
     children.push(verdictSubheading("2.1 ДУНДЫН ХАРИЛЦАГЧИД"));
@@ -1416,82 +1417,39 @@ function findingParagraph(number: number, text: string): Paragraph {
   });
 }
 
-function bucketTable(title: string, buckets: {
+async function bucketChart(title: string, buckets: {
   label: string; count: number; creditTotal: number; debitTotal: number;
-}[]): Table {
+}[]): Promise<Paragraph> {
   const active = buckets.filter((b) => b.count > 0);
   const max = Math.max(1, ...active.map((b) => b.count));
-  const widths = widthsFor([2, 10, 3]);
-  const rows: TableRow[] = [new TableRow({
-    cantSplit: true,
-    children: [new TableCell({
-      columnSpan: 3,
-      borders: noBorders(),
-      margins: {top: 80, bottom: 70, left: 0, right: 0},
-      children: [new Paragraph({
-        spacing: {before: 0, after: 0},
-        children: [new TextRun({text: title, bold: true, size: 19,
-          color: DOCX_NAVY_DARK, font: "Arial"})],
-      })],
-    })],
-  })];
-  for (const b of active.slice(0, 24)) {
-    // Apple Pages expands nested Word tables into giant rows and can hide the
-    // shaded bar entirely. A short run of editable block glyphs is stable in
-    // Word, Pages and LibreOffice while preserving the PDF-style bar chart.
-    const barLength = Math.max(1, Math.round(58 * b.count / max));
-    rows.push(new TableRow({
-      cantSplit: true,
-      height: {value: 280, rule: HeightRule.EXACT},
-      children: [
-        activityCell(b.label, widths[0], AlignmentType.LEFT, DOCX_MUTED),
-        new TableCell({
-          width: {size: widths[1], type: WidthType.DXA},
-          verticalAlign: VerticalAlign.CENTER,
-          borders: noBorders(),
-          margins: {top: 0, bottom: 0, left: 0, right: 100},
-          children: [new Paragraph({
-            spacing: {before: 0, after: 0, line: 120},
-            children: [new TextRun({
-              text: "\u2588".repeat(barLength),
-              color: "00B8D0", size: 10, font: "Arial",
-            })],
-          })],
-        }),
-        activityCell(`${num(b.count)} · `
-          + mnt(b.creditTotal + b.debitTotal), widths[2],
-        AlignmentType.RIGHT, DOCX_INK),
-      ],
-    }));
-  }
-  if (!active.length) {
-    rows.push(new TableRow({children: [
-      plainCell("Мэдээлэл алга", widths[0], AlignmentType.LEFT,
-        DOCX_MUTED),
-      plainCell("", widths[1]), plainCell("", widths[2]),
-    ]}));
-  }
-  return new Table({
-    width: {size: PAGE_DXA, type: WidthType.DXA},
-    layout: TableLayoutType.FIXED,
-    columnWidths: widths,
-    borders: noBorders(),
-    rows,
-  });
-}
-
-function activityCell(text: string, width: number,
-  align: typeof AlignmentType[keyof typeof AlignmentType],
-  color: string): TableCell {
-  return new TableCell({
-    width: {size: width, type: WidthType.DXA},
-    verticalAlign: VerticalAlign.CENTER,
-    margins: {top: 0, bottom: 0, left: 0, right: 0},
-    borders: noBorders(),
-    children: [new Paragraph({
-      alignment: align,
-      spacing: {before: 0, after: 0, line: 180},
-      children: [new TextRun({text, color, size: 16, font: "Arial"})],
+  const shown = active.slice(0, 24);
+  const sourceWidth = 1312;
+  const rowHeight = 30;
+  const sourceHeight = 58 + Math.max(1, shown.length) * rowHeight;
+  const esc = (value: string): string => value.replace(/[&<>"']/g,
+    (char) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;",
+      "\"": "&quot;", "'": "&apos;"})[char] ?? char);
+  const rows = shown.length ? shown.map((b, index) => {
+    const y = 54 + index * rowHeight;
+    const barWidth = Math.max(4, Math.round(780 * b.count / max));
+    const value = `${num(b.count)} · ${mnt(b.creditTotal + b.debitTotal)}`;
+    return `<text x="0" y="${y}" class="label">${esc(b.label)}</text>`
+      + `<rect x="155" y="${y - 15}" width="${barWidth}" height="10" rx="2" fill="#00B8D0"/>`
+      + `<text x="1308" y="${y}" text-anchor="end" class="value">${esc(value)}</text>`;
+  }).join("") : `<text x="0" y="54" class="label">Мэдээлэл алга</text>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${sourceWidth}" height="${sourceHeight}" viewBox="0 0 ${sourceWidth} ${sourceHeight}">
+    <rect width="100%" height="100%" fill="#FFFFFF"/>
+    <style>text{font-family:Arial,sans-serif}.title{font-size:20px;font-weight:700;fill:#16324F}.label{font-size:17px;fill:#6B7280}.value{font-size:17px;fill:#1F2937}</style>
+    <text x="0" y="22" class="title">${esc(title)}</text>${rows}
+  </svg>`;
+  const png = await sharp(Buffer.from(svg)).png().toBuffer();
+  return new Paragraph({
+    spacing: {before: 70, after: 70},
+    children: [new ImageRun({
+      type: "png", data: png,
+      transformation: {width: 656, height: Math.round(sourceHeight / 2)},
+      altText: {title, description: `${title} гүйлгээний график`,
+        name: title},
     })],
   });
 }

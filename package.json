@@ -24,6 +24,7 @@
     "jszip": "^3.10.1",
     "knex": "^3.1.0",
     "pdfkit": "^0.19.1",
+    "sharp": "^0.35.4",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
