@@ -665,6 +665,7 @@ export class ReportService {
           text: written, size: 22, font: "Arial",
         })]}));
       }
+      children.push(new Paragraph({children: [new PageBreak()]}));
     }
     children.push(verdictMajorHeading(`3.${analyses.length + 1} `
       + "ХОЛБООСЫН ДҮГНЭЛТ"));
@@ -1348,6 +1349,13 @@ function accountCardsTable(analyses: AccountAnalysis[]): Table {
       children: [cardCell(cards[0], index), plainCell("", gap),
         cardCell(cards[1], index + 1)],
     }));
+    if (index + 2 < analyses.length) {
+      rows.push(new TableRow({
+        cantSplit: true,
+        children: [plainCell("", cardWidth), plainCell("", gap),
+          plainCell("", cardWidth)],
+      }));
+    }
   }
   if (!rows.length) {
     rows.push(new TableRow({children: [plainCell("Мэдээлэл алга",
@@ -1397,7 +1405,7 @@ function verdictSubheading(text: string): Paragraph {
 
 function findingParagraph(number: number, text: string): Paragraph {
   return new Paragraph({
-    spacing: {before: 35, after: 90, line: 276},
+    spacing: {before: 50, after: 120, line: 300},
     indent: {left: 360, hanging: 300},
     children: [
       new TextRun({text: `${number}. `, bold: true, size: 21,
@@ -1427,29 +1435,10 @@ function bucketTable(title: string, buckets: {
     })],
   })];
   for (const b of active.slice(0, 24)) {
-    const barWidth = Math.max(120, Math.round(widths[1] * b.count / max));
-    const remainder = Math.max(1, widths[1] - barWidth);
-    const bar = new Table({
-      width: {size: widths[1], type: WidthType.DXA},
-      layout: TableLayoutType.FIXED,
-      columnWidths: [barWidth, remainder],
-      borders: noBorders(),
-      rows: [new TableRow({
-        children: [
-          new TableCell({
-            width: {size: barWidth, type: WidthType.DXA},
-            shading: {fill: "00B8D0"},
-            borders: noBorders(),
-            children: [new Paragraph({text: ""})],
-          }),
-          new TableCell({
-            width: {size: remainder, type: WidthType.DXA},
-            borders: noBorders(),
-            children: [new Paragraph({text: ""})],
-          }),
-        ],
-      })],
-    });
+    // Apple Pages expands nested Word tables into giant rows and can hide the
+    // shaded bar entirely. A short run of editable block glyphs is stable in
+    // Word, Pages and LibreOffice while preserving the PDF-style bar chart.
+    const barLength = Math.max(1, Math.round(34 * b.count / max));
     rows.push(new TableRow({
       cantSplit: true,
       children: [
@@ -1458,8 +1447,14 @@ function bucketTable(title: string, buckets: {
           width: {size: widths[1], type: WidthType.DXA},
           verticalAlign: VerticalAlign.CENTER,
           borders: noBorders(),
-          margins: {top: 25, bottom: 25, left: 0, right: 100},
-          children: [bar],
+          margins: {top: 12, bottom: 12, left: 0, right: 100},
+          children: [new Paragraph({
+            spacing: {before: 0, after: 0, line: 180},
+            children: [new TextRun({
+              text: "\u2588".repeat(barLength),
+              color: "00B8D0", size: 14, font: "Arial",
+            })],
+          })],
         }),
         plainCell(`${num(b.count)} · `
           + mnt(b.creditTotal + b.debitTotal), widths[2],
