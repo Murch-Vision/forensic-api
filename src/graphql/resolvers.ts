@@ -614,9 +614,9 @@ export const resolvers = {
         conclusions,
       });
       await c.audit.record("Report.Generated",
-        `File:Dansnii-Dun-Shinjilgee-${active.caseId}.docx`);
+        `File:Tailan-${active.caseId}.docx`);
       return {
-        filename: `Dansnii-Dun-Shinjilgee-${active.caseId}.docx`
+        filename: `Tailan-${active.caseId}.docx`
           .replace(/[^A-Za-z0-9._-]/g, "-"),
         mimeType: "application/vnd.openxmlformats-officedocument."
           + "wordprocessingml.document",

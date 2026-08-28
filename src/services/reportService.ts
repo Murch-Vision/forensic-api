@@ -1159,7 +1159,7 @@ function docxCell(text: string, dxa: number, opts: {
 
 function table(colWidths: number[], rows: TableRow[]): Table {
   return new Table({
-    width: {size: 100, type: WidthType.PERCENTAGE},
+    width: {size: PAGE_DXA, type: WidthType.DXA},
     layout: TableLayoutType.FIXED,
     columnWidths: colWidths,
     borders: {
@@ -1266,7 +1266,7 @@ function verdictFormalHeader(caseId: string, caseName: string,
   const [dateLine1, dateLine2] = mnDateLines(new Date().toISOString());
   const thirds = widthsFor([1, 1, 1]);
   const header = new Table({
-    width: {size: 100, type: WidthType.PERCENTAGE},
+    width: {size: PAGE_DXA, type: WidthType.DXA},
     layout: TableLayoutType.FIXED,
     columnWidths: thirds,
     borders: noBorders(),
@@ -1283,7 +1283,7 @@ function verdictFormalHeader(caseId: string, caseName: string,
   });
   const metaWidths = widthsFor([3, 7]);
   const meta = new Table({
-    width: {size: 100, type: WidthType.PERCENTAGE},
+    width: {size: PAGE_DXA, type: WidthType.DXA},
     layout: TableLayoutType.FIXED,
     columnWidths: metaWidths,
     borders: noBorders(),
@@ -1354,7 +1354,7 @@ function accountCardsTable(analyses: AccountAnalysis[]): Table {
       cardWidth), plainCell("", gap), plainCell("", cardWidth)]}));
   }
   return new Table({
-    width: {size: 100, type: WidthType.PERCENTAGE},
+    width: {size: PAGE_DXA, type: WidthType.DXA},
     layout: TableLayoutType.FIXED,
     columnWidths: widths,
     borders: noBorders(),
@@ -1410,11 +1410,77 @@ function findingParagraph(number: number, text: string): Paragraph {
 function bucketTable(title: string, buckets: {
   label: string; count: number; creditTotal: number; debitTotal: number;
 }[]): Table {
-  const rows = buckets.filter((b) => b.count > 0)
-    .map((b) => [b.label, num(b.count), mnt(b.creditTotal),
-      mnt(b.debitTotal)]);
-  return gridTable([title, "Гүйлгээ", "Орлого", "Зарлага"], rows,
-    [3, 2, 4, 4]);
+  const active = buckets.filter((b) => b.count > 0);
+  const max = Math.max(1, ...active.map((b) => b.count));
+  const widths = widthsFor([2, 10, 3]);
+  const rows: TableRow[] = [new TableRow({
+    cantSplit: true,
+    children: [new TableCell({
+      columnSpan: 3,
+      borders: noBorders(),
+      margins: {top: 80, bottom: 70, left: 0, right: 0},
+      children: [new Paragraph({
+        spacing: {before: 0, after: 0},
+        children: [new TextRun({text: title, bold: true, size: 19,
+          color: DOCX_NAVY_DARK, font: "Arial"})],
+      })],
+    })],
+  })];
+  for (const b of active.slice(0, 24)) {
+    const barWidth = Math.max(120, Math.round(widths[1] * b.count / max));
+    const remainder = Math.max(1, widths[1] - barWidth);
+    const bar = new Table({
+      width: {size: widths[1], type: WidthType.DXA},
+      layout: TableLayoutType.FIXED,
+      columnWidths: [barWidth, remainder],
+      borders: noBorders(),
+      rows: [new TableRow({
+        children: [
+          new TableCell({
+            width: {size: barWidth, type: WidthType.DXA},
+            shading: {fill: "00B8D0"},
+            borders: noBorders(),
+            children: [new Paragraph({text: ""})],
+          }),
+          new TableCell({
+            width: {size: remainder, type: WidthType.DXA},
+            borders: noBorders(),
+            children: [new Paragraph({text: ""})],
+          }),
+        ],
+      })],
+    });
+    rows.push(new TableRow({
+      cantSplit: true,
+      children: [
+        plainCell(b.label, widths[0], AlignmentType.LEFT, DOCX_MUTED),
+        new TableCell({
+          width: {size: widths[1], type: WidthType.DXA},
+          verticalAlign: VerticalAlign.CENTER,
+          borders: noBorders(),
+          margins: {top: 25, bottom: 25, left: 0, right: 100},
+          children: [bar],
+        }),
+        plainCell(`${num(b.count)} · `
+          + mnt(b.creditTotal + b.debitTotal), widths[2],
+        AlignmentType.RIGHT, DOCX_INK),
+      ],
+    }));
+  }
+  if (!active.length) {
+    rows.push(new TableRow({children: [
+      plainCell("Мэдээлэл алга", widths[0], AlignmentType.LEFT,
+        DOCX_MUTED),
+      plainCell("", widths[1]), plainCell("", widths[2]),
+    ]}));
+  }
+  return new Table({
+    width: {size: PAGE_DXA, type: WidthType.DXA},
+    layout: TableLayoutType.FIXED,
+    columnWidths: widths,
+    borders: noBorders(),
+    rows,
+  });
 }
 
 // The template's Тайлбар sentence, with the blanks filled from measured peaks.
