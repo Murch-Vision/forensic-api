@@ -46,8 +46,12 @@ import type {
   BankAccount, BankTransaction, CaseFile, Suspect,
 } from "../models/types";
 import {buildRelations} from "../services/relationService";
+import type {RelationRow} from "../services/relationService";
 import {
   analyseAccounts, directTransfers,
+} from "../services/accountAnalysisService";
+import type {
+  AccountAnalysis, DirectTransfer,
 } from "../services/accountAnalysisService";
 
 export interface GraphQLContext {
@@ -290,6 +294,55 @@ async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
   return accounts.filter((a) =>
     (a.suspectId != null && scope.suspectIds.has(a.suspectId))
     || scope.accountIds.has(a.id));
+}
+
+// Everything ТАЙЛАН needs, built once and shared by all three editions (PDF,
+// Word, HTML). One builder is the only way the three files can never disagree
+// about a figure — or disagree with the analysis screen, which reads the same
+// scoped helpers.
+async function verdictReportInput(c: GraphQLContext): Promise<{
+  active: CaseFile;
+  input: {
+    caseId: string;
+    caseName: string;
+    period: {from: string | null; to: string | null};
+    analyses: AccountAnalysis[];
+    mutualRelations: RelationRow[];
+    transfers: DirectTransfer[];
+    conclusions: CaseConclusion[];
+  };
+}> {
+  const active = await c.session.getCurrentCase();
+  if (!active) throw new Error("Хэрэг сонгоогүй байна");
+  const [txns, accounts, subjects, conclusions] = await Promise.all([
+    scopedTransactions(c, false), scopedAccounts(c),
+    caseSubjectNationalIds(c), c.conclusions.getForCase(active.id),
+  ]);
+  const aml = AmlThresholds.current;
+  // No top-N cut: the frequent-counterparty table prints every party rated
+  // Их давтамж, so a cap would silently drop rows from one edition only.
+  const analyses = analyseAccounts(accounts, txns, subjects, {
+    nightFrom: aml.nightHoursStart, nightTo: aml.nightHoursEnd,
+    highValueFloor: aml.highValueTxnFloor,
+  }, 1_000_000);
+  const rel = buildRelations(txns, accounts, subjects);
+  return {
+    active,
+    input: {
+      caseId: active.caseId,
+      caseName: active.caseName,
+      period: {
+        from: analyses.reduce<string | null>((min, a) =>
+          !min || (a.firstTxn && a.firstTxn < min) ? a.firstTxn : min, null),
+        to: analyses.reduce<string | null>((max, a) =>
+          !max || (a.lastTxn && a.lastTxn > max) ? a.lastTxn : max, null),
+      },
+      analyses,
+      mutualRelations: rel.relations.filter((r) => r.mutual),
+      transfers: directTransfers(accounts, txns),
+      conclusions,
+    },
+  };
 }
 
 function matchesDescRules(
@@ -584,70 +637,41 @@ export const resolvers = {
     // The verdict document. Built from the SAME aggregates the analysis tab
     // shows, so the document cannot state a figure the screen disagrees with.
     reportVerdictDocx: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const active = await c.session.getCurrentCase();
-      if (!active) throw new Error("Хэрэг сонгоогүй байна");
-      const [txns, accounts, subjects, conclusions] = await Promise.all([
-        scopedTransactions(c, false),
-        scopedAccounts(c),
-        caseSubjectNationalIds(c),
-        c.conclusions.getForCase(active.id),
-      ]);
-      const aml = AmlThresholds.current;
-      const analyses = analyseAccounts(accounts, txns, subjects, {
-        nightFrom: aml.nightHoursStart,
-        nightTo: aml.nightHoursEnd,
-        highValueFloor: aml.highValueTxnFloor,
-      }, 30);
-      const rel = buildRelations(txns, accounts, subjects);
-      const buf = await c.reports.generateVerdictDocx({
-        caseId: active.caseId,
-        caseName: active.caseName,
-        period: {
-          from: analyses.reduce<string | null>((min, a) =>
-            !min || (a.firstTxn && a.firstTxn < min) ? a.firstTxn : min, null),
-          to: analyses.reduce<string | null>((max, a) =>
-            !max || (a.lastTxn && a.lastTxn > max) ? a.lastTxn : max, null),
-        },
-        analyses,
-        mutualRelations: rel.relations.filter((r) => r.mutual),
-        transfers: directTransfers(accounts, txns),
-        conclusions,
-      });
-      await c.audit.record("Report.Generated",
-        `File:Tailan-${active.caseId}.docx`);
+      const {active, input} = await verdictReportInput(c);
+      const buf = await c.reports.generateVerdictDocx(input);
+      const filename = `Tailan-${active.caseId}.docx`
+        .replace(/[^A-Za-z0-9._-]/g, "-");
+      await c.audit.record("Report.Generated", `File:${filename}`);
       return {
-        filename: `Tailan-${active.caseId}.docx`
-          .replace(/[^A-Za-z0-9._-]/g, "-"),
+        filename,
         mimeType: "application/vnd.openxmlformats-officedocument."
           + "wordprocessingml.document",
         base64: buf.toString("base64"),
       };
     },
     reportVerdictPdf: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const active = await c.session.getCurrentCase();
-      if (!active) throw new Error("Хэрэг сонгоогүй байна");
-      const [txns, accounts, subjects, conclusions] = await Promise.all([
-        scopedTransactions(c, false), scopedAccounts(c),
-        caseSubjectNationalIds(c), c.conclusions.getForCase(active.id),
-      ]);
-      const aml = AmlThresholds.current;
-      const analyses = analyseAccounts(accounts, txns, subjects, {
-        nightFrom: aml.nightHoursStart, nightTo: aml.nightHoursEnd,
-        highValueFloor: aml.highValueTxnFloor,
-      }, 1_000_000);
-      const rel = buildRelations(txns, accounts, subjects);
-      const buf = await c.reports.generateVerdictPdf({
-        caseId: active.caseId, caseName: active.caseName,
-        period: {
-          from: analyses.reduce<string | null>((min, a) => !min || (a.firstTxn && a.firstTxn < min) ? a.firstTxn : min, null),
-          to: analyses.reduce<string | null>((max, a) => !max || (a.lastTxn && a.lastTxn > max) ? a.lastTxn : max, null),
-        },
-        analyses, mutualRelations: rel.relations.filter((r) => r.mutual),
-        transfers: directTransfers(accounts, txns), conclusions,
-      });
-      const filename = `Tailan-${active.caseId}.pdf`.replace(/[^A-Za-z0-9._-]/g, "-");
+      const {active, input} = await verdictReportInput(c);
+      const buf = await c.reports.generateVerdictPdf(input);
+      const filename = `Tailan-${active.caseId}.pdf`
+        .replace(/[^A-Za-z0-9._-]/g, "-");
       await c.audit.record("Report.Generated", `File:${filename}`);
-      return {filename, mimeType: "application/pdf", base64: buf.toString("base64")};
+      return {
+        filename,
+        mimeType: "application/pdf",
+        base64: buf.toString("base64"),
+      };
+    },
+    reportVerdictHtml: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      const {active, input} = await verdictReportInput(c);
+      const buf = c.reports.generateVerdictHtml(input);
+      const filename = `Tailan-${active.caseId}.html`
+        .replace(/[^A-Za-z0-9._-]/g, "-");
+      await c.audit.record("Report.Generated", `File:${filename}`);
+      return {
+        filename,
+        mimeType: "text/html; charset=utf-8",
+        base64: buf.toString("base64"),
+      };
     },
     reportSuspectPdf: async (
       _p: unknown, a: {suspectId: number; minAmount?: number}, c: GraphQLContext

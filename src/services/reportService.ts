@@ -702,6 +702,159 @@ export class ReportService {
     return Packer.toBuffer(doc);
   }
 
+  // Browser edition of ТАЙЛАН. Same sections, same figures and the same
+  // generated findings as the Word and PDF editions — one self-contained .html
+  // file with no external font, script or image, so it opens (and prints) on a
+  // workstation that has neither Word nor a PDF reader. The contents table
+  // links to the sections instead of naming page numbers, which the generator
+  // cannot know.
+  generateVerdictHtml(input: {
+    caseId: string;
+    caseName: string;
+    period: {from: string | null; to: string | null};
+    analyses: AccountAnalysis[];
+    mutualRelations: RelationRow[];
+    transfers: DirectTransfer[];
+    conclusions: CaseConclusion[];
+  }): Buffer {
+    const {analyses, transfers, conclusions} = input;
+    const conclusionFor = (accountId: number | null): string =>
+      conclusions.find((c) => c.bankAccountId === accountId)?.text?.trim()
+        ?? "";
+    const [dateLine1, dateLine2] = mnDateLines(new Date().toISOString());
+    const period = input.period.from && input.period.to
+      ? `${formatDateLike(input.period.from)} — `
+        + `${formatDateLike(input.period.to)}`
+      : "—";
+    const body: string[] = [];
+
+    body.push(`<header class="doc-head">
+      <h1>Тайлан</h1>
+      <div class="head-row">
+        <span>${htmlEscape(dateLine1)}<br>${htmlEscape(dateLine2)}</span>
+        <span class="center">Дугаар .......</span>
+        <span class="right">${htmlEscape(REPORT_LOCATION)}</span>
+      </div>
+    </header>`);
+    body.push(htmlKv([
+      ["Хэрэг", `${input.caseId} · ${input.caseName}`],
+      ["Хамрах хугацаа", period],
+    ]));
+
+    body.push(`<h2>ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ</h2>`);
+    body.push(analyses.length
+      ? `<div class="cards">${analyses.map((a, i) => `<div class="card">
+          <span class="card-no">${i + 1}. ДАНС</span>
+          <strong>${htmlEscape(a.accountNumber)}</strong>
+          <span>${htmlEscape(a.ownerName || "Эзэмшигч тодорхойгүй")}</span>
+        </div>`).join("")}</div>`
+      : `<p class="muted">Шинжилсэн данс бүртгэгдээгүй.</p>`);
+
+    body.push(`<h2>ДАНСНЫ ДҮН ШИНЖИЛГЭЭНИЙ АГУУЛГА</h2>`);
+    body.push(`<table class="contents"><thead><tr><th>№</th><th>Бүлэг</th>
+      </tr></thead><tbody>
+      <tr><td>1</td><td><a href="#s1">Дансны дүн шинжилгээ</a></td></tr>
+      ${analyses.map((a, i) => `<tr><td>1.${i + 1}</td><td>`
+        + `<a href="#account-${i + 1}">`
+        + `${htmlEscape(a.ownerName || "Эзэмшигч тодорхойгүй")} · `
+        + `${htmlEscape(a.accountNumber)} дугаартай данс</a></td></tr>`).join("")}
+      <tr><td>2</td><td><a href="#s2">Данснуудын холбоос</a></td></tr>
+      <tr><td>3</td><td><a href="#s3">Дүгнэлт</a></td></tr>
+    </tbody></table>`);
+
+    body.push(`<h2 id="s1" class="major">1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ</h2>`);
+    for (const [index, a] of analyses.entries()) {
+      body.push(`<h3 id="account-${index + 1}">1.${index + 1} `
+        + `${htmlEscape(a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ")} · `
+        + `${htmlEscape(a.accountNumber)} ДУГААРТАЙ ДАНС</h3>`);
+      body.push(htmlKv([
+        ["Нийт гүйлгээ", num(a.txnCount)],
+        ["Харилцагч", num(a.counterpartyCount)],
+        ["Нийт орлого", mnt(a.creditTotal)],
+        ["Нийт зарлага", mnt(a.debitTotal)],
+        ["Орлого, зарлагын зөрүү", mnt(a.netTotal)],
+        ["Шөнийн гүйлгээ", a.hasTimeOfDay
+          ? `${num(a.nightCount)} · ${mnt(a.nightTotal)}`
+          : "Хуулганд цагийн мэдээлэл байхгүй"],
+      ]));
+      const frequentCounterparties = a.topCounterparties
+        .filter((r) => r.rating.includes("Их давтамж"))
+        .sort((x, y) => (y.creditTotal + y.debitTotal)
+          - (x.creditTotal + x.debitTotal));
+      body.push(`<h4>ИХ ДАВТАМЖТАЙ ХАРИЛЦСАН ТАЛУУД `
+        + `(${frequentCounterparties.length})</h4>`);
+      body.push(`<p class="muted">10-аас дээш гүйлгээтэй талуудыг нийт мөнгөн `
+        + `дүнгээр эрэмбэлсэн · Эх данс: ${htmlEscape(a.accountNumber)} · `
+        + `Эзэмшигч: ${htmlEscape(a.ownerName || "Тодорхойгүй")}</p>`);
+      body.push(htmlTable(
+        ["Эх данс", "Харилцсан данс", "Харилцсан тал", "Гүйлгээ",
+          "Орлого", "Зарлага"],
+        frequentCounterparties.map((r) => [a.accountNumber,
+          r.account ?? "Дугааргүй", r.name, num(r.txnCount),
+          mnt(r.creditTotal), mnt(r.debitTotal)]),
+        ["left", "left", "left", "right", "right", "right"]));
+      body.push(`<h4>ИДЭВХЖИЛ</h4>`);
+      body.push(a.hasTimeOfDay
+        ? htmlBuckets("Цагаар", a.byHour)
+        : `<p class="muted">Цагийн мэдээлэлгүй тул цагийн идэвхжил `
+          + `тооцоогүй.</p>`);
+      body.push(htmlBuckets("Өдрөөр", a.byWeekday));
+      body.push(htmlBuckets("Сараар", a.byMonth));
+      body.push(`<p>${htmlEscape(narrative(a))}</p>`);
+    }
+
+    body.push(`<h2 id="s2" class="major">2. ДАНСНУУДЫН ХОЛБООС</h2>`);
+    body.push(`<h4>2.1 ДУНДЫН ХАРИЛЦАГЧИД</h4>`);
+    body.push(htmlTable(
+      ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
+      input.mutualRelations.slice(0, 60).map((r) => [
+        r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal),
+        mnt(r.debitTotal), mnt(r.netTotal)]),
+      ["left", "left", "right", "right", "right", "right"]));
+    body.push(`<h4>2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ</h4>`);
+    body.push(htmlTable(["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"],
+      transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel,
+        num(t.txnCount), mnt(t.total)]),
+      ["left", "left", "right", "right"]));
+
+    body.push(`<h2 id="s3" class="major">3. ДҮГНЭЛТ</h2>`);
+    for (const [index, a] of analyses.entries()) {
+      body.push(`<h3>3.${index + 1} `
+        + `${htmlEscape(a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ")} · `
+        + `${htmlEscape(a.accountNumber)} ДУГААРТАЙ ДАНС</h3>`);
+      body.push(htmlFindings(accountFindings(a)));
+      const written = conclusionFor(a.accountId);
+      if (written) {
+        body.push(`<h4>Мөрдөгчийн тэмдэглэл</h4>`);
+        body.push(`<p class="note">${htmlEscape(written)}</p>`);
+      }
+    }
+    body.push(`<h3>3.${analyses.length + 1} ХОЛБООСЫН ДҮГНЭЛТ</h3>`);
+    body.push(htmlFindings(relationFindings(input)));
+    body.push(`<h3>3.${analyses.length + 2} ЕРӨНХИЙ ДҮГНЭЛТ</h3>`);
+    body.push(htmlFindings(generalFindings(input)));
+    const generalWritten = conclusionFor(null);
+    if (generalWritten) {
+      body.push(`<h4>Мөрдөгчийн ерөнхий тэмдэглэл</h4>`);
+      body.push(`<p class="note">${htmlEscape(generalWritten)}</p>`);
+    }
+
+    return Buffer.from(`<!doctype html>
+<html lang="mn">
+<head>
+<meta charset="utf-8">
+<title>Тайлан · ${htmlEscape(input.caseId)}</title>
+<style>${VERDICT_HTML_CSS}</style>
+</head>
+<body>
+<main class="page">
+${body.join("\n")}
+</main>
+</body>
+</html>
+`, "utf8");
+  }
+
   // Court-file friendly PDF built from the same case-scoped aggregates as the
   // analysis screen. The client's draft supplies the document flow only; the
   // visual system and every finding below come from Forensic's own data.
@@ -857,6 +1010,131 @@ function pdfNumberedFindings(doc: PDFKit.PDFDocument, findings: string[]): void 
     if (doc.y > doc.page.height - 105) { doc.addPage(); doc.y = 48; }
     pdfConclusionText(doc, `${index + 1}. ${finding}`);
   });
+}
+
+// The HTML edition's whole stylesheet. Inlined on purpose: the file must
+// render identically on a machine with no network and no font install, so it
+// carries no @import, no CDN and no external asset.
+const VERDICT_HTML_CSS = `
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #E9EDF3; color: ${INK};
+    font: 13px/1.55 Arial, "Helvetica Neue", Helvetica, sans-serif; }
+  .page { max-width: 860px; margin: 24px auto; padding: 40px 44px;
+    background: #FFFFFF; }
+  h1 { margin: 0 0 18px; font-size: 24px; letter-spacing: 2px;
+    text-align: center; color: ${TABLE_HEAD}; }
+  h2 { margin: 30px 0 12px; padding-bottom: 6px; font-size: 15px;
+    letter-spacing: 1px; color: ${TABLE_HEAD};
+    border-bottom: 2px solid ${ACCENT_CYAN}; }
+  h2.major { font-size: 17px; }
+  h3 { margin: 24px 0 10px; font-size: 14px; color: ${DARK_BLUE}; }
+  h4 { margin: 18px 0 8px; font-size: 12px; letter-spacing: 0.6px;
+    color: ${TABLE_HEAD}; }
+  p { margin: 8px 0; }
+  p.muted, .muted { color: ${MUTED}; font-size: 12px; }
+  p.note { padding: 10px 12px; background: ${BLUE_TINT};
+    border-left: 3px solid ${ACCENT_CYAN}; }
+  .doc-head .head-row { display: flex; justify-content: space-between;
+    gap: 16px; padding-bottom: 10px; color: ${MUTED}; font-size: 12px;
+    border-bottom: 2px solid ${DARK_BLUE}; }
+  .head-row .center { text-align: center; }
+  .head-row .right { text-align: right; }
+  dl.kv { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 24px;
+    margin: 14px 0; }
+  dl.kv > div { display: flex; justify-content: space-between; gap: 12px;
+    padding: 5px 0; border-bottom: 1px solid #E5EAF1; }
+  dl.kv dt { margin: 0; color: ${MUTED}; }
+  dl.kv dd { margin: 0; text-align: right; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    margin: 12px 0; }
+  .card { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px;
+    background: ${BLUE_TINT}; border-left: 3px solid ${ACCENT_CYAN}; }
+  .card-no { color: ${MUTED}; font-size: 11px; letter-spacing: 0.6px; }
+  .card strong { color: ${DARK_BLUE}; font-size: 13px; }
+  table { width: 100%; margin: 10px 0; border-collapse: collapse;
+    font-size: 12px; }
+  th { padding: 7px 8px; background: ${TABLE_HEAD}; color: #FFFFFF;
+    font-weight: 700; text-align: left; }
+  td { padding: 6px 8px; border-bottom: 1px solid #E5EAF1;
+    vertical-align: top; }
+  tbody tr:nth-child(even) td { background: ${ZEBRA}; }
+  th.r, td.r { text-align: right; white-space: nowrap; }
+  td.empty { color: ${MUTED}; text-align: center; }
+  table.contents td:first-child { width: 60px; color: ${MUTED}; }
+  a { color: ${TABLE_HEAD}; }
+  .chart { margin: 12px 0 16px; }
+  .bar-row { display: grid; grid-template-columns: 110px 1fr 190px;
+    align-items: center; gap: 10px; padding: 2px 0; font-size: 12px; }
+  .bar-label { color: ${MUTED}; }
+  .bar-track { height: 9px; background: #EDF1F6; border-radius: 2px; }
+  .bar-fill { display: block; height: 9px; background: ${ACCENT_CYAN};
+    border-radius: 2px; }
+  .bar-value { text-align: right; white-space: nowrap; }
+  ol.findings { margin: 8px 0; padding-left: 20px; }
+  ol.findings li { margin: 5px 0; }
+  @page { size: A4; margin: 14mm; }
+  @media print {
+    body { background: #FFFFFF; }
+    .page { max-width: none; margin: 0; padding: 0; }
+    h2, h3 { break-after: avoid; }
+    table, .chart { break-inside: avoid; }
+  }
+`;
+
+const HTML_ESCAPES: Record<string, string> = {
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
+};
+
+function htmlEscape(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c] ?? c);
+}
+
+function htmlKv(rows: [string, string][]): string {
+  return `<dl class="kv">${rows.map(([label, value]) =>
+    `<div><dt>${htmlEscape(label)}</dt>`
+    + `<dd>${htmlEscape(value)}</dd></div>`).join("")}</dl>`;
+}
+
+function htmlTable(headers: string[], rows: string[][],
+  aligns: ("left" | "right")[]): string {
+  const cls = (index: number): string =>
+    aligns[index] === "right" ? " class=\"r\"" : "";
+  const head = headers.map((h, i) =>
+    `<th${cls(i)}>${htmlEscape(h)}</th>`).join("");
+  const body = rows.length
+    ? rows.map((row) => `<tr>${row.map((value, i) =>
+      `<td${cls(i)}>${htmlEscape(value)}</td>`).join("")}</tr>`).join("")
+    : `<tr><td class="empty" colspan="${headers.length}">Мэдээлэл алга</td>`
+      + `</tr>`;
+  return `<table><thead><tr>${head}</tr></thead>`
+    + `<tbody>${body}</tbody></table>`;
+}
+
+// The activity figure of the Word/PDF editions, drawn with CSS bars so the
+// HTML file stays text-only. Same 24-bucket cut as bucketChart().
+function htmlBuckets(title: string,
+  buckets: import("./accountAnalysisService").ActivityBucket[]): string {
+  const active = buckets.filter((b) => b.count > 0).slice(0, 24);
+  if (!active.length) {
+    return `<div class="chart"><h4>${htmlEscape(title)}</h4>`
+      + `<p class="muted">Мэдээлэл алга</p></div>`;
+  }
+  const max = Math.max(1, ...active.map((b) => b.count));
+  const rows = active.map((b) => {
+    const width = Math.max(1, Math.round(100 * b.count / max));
+    const value = `${num(b.count)} · ${mnt(b.creditTotal + b.debitTotal)}`;
+    return `<div class="bar-row"><span class="bar-label">`
+      + `${htmlEscape(b.label)}</span><span class="bar-track">`
+      + `<span class="bar-fill" style="width:${width}%"></span></span>`
+      + `<span class="bar-value">${htmlEscape(value)}</span></div>`;
+  }).join("");
+  return `<div class="chart"><h4>${htmlEscape(title)}</h4>${rows}</div>`;
+}
+
+function htmlFindings(findings: string[]): string {
+  return `<ol class="findings">${findings.map((f) =>
+    `<li>${htmlEscape(f)}</li>`).join("")}</ol>`;
 }
 
 function accountFindings(a: AccountAnalysis): string[] {

@@ -1202,6 +1202,12 @@ export const typeDefs = /* GraphQL */ `
     reportVerdictDocx: ReportFile!
     """Дансны дүн шинжилгээ — active case data rendered as an official PDF."""
     reportVerdictPdf: ReportFile!
+    """
+    Дансны дүн шинжилгээ — the same report as a single self-contained HTML file
+    (no external font, script or image), for a workstation with no Word and no
+    PDF reader. Opens in a browser and prints to A4.
+    """
+    reportVerdictHtml: ReportFile!
     screenSuspect(id: Int!): [SanctionsHit!]!
     sanctionsStatus: SanctionsStatus!
     sanctionsRefreshLogs(take: Int): [SanctionsRefreshLog!]!
