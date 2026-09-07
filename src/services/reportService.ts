@@ -903,9 +903,10 @@ function htmlEscape(value: string): string {
 // Word-ын багааны өргөнийг (tcW) уншдаг ([[docx-table-widths]]).
 function htmlCell(inner: string, opts: {
   w: number; align?: "left" | "center" | "right"; style?: string;
-  id?: string; colSpan?: number;
+  id?: string; colSpan?: number; cls?: string;
 }): string {
   return `<td${opts.id ? ` id="${opts.id}"` : ""}`
+    + `${opts.cls ? ` class="${opts.cls}"` : ""}`
     + `${opts.colSpan ? ` colspan="${opts.colSpan}"` : ""}`
     + ` style="width:${opts.w}pt;`
     + `${opts.align ? `text-align:${opts.align};` : ""}`
@@ -932,9 +933,10 @@ function htmlSectionBar(title: string, id?: string): string {
     Math.max(42, Math.round(title.length * 7 + 6)));
   const pad = "padding:9pt 0 3pt 0";
   return layoutTable([`<tr>`
-    + htmlCell(htmlEscape(title), {w: width, id,
-      style: `font-size:10.5pt;color:${DARK_BLUE};${pad};white-space:nowrap;`
-        + `border-bottom:2pt solid ${ACCENT_CYAN}`})
+    + htmlCell(`<span class="bar">${htmlEscape(title)}</span>`,
+      {w: width, id,
+        style: `font-size:10.5pt;color:${DARK_BLUE};${pad};white-space:nowrap;`
+          + `border-bottom:2pt solid ${ACCENT_CYAN}`, cls: "barcell"})
     + htmlCell("", {w: HTML_CW - width, style: pad})
     + `</tr>`]);
 }
@@ -1130,7 +1132,16 @@ function verdictScreenCss(stamp: string): string {
   .sheet::after { content: "${stamp.replace(/"/g, "'")}"; display: block;
     margin-top: 20pt; padding-top: 6pt; border-top: 0.5pt solid #E2E8F0;
     font-size: 7pt; color: ${MUTED}; }
-  td { vertical-align: top; }
+  /* Нүдний дотоод зай өргөнд НЭМЭГДЭХГҮЙ: эс тэгвээс хүснэгт бүр
+     баганынхаа тоогоор өргөсөж, цагаан хуудаснаас халина. Word өөрөө ийм
+     байдлаар (нүдний нийт өргөнөөр) боддог тул энэ нь зөвхөн браузерын
+     тохируулга. */
+  td, th { box-sizing: border-box; vertical-align: top; }
+  /* Цэнхэр зураас: браузерт гарчгийн ЯГ уртаар (PDF шиг), Word-д нүдний
+     ойролцоо өргөнөөр. */
+  .barcell { border-bottom: none !important; }
+  .barcell .bar { display: inline-block; padding-bottom: 3pt;
+    border-bottom: 2pt solid ${ACCENT_CYAN}; }
   .clip { display: block; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; }
   ol { margin-top: 6pt; }
