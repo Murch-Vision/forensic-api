@@ -12,23 +12,15 @@ import {createHash} from "crypto";
 import PDFDocument from "pdfkit";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
-import sharp from "sharp";
+import htmlToDocx from "@turbodocx/html-to-docx";
 import {
   AlignmentType,
-  BorderStyle,
   Document,
   HeadingLevel,
-  ImageRun,
   Packer,
   PageBreak,
   Paragraph,
-  Table,
-  TableCell,
-  TableLayoutType,
-  TableRow,
   TextRun,
-  VerticalAlign,
-  WidthType,
 } from "docx";
 import type {DataService} from "./dataService";
 import type {AuditChainVerdict} from "./auditLogService";
@@ -557,217 +549,91 @@ export class ReportService {
     return Packer.toBuffer(doc);
   }
 
-  // Editable Word edition of ТАЙЛАН. Its sections and generated findings mirror
-  // generateVerdictPdf; figures remain native Word tables instead of screenshots.
-  async generateVerdictDocx(input: {
-    caseId: string;
-    caseName: string;
-    period: {from: string | null; to: string | null};
-    analyses: AccountAnalysis[];
-    mutualRelations: RelationRow[];
-    transfers: DirectTransfer[];
-    conclusions: CaseConclusion[];
-  }): Promise<Buffer> {
-    const {analyses, transfers, conclusions} = input;
-    const children: (Paragraph | Table)[] = [];
-    const conclusionFor = (accountId: number | null): string =>
-      conclusions.find((c) => c.bankAccountId === accountId)?.text?.trim()
-        ?? "";
-    const numbered = (findings: string[]): Paragraph[] => findings.map(
-      (finding, index) => findingParagraph(index + 1, finding));
-
-    // Keep the Word export aligned with generateVerdictPdf. Everything is
-    // native Word text/tables so investigators can edit it; no PDF footer,
-    // workstation label, timestamp, or screenshot is embedded.
-    children.push(...verdictFormalHeader(input.caseId, input.caseName,
-      input.period));
-    children.push(verdictMajorHeading("ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ"));
-    children.push(accountCardsTable(analyses));
-    children.push(verdictMajorHeading("ДАНСНЫ ДҮН ШИНЖИЛГЭЭНИЙ АГУУЛГА"));
-    children.push(gridTable(["№", "Бүлэг"], [
-      ["1", "Дансны дүн шинжилгээ"],
-      ...analyses.map((a, i) => [`1.${i + 1}`,
-        `${a.ownerName || "Эзэмшигч тодорхойгүй"} · `
-          + `${a.accountNumber} дугаартай данс`]),
-      ["2", "Данснуудын холбоос"],
-      ["3", "Дүгнэлт"],
-    ], [2, 13]));
-    children.push(new Paragraph({children: [new PageBreak()]}));
-
-    for (const [i, a] of analyses.entries()) {
-      if (i === 0) {
-        children.push(verdictMajorHeading("1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ"));
-      }
-      children.push(verdictAccountHeading(`1.${i + 1} `
-        + `${a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ"} · `
-        + `${a.accountNumber} ДУГААРТАЙ ДАНС`));
-      children.push(kvTable([
-        ["Нийт гүйлгээ", num(a.txnCount)],
-        ["Харилцагч", num(a.counterpartyCount)],
-        ["Нийт орлого", mnt(a.creditTotal)],
-        ["Нийт зарлага", mnt(a.debitTotal)],
-        ["Орлого, зарлагын зөрүү", mnt(a.netTotal)],
-        ["Шөнийн гүйлгээ", a.hasTimeOfDay
-          ? `${num(a.nightCount)} · ${mnt(a.nightTotal)}`
-          : "Хуулганд цагийн мэдээлэл байхгүй"],
-      ]));
-      const frequentCounterparties = a.topCounterparties
-        .filter((r) => r.rating.includes("Их давтамж"))
-        .sort((x, y) => (y.creditTotal + y.debitTotal)
-          - (x.creditTotal + x.debitTotal));
-      children.push(verdictSubheading(`ИХ ДАВТАМЖТАЙ ХАРИЛЦСАН ТАЛУУД `
-        + `(${frequentCounterparties.length})`));
-      children.push(gridTable(
-        ["Эх данс", "Харилцсан данс", "Харилцсан тал", "Гүйлгээ",
-          "Орлого", "Зарлага"],
-        frequentCounterparties.map((r) => [a.accountNumber,
-          r.account ?? "Дугааргүй", r.name, num(r.txnCount),
-          mnt(r.creditTotal), mnt(r.debitTotal)]), [5, 5, 7, 3, 5, 5]));
-      children.push(verdictSubheading("ИДЭВХЖИЛ"));
-      if (a.hasTimeOfDay) {
-        children.push(await bucketChart("Цагаар", a.byHour));
-      } else {
-        children.push(note("Цагийн мэдээлэлгүй тул цагийн идэвхжил "
-          + "тооцоогүй."));
-      }
-      children.push(await bucketChart("Өдрөөр", a.byWeekday));
-      children.push(await bucketChart("Сараар", a.byMonth));
-      children.push(new Paragraph({children: [new TextRun({
-        text: narrative(a), size: 22, font: "Arial"})]}));
-      children.push(new Paragraph({children: [new PageBreak()]}));
-    }
-
-    children.push(verdictMajorHeading("2. ДАНСНУУДЫН ХОЛБООС"));
-    children.push(verdictSubheading("2.1 ДУНДЫН ХАРИЛЦАГЧИД"));
-    children.push(gridTable(
-      ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага",
-        "Зөрүү"],
-      input.mutualRelations.slice(0, 60).map((r) => [
-        r.name, r.account ?? "—", num(r.txnCount),
-        mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
-      ]), [6, 5, 2, 4, 4, 4]));
-    children.push(verdictSubheading(
-      "2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ"));
-    children.push(gridTable(["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"],
-      transfers.slice(0, 60).map((t) => [
-        t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]),
-      [7, 7, 2, 4]));
-    children.push(new Paragraph({children: [new PageBreak()]}));
-
-    children.push(verdictMajorHeading("3. ДҮГНЭЛТ"));
-    for (const [index, a] of analyses.entries()) {
-      children.push(verdictAccountHeading(`3.${index + 1} `
-        + `${a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ"} · `
-        + `${a.accountNumber} ДУГААРТАЙ ДАНС`));
-      children.push(...numbered(accountFindings(a)));
-      const written = conclusionFor(a.accountId);
-      if (written) {
-        children.push(verdictSubheading("Мөрдөгчийн тэмдэглэл"));
-        children.push(new Paragraph({children: [new TextRun({
-          text: written, size: 22, font: "Arial",
-        })]}));
-      }
-      children.push(new Paragraph({children: [new PageBreak()]}));
-    }
-    children.push(verdictMajorHeading(`3.${analyses.length + 1} `
-      + "ХОЛБООСЫН ДҮГНЭЛТ"));
-    children.push(...numbered(relationFindings(input)));
-    children.push(verdictMajorHeading(
-      `3.${analyses.length + 2} ЕРӨНХИЙ ДҮГНЭЛТ`));
-    children.push(...numbered(generalFindings(input)));
-    const generalWritten = conclusionFor(null);
-    if (generalWritten) {
-      children.push(verdictSubheading("Мөрдөгчийн ерөнхий тэмдэглэл"));
-      children.push(new Paragraph({children: [new TextRun({
-        text: generalWritten, size: 22, font: "Arial",
-      })]}));
-    }
-
-    const doc = new Document({
-      styles: {
-        default: {
-          document: {
-            run: {font: "Arial", size: 21, color: DOCX_INK},
-            paragraph: {spacing: {line: 276, after: 80}},
-          },
-        },
-      },
-      sections: [{
-        properties: {
-          page: {margin: {top: 900, right: 900, bottom: 900, left: 900}},
-        },
-        children,
-      }],
-    });
-    return Packer.toBuffer(doc);
+  // ── ТАЙЛАН: нэг эх сурвалж, гурван файл ─────────────────────────────────
+  // generateVerdictPdf нь ЗАГВАРЫН эх: багана, өнгө, хэмжээ бүхэн түүнийх.
+  // generateVerdictHtml түүнийг цэг цэгээр нь давтдаг (ижил pt хэмжээс), Word
+  // нь ЯГ ТЭР HTML-ээс хөрвөдөг. Тийм болохоор гурав нь хоорондоо загвараар
+  // зөрөх боломжгүй — нэг газар засвал гурвуулаа өөрчлөгдөнө.
+  async generateVerdictDocx(input: VerdictInput): Promise<Buffer> {
+    const html = (await this.generateVerdictHtml(input)).toString("utf8");
+    // Word-ын жинхэнэ хөл: pageNumber сонголт хуудасны дугаарыг ЭНЭ мөрийн
+    // ард залгадаг тул «Хуудас» гэдэг үгээр төгсгөнө.
+    const footer = `<p style="font-size:7pt;color:${MUTED}">`
+      + `Forensic Analyst Workstation  ·  НУУЦ  ·  `
+      + `${formatDateLike(new Date().toISOString(), true)}`
+      + `  ·  Хуудас </p>`;
+    const out = await htmlToDocx(html, null, {
+      // A4, PDF-ийн 40pt захтай ижил (40pt = 800 twip) ⇒ агуулгын өргөн 515pt.
+      pageSize: {width: 11906, height: 16838},
+      margins: {top: 800, right: 800, bottom: 800, left: 800, footer: 400},
+      orientation: "portrait",
+      font: "Arial",
+      fontSize: 18,
+      table: {row: {cantSplit: true}},
+      footer: true,
+      pageNumber: true,
+    }, footer);
+    const buf = Buffer.isBuffer(out)
+      ? out
+      : Buffer.from(out instanceof ArrayBuffer
+        ? out : await (out as Blob).arrayBuffer());
+    return fixDocxTableGrids(buf);
   }
 
-  // Browser edition of ТАЙЛАН. Same sections, same figures and the same
-  // generated findings as the Word and PDF editions — one self-contained .html
-  // file with no external font, script or image, so it opens (and prints) on a
-  // workstation that has neither Word nor a PDF reader. The contents table
-  // links to the sections instead of naming page numbers, which the generator
-  // cannot know.
-  generateVerdictHtml(input: {
-    caseId: string;
-    caseName: string;
-    period: {from: string | null; to: string | null};
-    analyses: AccountAnalysis[];
-    mutualRelations: RelationRow[];
-    transfers: DirectTransfer[];
-    conclusions: CaseConclusion[];
-  }): Buffer {
+  // ТАЙЛАН-ы HTML хувилбар — PDF-ийн хуулбар. Гадаад фонт, скрипт, файл
+  // ашиглахгүй ганц файл: Word ч, PDF уншигч ч байхгүй компьютер дээр
+  // нээгдэнэ. Word нь энэ HTML-ээс хөрвөдөг тул хэв маягийг ЗААВАЛ мөр дотор
+  // (inline style) бичнэ — хөрвүүлэгч <style> блокийг уншдаггүй.
+  async generateVerdictHtml(input: VerdictInput): Promise<Buffer> {
     const {analyses, transfers, conclusions} = input;
     const conclusionFor = (accountId: number | null): string =>
       conclusions.find((c) => c.bankAccountId === accountId)?.text?.trim()
         ?? "";
     const [dateLine1, dateLine2] = mnDateLines(new Date().toISOString());
+    const locationParts = REPORT_LOCATION.split(" ");
+    const locationTop = locationParts.length > 1
+      ? locationParts.slice(0, -1).join(" ") : REPORT_LOCATION;
+    const locationBottom = locationParts.length > 1
+      ? locationParts[locationParts.length - 1] : "";
     const period = input.period.from && input.period.to
       ? `${formatDateLike(input.period.from)} — `
         + `${formatDateLike(input.period.to)}`
       : "—";
-    const body: string[] = [];
+    const b: string[] = [];
 
-    body.push(`<header class="doc-head">
-      <h1>Тайлан</h1>
-      <div class="head-row">
-        <span>${htmlEscape(dateLine1)}<br>${htmlEscape(dateLine2)}</span>
-        <span class="center">Дугаар .......</span>
-        <span class="right">${htmlEscape(REPORT_LOCATION)}</span>
-      </div>
-    </header>`);
-    body.push(htmlKv([
+    // Албан ёсны толгой: гарчиг, огноо, дугаар, хот, доогуур зураас.
+    b.push(`<p style="text-align:center;font-size:15pt;color:#111111;`
+      + `margin:0 0 16pt 0">Тайлан</p>`);
+    const headBorder = "border-bottom:1pt solid #111111;padding-bottom:10pt";
+    b.push(layoutTable([`<tr>`
+      + htmlCell(`${htmlEscape(dateLine1)}<br />${htmlEscape(dateLine2)}`,
+        {w: 172, style: `font-size:10.5pt;color:#111111;${headBorder}`})
+      + htmlCell("Дугаар .......",
+        {w: 171, align: "center",
+          style: `font-size:10.5pt;color:#111111;${headBorder}`})
+      + htmlCell(`${htmlEscape(locationTop)}<br />`
+        + `${htmlEscape(locationBottom)}`,
+      {w: 172, align: "right",
+        style: `font-size:10.5pt;color:#111111;${headBorder}`})
+      + `</tr>`]));
+    b.push(htmlKv([
       ["Хэрэг", `${input.caseId} · ${input.caseName}`],
       ["Хамрах хугацаа", period],
     ]));
 
-    body.push(`<h2>ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ</h2>`);
-    body.push(analyses.length
-      ? `<div class="cards">${analyses.map((a, i) => `<div class="card">
-          <span class="card-no">${i + 1}. ДАНС</span>
-          <strong>${htmlEscape(a.accountNumber)}</strong>
-          <span>${htmlEscape(a.ownerName || "Эзэмшигч тодорхойгүй")}</span>
-        </div>`).join("")}</div>`
-      : `<p class="muted">Шинжилсэн данс бүртгэгдээгүй.</p>`);
+    b.push(htmlSectionBar("ШИНЖИЛСЭН ДАНС БА ЭЗЭМШИГЧ"));
+    b.push(htmlAccountCards(analyses));
 
-    body.push(`<h2>ДАНСНЫ ДҮН ШИНЖИЛГЭЭНИЙ АГУУЛГА</h2>`);
-    body.push(`<table class="contents"><thead><tr><th>№</th><th>Бүлэг</th>
-      </tr></thead><tbody>
-      <tr><td>1</td><td><a href="#s1">Дансны дүн шинжилгээ</a></td></tr>
-      ${analyses.map((a, i) => `<tr><td>1.${i + 1}</td><td>`
-        + `<a href="#account-${i + 1}">`
-        + `${htmlEscape(a.ownerName || "Эзэмшигч тодорхойгүй")} · `
-        + `${htmlEscape(a.accountNumber)} дугаартай данс</a></td></tr>`).join("")}
-      <tr><td>2</td><td><a href="#s2">Данснуудын холбоос</a></td></tr>
-      <tr><td>3</td><td><a href="#s3">Дүгнэлт</a></td></tr>
-    </tbody></table>`);
+    b.push(htmlSectionBar("АГУУЛГА"));
+    b.push(htmlContents(analyses));
 
-    body.push(`<h2 id="s1" class="major">1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ</h2>`);
     for (const [index, a] of analyses.entries()) {
-      body.push(`<h3 id="account-${index + 1}">1.${index + 1} `
-        + `${htmlEscape(a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ")} · `
-        + `${htmlEscape(a.accountNumber)} ДУГААРТАЙ ДАНС</h3>`);
-      body.push(htmlKv([
+      b.push(pageBreak());
+      if (index === 0) b.push(htmlMajorBar("1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ"));
+      b.push(htmlAccountBar(`1.${index + 1}`,
+        `${a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ"} · `
+        + `${a.accountNumber} ДУГААРТАЙ ДАНС`, `account-${index + 1}`));
+      b.push(htmlKv([
         ["Нийт гүйлгээ", num(a.txnCount)],
         ["Харилцагч", num(a.counterpartyCount)],
         ["Нийт орлого", mnt(a.creditTotal)],
@@ -781,75 +647,81 @@ export class ReportService {
         .filter((r) => r.rating.includes("Их давтамж"))
         .sort((x, y) => (y.creditTotal + y.debitTotal)
           - (x.creditTotal + x.debitTotal));
-      body.push(`<h4>ИХ ДАВТАМЖТАЙ ХАРИЛЦСАН ТАЛУУД `
-        + `(${frequentCounterparties.length})</h4>`);
-      body.push(`<p class="muted">10-аас дээш гүйлгээтэй талуудыг нийт мөнгөн `
-        + `дүнгээр эрэмбэлсэн · Эх данс: ${htmlEscape(a.accountNumber)} · `
-        + `Эзэмшигч: ${htmlEscape(a.ownerName || "Тодорхойгүй")}</p>`);
-      body.push(htmlTable(
+      b.push(htmlSectionBar("ИХ ДАВТАМЖТАЙ ХАРИЛЦСАН ТАЛУУД "
+        + `(${frequentCounterparties.length})`));
+      b.push(htmlNote("10-аас дээш гүйлгээтэй талуудыг нийт мөнгөн дүнгээр "
+        + `эрэмбэлсэн · Эх данс: ${a.accountNumber} · `
+        + `Эзэмшигч: ${a.ownerName || "Тодорхойгүй"}`));
+      b.push(htmlDataTable(
         ["Эх данс", "Харилцсан данс", "Харилцсан тал", "Гүйлгээ",
           "Орлого", "Зарлага"],
+        [92, 92, 121, 40, 85, 85],
         frequentCounterparties.map((r) => [a.accountNumber,
           r.account ?? "Дугааргүй", r.name, num(r.txnCount),
-          mnt(r.creditTotal), mnt(r.debitTotal)]),
-        ["left", "left", "left", "right", "right", "right"]));
-      body.push(`<h4>ИДЭВХЖИЛ</h4>`);
-      body.push(a.hasTimeOfDay
-        ? htmlBuckets("Цагаар", a.byHour)
-        : `<p class="muted">Цагийн мэдээлэлгүй тул цагийн идэвхжил `
-          + `тооцоогүй.</p>`);
-      body.push(htmlBuckets("Өдрөөр", a.byWeekday));
-      body.push(htmlBuckets("Сараар", a.byMonth));
-      body.push(`<p>${htmlEscape(narrative(a))}</p>`);
+          mnt(r.creditTotal), mnt(r.debitTotal)])));
+      b.push(htmlSectionBar("ИДЭВХЖИЛ"));
+      if (a.hasTimeOfDay) {
+        b.push(activityChart("Цагаар", a.byHour));
+      } else {
+        b.push(htmlNote("Цагийн мэдээлэлгүй тул цагийн идэвхжил тооцоогүй."));
+      }
+      b.push(activityChart("Өдрөөр", a.byWeekday));
+      b.push(activityChart("Сараар", a.byMonth));
+      b.push(`<p style="font-size:9pt;color:${INK};margin:8pt 0 0 0">`
+        + `${htmlEscape(narrative(a))}</p>`);
     }
 
-    body.push(`<h2 id="s2" class="major">2. ДАНСНУУДЫН ХОЛБООС</h2>`);
-    body.push(`<h4>2.1 ДУНДЫН ХАРИЛЦАГЧИД</h4>`);
-    body.push(htmlTable(
+    b.push(pageBreak());
+    b.push(htmlMajorBar("2. ДАНСНУУДЫН ХОЛБООС", "relations"));
+    b.push(htmlSectionBar("2.1 ДУНДЫН ХАРИЛЦАГЧИД"));
+    b.push(htmlDataTable(
       ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
+      [130, 95, 48, 82, 82, 78],
       input.mutualRelations.slice(0, 60).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal),
-        mnt(r.debitTotal), mnt(r.netTotal)]),
-      ["left", "left", "right", "right", "right", "right"]));
-    body.push(`<h4>2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ</h4>`);
-    body.push(htmlTable(["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"],
+        mnt(r.debitTotal), mnt(r.netTotal)])));
+    b.push(htmlSectionBar("2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ"));
+    b.push(htmlDataTable(["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"],
+      [185, 185, 55, 90],
       transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel,
-        num(t.txnCount), mnt(t.total)]),
-      ["left", "left", "right", "right"]));
+        num(t.txnCount), mnt(t.total)])));
 
-    body.push(`<h2 id="s3" class="major">3. ДҮГНЭЛТ</h2>`);
+    b.push(pageBreak());
+    b.push(htmlMajorBar("3. ДҮГНЭЛТ", "conclusions"));
     for (const [index, a] of analyses.entries()) {
-      body.push(`<h3>3.${index + 1} `
-        + `${htmlEscape(a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ")} · `
-        + `${htmlEscape(a.accountNumber)} ДУГААРТАЙ ДАНС</h3>`);
-      body.push(htmlFindings(accountFindings(a)));
+      b.push(htmlAccountBar(`3.${index + 1}`,
+        `${a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ"} · `
+        + `${a.accountNumber} ДУГААРТАЙ ДАНС`));
+      b.push(htmlFindings(accountFindings(a)));
       const written = conclusionFor(a.accountId);
       if (written) {
-        body.push(`<h4>Мөрдөгчийн тэмдэглэл</h4>`);
-        body.push(`<p class="note">${htmlEscape(written)}</p>`);
+        b.push(htmlNote("Мөрдөгчийн тэмдэглэл"));
+        b.push(htmlBodyText(written));
       }
     }
-    body.push(`<h3>3.${analyses.length + 1} ХОЛБООСЫН ДҮГНЭЛТ</h3>`);
-    body.push(htmlFindings(relationFindings(input)));
-    body.push(`<h3>3.${analyses.length + 2} ЕРӨНХИЙ ДҮГНЭЛТ</h3>`);
-    body.push(htmlFindings(generalFindings(input)));
+    b.push(htmlSectionBar(`3.${analyses.length + 1} ХОЛБООСЫН ДҮГНЭЛТ`));
+    b.push(htmlFindings(relationFindings(input)));
+    b.push(htmlSectionBar(`3.${analyses.length + 2} ЕРӨНХИЙ ДҮГНЭЛТ`));
+    b.push(htmlFindings(generalFindings(input)));
     const generalWritten = conclusionFor(null);
     if (generalWritten) {
-      body.push(`<h4>Мөрдөгчийн ерөнхий тэмдэглэл</h4>`);
-      body.push(`<p class="note">${htmlEscape(generalWritten)}</p>`);
+      b.push(htmlNote("Мөрдөгчийн ерөнхий тэмдэглэл"));
+      b.push(htmlBodyText(generalWritten));
     }
 
+    const stamp = `Forensic Analyst Workstation  ·  НУУЦ  ·  `
+      + `${formatDateLike(new Date().toISOString(), true)}`;
     return Buffer.from(`<!doctype html>
 <html lang="mn">
 <head>
-<meta charset="utf-8">
+<meta charset="utf-8" />
 <title>Тайлан · ${htmlEscape(input.caseId)}</title>
-<style>${VERDICT_HTML_CSS}</style>
+<style>${verdictScreenCss(stamp)}</style>
 </head>
 <body>
-<main class="page">
-${body.join("\n")}
-</main>
+<div class="sheet">
+${b.join("\n")}
+</div>
 </body>
 </html>
 `, "utf8");
@@ -858,15 +730,7 @@ ${body.join("\n")}
   // Court-file friendly PDF built from the same case-scoped aggregates as the
   // analysis screen. The client's draft supplies the document flow only; the
   // visual system and every finding below come from Forensic's own data.
-  async generateVerdictPdf(input: {
-    caseId: string;
-    caseName: string;
-    period: {from: string | null; to: string | null};
-    analyses: AccountAnalysis[];
-    mutualRelations: RelationRow[];
-    transfers: DirectTransfer[];
-    conclusions: CaseConclusion[];
-  }): Promise<Buffer> {
+  async generateVerdictPdf(input: VerdictInput): Promise<Buffer> {
     const {doc, done} = startDoc();
     formalHeader(doc, "Тайлан");
     const period = input.period.from && input.period.to
@@ -1012,75 +876,20 @@ function pdfNumberedFindings(doc: PDFKit.PDFDocument, findings: string[]): void 
   });
 }
 
-// The HTML edition's whole stylesheet. Inlined on purpose: the file must
-// render identically on a machine with no network and no font install, so it
-// carries no @import, no CDN and no external asset.
-const VERDICT_HTML_CSS = `
-  :root { color-scheme: light; }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: #E9EDF3; color: ${INK};
-    font: 13px/1.55 Arial, "Helvetica Neue", Helvetica, sans-serif; }
-  .page { max-width: 860px; margin: 24px auto; padding: 40px 44px;
-    background: #FFFFFF; }
-  h1 { margin: 0 0 18px; font-size: 24px; letter-spacing: 2px;
-    text-align: center; color: ${TABLE_HEAD}; }
-  h2 { margin: 30px 0 12px; padding-bottom: 6px; font-size: 15px;
-    letter-spacing: 1px; color: ${TABLE_HEAD};
-    border-bottom: 2px solid ${ACCENT_CYAN}; }
-  h2.major { font-size: 17px; }
-  h3 { margin: 24px 0 10px; font-size: 14px; color: ${DARK_BLUE}; }
-  h4 { margin: 18px 0 8px; font-size: 12px; letter-spacing: 0.6px;
-    color: ${TABLE_HEAD}; }
-  p { margin: 8px 0; }
-  p.muted, .muted { color: ${MUTED}; font-size: 12px; }
-  p.note { padding: 10px 12px; background: ${BLUE_TINT};
-    border-left: 3px solid ${ACCENT_CYAN}; }
-  .doc-head .head-row { display: flex; justify-content: space-between;
-    gap: 16px; padding-bottom: 10px; color: ${MUTED}; font-size: 12px;
-    border-bottom: 2px solid ${DARK_BLUE}; }
-  .head-row .center { text-align: center; }
-  .head-row .right { text-align: right; }
-  dl.kv { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 24px;
-    margin: 14px 0; }
-  dl.kv > div { display: flex; justify-content: space-between; gap: 12px;
-    padding: 5px 0; border-bottom: 1px solid #E5EAF1; }
-  dl.kv dt { margin: 0; color: ${MUTED}; }
-  dl.kv dd { margin: 0; text-align: right; }
-  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-    margin: 12px 0; }
-  .card { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px;
-    background: ${BLUE_TINT}; border-left: 3px solid ${ACCENT_CYAN}; }
-  .card-no { color: ${MUTED}; font-size: 11px; letter-spacing: 0.6px; }
-  .card strong { color: ${DARK_BLUE}; font-size: 13px; }
-  table { width: 100%; margin: 10px 0; border-collapse: collapse;
-    font-size: 12px; }
-  th { padding: 7px 8px; background: ${TABLE_HEAD}; color: #FFFFFF;
-    font-weight: 700; text-align: left; }
-  td { padding: 6px 8px; border-bottom: 1px solid #E5EAF1;
-    vertical-align: top; }
-  tbody tr:nth-child(even) td { background: ${ZEBRA}; }
-  th.r, td.r { text-align: right; white-space: nowrap; }
-  td.empty { color: ${MUTED}; text-align: center; }
-  table.contents td:first-child { width: 60px; color: ${MUTED}; }
-  a { color: ${TABLE_HEAD}; }
-  .chart { margin: 12px 0 16px; }
-  .bar-row { display: grid; grid-template-columns: 110px 1fr 190px;
-    align-items: center; gap: 10px; padding: 2px 0; font-size: 12px; }
-  .bar-label { color: ${MUTED}; }
-  .bar-track { height: 9px; background: #EDF1F6; border-radius: 2px; }
-  .bar-fill { display: block; height: 9px; background: ${ACCENT_CYAN};
-    border-radius: 2px; }
-  .bar-value { text-align: right; white-space: nowrap; }
-  ol.findings { margin: 8px 0; padding-left: 20px; }
-  ol.findings li { margin: 5px 0; }
-  @page { size: A4; margin: 14mm; }
-  @media print {
-    body { background: #FFFFFF; }
-    .page { max-width: none; margin: 0; padding: 0; }
-    h2, h3 { break-after: avoid; }
-    table, .chart { break-inside: avoid; }
-  }
-`;
+// ТАЙЛАН-ы гурван хувилбарын нэгдсэн оролт.
+export interface VerdictInput {
+  caseId: string;
+  caseName: string;
+  period: {from: string | null; to: string | null};
+  analyses: AccountAnalysis[];
+  mutualRelations: RelationRow[];
+  transfers: DirectTransfer[];
+  conclusions: CaseConclusion[];
+}
+
+// PDF-ийн агуулгын өргөн (A4, 40pt зах). HTML болон Word-ын багана бүр яг
+// энэ хэмжээст тааруулагдана — гурван файлын хүснэгт ижил өргөнтэй гарна.
+const HTML_CW = 515;
 
 const HTML_ESCAPES: Record<string, string> = {
   "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
@@ -1090,51 +899,277 @@ function htmlEscape(value: string): string {
   return value.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c] ?? c);
 }
 
+// Хүснэгтийн нүд. Өргөнийг ЗААВАЛ pt-ээр мөр дотор бичнэ: html-to-docx үүнээс
+// Word-ын багааны өргөнийг (tcW) уншдаг ([[docx-table-widths]]).
+function htmlCell(inner: string, opts: {
+  w: number; align?: "left" | "center" | "right"; style?: string;
+  id?: string; colSpan?: number;
+}): string {
+  return `<td${opts.id ? ` id="${opts.id}"` : ""}`
+    + `${opts.colSpan ? ` colspan="${opts.colSpan}"` : ""}`
+    + ` style="width:${opts.w}pt;`
+    + `${opts.align ? `text-align:${opts.align};` : ""}`
+    + `${opts.style ?? ""}">${inner}</td>`;
+}
+
+// Зураасгүй байрлуулах хүснэгт. Нэг мөрөнд хоёр зүйл тавих ганц найдвартай
+// арга нь хүснэгт: браузер, Word хоёр дээр адилхан ажиллана.
+function layoutTable(rows: string[]): string {
+  return `<table style="width:${HTML_CW}pt;border-collapse:collapse;`
+    + `table-layout:fixed;margin:0"><tbody>${rows.join("")}</tbody></table>`
+    // ⚠️ Word нь хооронд нь ямар ч догол мөргүй зэрэгцсэн хоёр хүснэгтийг НЭГ
+    // хүснэгт болгон нийлүүлдэг — багана нь зөрж, тайлан эвдэрнэ. 1pt-ийн
+    // хоосон мөр нь браузерт үл мэдэгдэх ч тэр нийлэлтийг таслана.
+    + `<p style="font-size:1pt;margin:0;line-height:1pt">&nbsp;</p>`;
+}
+
+// PDF-ийн sectionBar: гарчгийн УРТААР нь татсан цэнхэр зураас.
+function htmlSectionBar(title: string, id?: string): string {
+  // Гарчгийн өргөнийг үсгийн тоогоор ойролцоо тооцно (PDF нь жинхэнэ өргөнийг
+  // хэмждэг). Бага зэрэг илүү авч, nowrap тавьсан нь гарчиг хоёр мөр болж
+  // цэнхэр зураас таслагдахаас сэргийлнэ.
+  const width = Math.min(HTML_CW,
+    Math.max(42, Math.round(title.length * 7 + 6)));
+  const pad = "padding:9pt 0 3pt 0";
+  return layoutTable([`<tr>`
+    + htmlCell(htmlEscape(title), {w: width, id,
+      style: `font-size:10.5pt;color:${DARK_BLUE};${pad};white-space:nowrap;`
+        + `border-bottom:2pt solid ${ACCENT_CYAN}`})
+    + htmlCell("", {w: HTML_CW - width, style: pad})
+    + `</tr>`]);
+}
+
+// PDF-ийн majorSectionBar: цэнхэр хөндлөвч, том гарчиг, доогуур саарал зураас.
+function htmlMajorBar(title: string, id?: string): string {
+  const border = "border-bottom:0.8pt solid #B8C6D4";
+  return layoutTable([`<tr>`
+    + htmlCell("", {w: 5,
+      style: `background-color:${ACCENT_CYAN};${border}`})
+    + htmlCell(htmlEscape(title), {w: HTML_CW - 5, id,
+      style: `font-size:14pt;color:${DARK_BLUE};`
+        + `padding:4pt 0 6pt 9pt;${border}`})
+    + `</tr>`]);
+}
+
+// PDF-ийн accountSectionBar: дугаарын цайвар шошго + дансны нэр.
+function htmlAccountBar(label: string, title: string, id?: string): string {
+  const border = "border-bottom:0.6pt solid #D7E0E8";
+  return layoutTable([`<tr>`
+    + htmlCell(htmlEscape(label), {w: 34, align: "center",
+      style: `background-color:#DDF5F8;color:#007F90;font-size:9.5pt;`
+        + `padding:4pt 0;${border}`})
+    + htmlCell(`<span class="clip">${htmlEscape(title)}</span>`,
+      {w: HTML_CW - 34, id,
+        style: `font-size:10.5pt;color:${DARK_BLUE};`
+          + `padding:4pt 0 4pt 11pt;${border}`})
+    + `</tr>`]);
+}
+
+// PDF-ийн pdfKv: зүүн талд саарал шошго, баруун талд утга.
 function htmlKv(rows: [string, string][]): string {
-  return `<dl class="kv">${rows.map(([label, value]) =>
-    `<div><dt>${htmlEscape(label)}</dt>`
-    + `<dd>${htmlEscape(value)}</dd></div>`).join("")}</dl>`;
+  return layoutTable(rows.map(([label, value]) => `<tr>`
+    + htmlCell(htmlEscape(label), {w: 145,
+      style: `font-size:9pt;color:${MUTED};padding:2pt 0`})
+    + htmlCell(htmlEscape(value), {w: HTML_CW - 145,
+      style: `font-size:9pt;color:${INK};padding:2pt 0`})
+    + `</tr>`));
 }
 
-function htmlTable(headers: string[], rows: string[][],
-  aligns: ("left" | "right")[]): string {
-  const cls = (index: number): string =>
-    aligns[index] === "right" ? " class=\"r\"" : "";
-  const head = headers.map((h, i) =>
-    `<th${cls(i)}>${htmlEscape(h)}</th>`).join("");
-  const body = rows.length
-    ? rows.map((row) => `<tr>${row.map((value, i) =>
-      `<td${cls(i)}>${htmlEscape(value)}</td>`).join("")}</tr>`).join("")
-    : `<tr><td class="empty" colspan="${headers.length}">Мэдээлэл алга</td>`
-      + `</tr>`;
-  return `<table><thead><tr>${head}</tr></thead>`
-    + `<tbody>${body}</tbody></table>`;
-}
-
-// The activity figure of the Word/PDF editions, drawn with CSS bars so the
-// HTML file stays text-only. Same 24-bucket cut as bucketChart().
-function htmlBuckets(title: string,
-  buckets: import("./accountAnalysisService").ActivityBucket[]): string {
-  const active = buckets.filter((b) => b.count > 0).slice(0, 24);
-  if (!active.length) {
-    return `<div class="chart"><h4>${htmlEscape(title)}</h4>`
-      + `<p class="muted">Мэдээлэл алга</p></div>`;
+// PDF-ийн pdfAccountCards: хоёр баганаар өрсөн цайвар хөх карт.
+function htmlAccountCards(analyses: AccountAnalysis[]): string {
+  if (!analyses.length) {
+    return htmlNote("Шинжилсэн данс бүртгэгдээгүй.");
   }
-  const max = Math.max(1, ...active.map((b) => b.count));
-  const rows = active.map((b) => {
-    const width = Math.max(1, Math.round(100 * b.count / max));
-    const value = `${num(b.count)} · ${mnt(b.creditTotal + b.debitTotal)}`;
-    return `<div class="bar-row"><span class="bar-label">`
-      + `${htmlEscape(b.label)}</span><span class="bar-track">`
-      + `<span class="bar-fill" style="width:${width}%"></span></span>`
-      + `<span class="bar-value">${htmlEscape(value)}</span></div>`;
-  }).join("");
-  return `<div class="chart"><h4>${htmlEscape(title)}</h4>${rows}</div>`;
+  const tint = `background-color:${BLUE_TINT}`;
+  const card = (a: AccountAnalysis | undefined, index: number): string => {
+    if (!a) return htmlCell("", {w: 150}) + htmlCell("", {w: 101});
+    return htmlCell(
+      `<span style="font-size:7.5pt;color:${MUTED}">${index + 1}. ДАНС</span>`
+      + `<br /><span style="font-size:8.5pt;color:${INK}">`
+      + `${htmlEscape(a.ownerName || "Эзэмшигч тодорхойгүй")}</span>`,
+      {w: 150, style: `${tint};border-left:4pt solid ${ACCENT_CYAN};`
+        + `padding:6pt 0 6pt 9pt`})
+      + htmlCell(`<span style="font-size:8.5pt;color:${DARK_BLUE}">`
+        + `${htmlEscape(a.accountNumber)}</span>`,
+      {w: 101, align: "right", style: `${tint};padding:6pt 9pt 6pt 0`});
+  };
+  const rows: string[] = [];
+  for (let index = 0; index < analyses.length; index += 2) {
+    rows.push(`<tr>${card(analyses[index], index)}`
+      + `${htmlCell("", {w: 13})}`
+      + `${card(analyses[index + 1], index + 1)}</tr>`);
+    if (index + 2 < analyses.length) {
+      rows.push(`<tr>${["", "", "", "", ""].map((_, i) =>
+        htmlCell("", {w: [150, 101, 13, 150, 101][i],
+          style: "height:6pt;font-size:4pt"})).join("")}</tr>`);
+    }
+  }
+  return layoutTable(rows);
+}
+
+// PDF-ийн pdfContentsTable. Хуудасны дугаарыг үүсгэгч мэдэхгүй тул (Word ч,
+// браузер ч хуудсаа өөрөө таслана) дугаарын оронд бүлэг рүү үсрэх холбоос.
+function htmlContents(analyses: AccountAnalysis[]): string {
+  const chapter = (number: string, title: string, href: string): string =>
+    `<tr>`
+    + htmlCell(number, {w: 46, style: `font-size:11pt;color:${DARK_BLUE};`
+      + `padding:9pt 0 6pt 0;border-top:0.7pt solid #D7E0E8`})
+    + htmlCell(`<a href="#${href}" style="color:${DARK_BLUE};`
+      + `text-decoration:none">${htmlEscape(title)}</a>`,
+    {w: HTML_CW - 46, style: `font-size:11pt;color:${DARK_BLUE};`
+      + `padding:9pt 0 6pt 0;border-top:0.7pt solid #D7E0E8`})
+    + `</tr>`;
+  const sub = (number: string, title: string, href: string): string =>
+    `<tr>`
+    + htmlCell(number, {w: 46, style: `font-size:9.5pt;color:${MUTED};`
+      + `padding:3pt 0 3pt 18pt`})
+    + htmlCell(`<a href="#${href}" style="color:${INK};`
+      + `text-decoration:none" class="clip">${htmlEscape(title)}</a>`,
+    {w: HTML_CW - 46, style: `font-size:9.5pt;color:${INK};padding:3pt 0`})
+    + `</tr>`;
+  return layoutTable([
+    chapter("1", "Дансны дүн шинжилгээ", "account-1"),
+    ...analyses.map((a, index) => sub(`1.${index + 1}`,
+      `${a.ownerName || "Эзэмшигч тодорхойгүй"} · `
+      + `${a.accountNumber} дугаартай данс`, `account-${index + 1}`)),
+    chapter("2", "Данснуудын холбоос", "relations"),
+    chapter("3", "Дүгнэлт", "conclusions"),
+  ]);
+}
+
+// PDF-ийн pdfRows: хар хөх толгой, сондгой мөрөнд цайвар дэвсгэр, 3 дахь
+// баганаас эхлэн саарал бичвэр. Багана бүр PDF-ийн ЯГ ТЭР өргөнтэй.
+function htmlDataTable(heads: string[], widths: number[],
+  rows: string[][]): string {
+  const isRight = (label: string, index: number): boolean =>
+    index > 1 && /Гүйлгээ|Орлого|Зарлага|Дүн|Зөрүү/.test(label);
+  const head = `<tr>${heads.map((label, i) => htmlCell(htmlEscape(label), {
+    w: widths[i], align: isRight(label, i) ? "right" : "left",
+    style: `background-color:${TABLE_HEAD};color:#FFFFFF;font-size:8pt;`
+      + `padding:4pt 6pt`,
+  })).join("")}</tr>`;
+  if (!rows.length) {
+    return layoutTable([head, `<tr>`
+      + htmlCell("Мэдээлэл алга", {w: HTML_CW, colSpan: heads.length,
+        style: `font-size:8.5pt;color:${MUTED};padding:4pt 6pt`})
+      + `</tr>`]);
+  }
+  const body = rows.map((row, index) => `<tr>${row.map((value, i) =>
+    htmlCell(`<span class="clip">${htmlEscape(value)}</span>`, {
+      w: widths[i], align: isRight(heads[i], i) ? "right" : "left",
+      style: `font-size:7.6pt;color:${i >= 2 ? MUTED : INK};`
+        + `padding:2.5pt 6pt;`
+        + (index % 2 ? `background-color:${ZEBRA};` : ""),
+    })).join("")}</tr>`);
+  return layoutTable([head, ...body]);
+}
+
+function htmlNote(text: string): string {
+  return `<p style="font-size:8.5pt;color:${MUTED};margin:6pt 0 2pt 0">`
+    + `${htmlEscape(text)}</p>`;
+}
+
+function htmlBodyText(text: string): string {
+  return `<p style="font-size:10.5pt;color:${INK};margin:4pt 0 8pt 0">`
+    + `${htmlEscape(text)}</p>`;
 }
 
 function htmlFindings(findings: string[]): string {
-  return `<ol class="findings">${findings.map((f) =>
-    `<li>${htmlEscape(f)}</li>`).join("")}</ol>`;
+  return `<ol style="margin:6pt 0 10pt 0;padding-left:16pt">`
+    + findings.map((finding) => `<li style="font-size:10.5pt;color:${INK};`
+      + `margin:0 0 4pt 0">${htmlEscape(finding)}</li>`).join("")
+    + `</ol>`;
+}
+
+// Word-д хуудас таслах (браузерт хэвлэхэд мөн адил). html-to-docx нь ЗӨВХӨН
+// ийм байдлаар бичсэн таслалтыг ойлгодог — <br class="page-break"> ажиллахгүй.
+function pageBreak(): string {
+  return `<div style="page-break-before:always"></div>`;
+}
+
+// PDF-ийн pdfBuckets графикийн хуулбар: шошго, цэнхэр багана, тоо.
+// ⛔ Зураг ашиглаж БОЛОХГҮЙ: контейнерт фонт суугаагүй тул SVG→PNG хөрвүүлэг
+// кирилл үсгийг дөрвөлжин хайрцаг болгодог (Word-ын хуучин график яг ийм
+// эвдэрсэн байсан). Дүүргэсэн блок тэмдэгт нь браузер, Word хоёрт ижил
+// харагдаж, ямар ч фонт шаарддаггүй.
+const CHART_BLOCKS = 55;
+
+function activityChart(title: string,
+  buckets: import("./accountAnalysisService").ActivityBucket[]): string {
+  const active = buckets.filter((b) => b.count > 0).slice(0, 24);
+  const max = Math.max(1, ...active.map((b) => b.count));
+  const heading = `<p style="font-size:9pt;color:${DARK_BLUE};`
+    + `margin:8pt 0 2pt 0">${htmlEscape(title)}</p>`;
+  if (!active.length) return heading + htmlNote("Мэдээлэл алга");
+  const rows = active.map((b) => {
+    const blocks = Math.max(1, Math.round(CHART_BLOCKS * b.count / max));
+    return `<tr>`
+      + htmlCell(htmlEscape(b.label), {w: 58,
+        style: `font-size:7.5pt;color:${MUTED};padding:0.5pt 0`})
+      + htmlCell(`<span style="font-size:7.5pt;color:${ACCENT_CYAN};`
+        + `letter-spacing:-0.4pt">${"\u2588".repeat(blocks)}</span>`,
+      {w: 372, style: "padding:0.5pt 4pt;white-space:nowrap"})
+      + htmlCell(htmlEscape(`${num(b.count)} · `
+        + `${mnt(b.creditTotal + b.debitTotal)}`),
+      {w: 85, align: "right",
+        style: `font-size:7.5pt;color:${INK};padding:0.5pt 0`})
+      + `</tr>`;
+  });
+  return heading + layoutTable(rows);
+}
+
+// ЗӨВХӨН браузерт хамаатай хэсэг: html-to-docx <style> блокийг уншдаггүй тул
+// эндээс Word-д юу ч очихгүй. Тийм болохоор энд зөвхөн харагдац засна —
+// байрлал, өргөн, өнгө бүгд мөр дотор (inline) бичигдсэн байна.
+function verdictScreenCss(stamp: string): string {
+  return `
+  body { margin: 0; background: #E9EDF3; color: ${INK};
+    font-family: Arial, "Helvetica Neue", Helvetica, sans-serif; }
+  .sheet { box-sizing: border-box; width: 595pt; margin: 16pt auto;
+    padding: 40pt; background: #FFFFFF; }
+  .sheet::after { content: "${stamp.replace(/"/g, "'")}"; display: block;
+    margin-top: 20pt; padding-top: 6pt; border-top: 0.5pt solid #E2E8F0;
+    font-size: 7pt; color: ${MUTED}; }
+  td { vertical-align: top; }
+  .clip { display: block; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  ol { margin-top: 6pt; }
+  @page { size: A4; margin: 40pt; }
+  @media print {
+    body { background: #FFFFFF; }
+    .sheet { width: auto; margin: 0; padding: 0; }
+    table, img, li { break-inside: avoid; }
+  }
+`;
+}
+
+// html-to-docx нь хүснэгтийн БҮХ баганыг ижил өргөнтэй бичээд, нүд бүрийн
+// өргөнийг 0 болгодог — энэ нь Pages дээр үсэг бүрийг босоо баганаар
+// урсгадаг яг тэр эвдрэл ([[docx-table-widths]]). Тийм болохоор баримтыг
+// задалж, эхний мөрийн бодит өргөнөөс tblGrid-ийг дахин бичээд, байрлалыг
+// fixed болгож нааж өгнө.
+async function fixDocxTableGrids(buf: Buffer): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(buf);
+  const entry = zip.file("word/document.xml");
+  if (!entry) return buf;
+  const xml = (await entry.async("string")).replace(
+    /<w:tbl>[\s\S]*?<\/w:tbl>/g, (table) => {
+      const firstRow = /<w:tr[\s\S]*?<\/w:tr>/.exec(table);
+      if (!firstRow) return table;
+      const widths = [...firstRow[0].matchAll(/<w:tcW w:w="(\d+)"/g)]
+        .map((m) => Number(m[1]));
+      if (!widths.length || widths.some((w) => w <= 0)) return table;
+      const grid = `<w:tblGrid>${widths
+        .map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid>`;
+      let fixed = table.replace(/<w:tblGrid>[\s\S]*?<\/w:tblGrid>/, grid);
+      if (!fixed.includes("<w:tblLayout")) {
+        fixed = fixed.replace("</w:tblPr>",
+          "<w:tblLayout w:type=\"fixed\"/></w:tblPr>");
+      }
+      return fixed;
+    });
+  zip.file("word/document.xml", xml);
+  return zip.generateAsync({type: "nodebuffer", compression: "DEFLATE"});
 }
 
 function accountFindings(a: AccountAnalysis): string[] {
@@ -1354,382 +1389,6 @@ function pdfBuckets(doc: PDFKit.PDFDocument, title: string, buckets: import("./a
 
 function num(n: number): string {
   return Math.round(n).toLocaleString("en-US");
-}
-
-function field(label: string, value: string): Paragraph {
-  return new Paragraph({children: [
-    new TextRun({text: `${label} : `, bold: true, size: 24, font: "Arial"}),
-    new TextRun({text: value, size: 24, font: "Arial"}),
-  ]});
-}
-
-function subheading(text: string): Paragraph {
-  return new Paragraph({
-    heading: HeadingLevel.HEADING_3,
-    spacing: {before: 200, after: 80},
-    children: [new TextRun({text, bold: true, size: 24, font: "Arial"})],
-  });
-}
-
-function note(text: string): Paragraph {
-  return new Paragraph({children: [new TextRun({text, italics: true,
-    size: 20, color: "808080", font: "Arial"})]});
-}
-
-// A4 portrait minus the default 1-inch margins, in DXA (twentieths of a point).
-// Every table MUST declare its column widths: with only a percentage width on
-// the table, Word guesses and Pages collapses each column to a single character,
-// which turned the whole document into vertical strips of letters.
-const PAGE_DXA = 10106;
-const DOCX_NAVY = "16324F";
-const DOCX_NAVY_DARK = "0F2438";
-const DOCX_INK = "24303D";
-const DOCX_MUTED = "607080";
-const DOCX_LINE = "CBD5DF";
-const DOCX_ZEBRA = "F3F6F9";
-const DOCX_PALE_BLUE = "EAF1F8";
-
-// 600 DXA (~0.42") is the floor: below roughly a quarter inch a cell wraps a
-// two-digit number one character per line, which is what made the first draft of
-// this document unreadable.
-const MIN_COL_DXA = 600;
-
-function widthsFor(weights: number[]): number[] {
-  const sum = weights.reduce((a, b) => a + b, 0) || 1;
-  const raw = weights.map((w) => Math.round((w / sum) * PAGE_DXA));
-  const lifted = raw.map((w) => Math.max(w, MIN_COL_DXA));
-  // Lifting narrow columns has to be paid for by the wide ones, or the table
-  // ends up wider than the page.
-  const over = lifted.reduce((a, b) => a + b, 0) - PAGE_DXA;
-  if (over <= 0) return lifted;
-  const spare = lifted
-    .map((w, i) => ({i, room: w - MIN_COL_DXA}))
-    .filter((x) => x.room > 0);
-  const roomTotal = spare.reduce((a, b) => a + b.room, 0) || 1;
-  for (const {i, room} of spare) {
-    lifted[i] -= Math.round((room / roomTotal) * over);
-  }
-  return lifted;
-}
-
-function docxCell(text: string, dxa: number, opts: {
-  bold?: boolean;
-  fill?: string;
-  color?: string;
-  align?: typeof AlignmentType[keyof typeof AlignmentType];
-  size?: number;
-} = {}): TableCell {
-  return new TableCell({
-    width: {size: dxa, type: WidthType.DXA},
-    verticalAlign: VerticalAlign.CENTER,
-    margins: {top: 95, bottom: 95, left: 110, right: 110},
-    shading: opts.fill ? {fill: opts.fill} : undefined,
-    children: [new Paragraph({
-      alignment: opts.align,
-      spacing: {before: 0, after: 0, line: 240},
-      children: [new TextRun({
-        text,
-        bold: opts.bold,
-        size: opts.size ?? 19,
-        color: opts.color ?? DOCX_INK,
-        font: "Arial",
-      })],
-    })],
-  });
-}
-
-function table(colWidths: number[], rows: TableRow[]): Table {
-  return new Table({
-    width: {size: PAGE_DXA, type: WidthType.DXA},
-    layout: TableLayoutType.FIXED,
-    columnWidths: colWidths,
-    borders: {
-      top: {style: BorderStyle.SINGLE, size: 4, color: DOCX_LINE},
-      bottom: {style: BorderStyle.SINGLE, size: 4, color: DOCX_LINE},
-      left: {style: BorderStyle.SINGLE, size: 4, color: DOCX_LINE},
-      right: {style: BorderStyle.SINGLE, size: 4, color: DOCX_LINE},
-      insideHorizontal: {style: BorderStyle.SINGLE, size: 3,
-        color: DOCX_LINE},
-      insideVertical: {style: BorderStyle.SINGLE, size: 3,
-        color: DOCX_LINE},
-    },
-    rows,
-  });
-}
-
-function kvTable(rows: [string, string][]): Table {
-  const w = widthsFor([4, 6]);
-  return table(w, rows.map(([k, v], index) => new TableRow({
-    cantSplit: true,
-    children: [
-      docxCell(k, w[0], {bold: true, fill: DOCX_PALE_BLUE,
-        color: DOCX_NAVY_DARK}),
-      docxCell(v, w[1], {fill: index % 2 ? DOCX_ZEBRA : "FFFFFF"}),
-    ],
-  })));
-}
-
-// `weights` sizes the columns relative to each other — a name column needs far
-// more room than a count.
-function gridTable(
-  headers: string[], rows: string[][], weights?: number[]
-): Table {
-  const w = widthsFor(weights ?? headers.map(() => 1));
-  return table(w, [
-    new TableRow({
-      tableHeader: true,
-      cantSplit: true,
-      children: headers.map((h, i) => docxCell(h, w[i], {
-        bold: true, fill: DOCX_NAVY, color: "FFFFFF", size: 18,
-        align: h === "№" ? AlignmentType.CENTER : AlignmentType.LEFT,
-      })),
-    }),
-    ...(rows.length > 0
-      ? rows.map((r, rowIndex) => new TableRow({
-        cantSplit: true,
-        children: r.map((v, i) => docxCell(v, w[i] ?? w[0], {
-          fill: rowIndex % 2 ? DOCX_ZEBRA : "FFFFFF",
-          align: headers[i] === "№"
-            ? AlignmentType.CENTER
-            : /Гүйлгээ|Орлого|Зарлага|Дүн|Зөрүү/.test(headers[i] ?? "")
-              ? AlignmentType.RIGHT : AlignmentType.LEFT,
-        })),
-      }))
-      : [new TableRow({children: headers.map((_h, i) =>
-        docxCell(i === 0 ? "Мэдээлэл алга" : "", w[i], {
-          fill: "FFFFFF", color: DOCX_MUTED,
-        }))})]),
-  ]);
-}
-
-function verdictTitle(text: string): Paragraph {
-  return new Paragraph({
-    alignment: AlignmentType.CENTER,
-    spacing: {before: 80, after: 220},
-    children: [new TextRun({text, bold: true, size: 34,
-      color: DOCX_NAVY_DARK, font: "Arial"})],
-  });
-}
-
-function noBorders(): {
-  top: {style: typeof BorderStyle.NONE; size: number; color: string};
-  bottom: {style: typeof BorderStyle.NONE; size: number; color: string};
-  left: {style: typeof BorderStyle.NONE; size: number; color: string};
-  right: {style: typeof BorderStyle.NONE; size: number; color: string};
-  insideHorizontal: {style: typeof BorderStyle.NONE; size: number;
-    color: string};
-  insideVertical: {style: typeof BorderStyle.NONE; size: number;
-    color: string};
-} {
-  const edge = {style: BorderStyle.NONE, size: 0, color: "FFFFFF"};
-  return {top: edge, bottom: edge, left: edge, right: edge,
-    insideHorizontal: edge, insideVertical: edge};
-}
-
-function plainCell(text: string, width: number,
-  align: typeof AlignmentType[keyof typeof AlignmentType] = AlignmentType.LEFT,
-  color = DOCX_INK, bold = false): TableCell {
-  return new TableCell({
-    width: {size: width, type: WidthType.DXA},
-    margins: {top: 25, bottom: 25, left: 0, right: 0},
-    borders: noBorders(),
-    children: [new Paragraph({
-      alignment: align,
-      spacing: {before: 0, after: 0, line: 230},
-      children: [new TextRun({text, color, bold, size: 19,
-        font: "Arial"})],
-    })],
-  });
-}
-
-function verdictFormalHeader(caseId: string, caseName: string,
-  period: {from: string | null; to: string | null}): (Paragraph | Table)[] {
-  const [dateLine1, dateLine2] = mnDateLines(new Date().toISOString());
-  const thirds = widthsFor([1, 1, 1]);
-  const header = new Table({
-    width: {size: PAGE_DXA, type: WidthType.DXA},
-    layout: TableLayoutType.FIXED,
-    columnWidths: thirds,
-    borders: noBorders(),
-    rows: [new TableRow({children: [
-      plainCell(`${dateLine1}\n${dateLine2}`, thirds[0]),
-      plainCell("Дугаар .......", thirds[1], AlignmentType.CENTER),
-      plainCell("Улаанбаатар\nхот", thirds[2], AlignmentType.RIGHT),
-    ]})],
-  });
-  const divider = new Paragraph({
-    spacing: {before: 70, after: 150},
-    border: {bottom: {style: BorderStyle.SINGLE, size: 8,
-      color: DOCX_NAVY_DARK}},
-  });
-  const metaWidths = widthsFor([3, 7]);
-  const meta = new Table({
-    width: {size: PAGE_DXA, type: WidthType.DXA},
-    layout: TableLayoutType.FIXED,
-    columnWidths: metaWidths,
-    borders: noBorders(),
-    rows: [
-      new TableRow({children: [
-        plainCell("Хэрэг", metaWidths[0], AlignmentType.LEFT, DOCX_MUTED),
-        plainCell(`${caseId} · ${caseName}`, metaWidths[1]),
-      ]}),
-      new TableRow({children: [
-        plainCell("Хамрах хугацаа", metaWidths[0], AlignmentType.LEFT,
-          DOCX_MUTED),
-        plainCell(period.from && period.to
-          ? `${formatDateLike(period.from)} — ${formatDateLike(period.to)}`
-          : "—", metaWidths[1]),
-      ]}),
-    ],
-  });
-  return [verdictTitle("Тайлан"), header, divider, meta];
-}
-
-function accountCardsTable(analyses: AccountAnalysis[]): Table {
-  const gap = 240;
-  const cardWidth = Math.floor((PAGE_DXA - gap) / 2);
-  const widths = [cardWidth, gap, cardWidth];
-  const rows: TableRow[] = [];
-  for (let index = 0; index < analyses.length; index += 2) {
-    const cards = [analyses[index], analyses[index + 1]];
-    const cardCell = (a: AccountAnalysis | undefined,
-      cardIndex: number): TableCell => {
-      if (!a) return plainCell("", cardWidth);
-      return new TableCell({
-        width: {size: cardWidth, type: WidthType.DXA},
-        verticalAlign: VerticalAlign.CENTER,
-        margins: {top: 105, bottom: 105, left: 150, right: 130},
-        shading: {fill: DOCX_PALE_BLUE},
-        borders: {
-          ...noBorders(),
-          left: {style: BorderStyle.SINGLE, size: 24, color: "00B8D0"},
-        },
-        children: [
-          new Paragraph({
-            spacing: {before: 0, after: 55},
-            children: [
-              new TextRun({text: `${cardIndex + 1}. ДАНС`, size: 16,
-                color: DOCX_MUTED, font: "Arial"}),
-              new TextRun({text: `     ${a.accountNumber}`, size: 17,
-                bold: true, color: DOCX_NAVY_DARK, font: "Arial"}),
-            ],
-          }),
-          new Paragraph({
-            spacing: {before: 0, after: 0},
-            children: [new TextRun({
-              text: a.ownerName || "Эзэмшигч тодорхойгүй",
-              size: 18, color: DOCX_INK, font: "Arial",
-            })],
-          }),
-        ],
-      });
-    };
-    rows.push(new TableRow({
-      cantSplit: true,
-      children: [cardCell(cards[0], index), plainCell("", gap),
-        cardCell(cards[1], index + 1)],
-    }));
-    if (index + 2 < analyses.length) {
-      rows.push(new TableRow({
-        cantSplit: true,
-        children: [plainCell("", cardWidth), plainCell("", gap),
-          plainCell("", cardWidth)],
-      }));
-    }
-  }
-  if (!rows.length) {
-    rows.push(new TableRow({children: [plainCell("Мэдээлэл алга",
-      cardWidth), plainCell("", gap), plainCell("", cardWidth)]}));
-  }
-  return new Table({
-    width: {size: PAGE_DXA, type: WidthType.DXA},
-    layout: TableLayoutType.FIXED,
-    columnWidths: widths,
-    borders: noBorders(),
-    rows,
-  });
-}
-
-function verdictMajorHeading(text: string): Paragraph {
-  return new Paragraph({
-    keepNext: true,
-    spacing: {before: 300, after: 130},
-    border: {bottom: {style: BorderStyle.SINGLE, size: 14,
-      color: "00B8D0"}},
-    children: [new TextRun({text, bold: true, size: 24,
-      color: DOCX_NAVY_DARK, font: "Arial"})],
-  });
-}
-
-function verdictAccountHeading(text: string): Paragraph {
-  return new Paragraph({
-    keepNext: true,
-    shading: {fill: DOCX_PALE_BLUE},
-    spacing: {before: 240, after: 120},
-    indent: {left: 130, right: 80},
-    border: {left: {style: BorderStyle.SINGLE, size: 20,
-      color: "00B8D0"}},
-    children: [new TextRun({text, bold: true, size: 22,
-      color: DOCX_NAVY_DARK, font: "Arial"})],
-  });
-}
-
-function verdictSubheading(text: string): Paragraph {
-  return new Paragraph({
-    keepNext: true,
-    spacing: {before: 230, after: 90},
-    children: [new TextRun({text, bold: true, size: 21,
-      color: DOCX_NAVY, font: "Arial"})],
-  });
-}
-
-function findingParagraph(number: number, text: string): Paragraph {
-  return new Paragraph({
-    spacing: {before: 50, after: 120, line: 300},
-    indent: {left: 360, hanging: 300},
-    children: [
-      new TextRun({text: `${number}. `, bold: true, size: 21,
-        color: DOCX_NAVY, font: "Arial"}),
-      new TextRun({text, size: 21, color: DOCX_INK, font: "Arial"}),
-    ],
-  });
-}
-
-async function bucketChart(title: string, buckets: {
-  label: string; count: number; creditTotal: number; debitTotal: number;
-}[]): Promise<Paragraph> {
-  const active = buckets.filter((b) => b.count > 0);
-  const max = Math.max(1, ...active.map((b) => b.count));
-  const shown = active.slice(0, 24);
-  const sourceWidth = 1312;
-  const rowHeight = 30;
-  const sourceHeight = 58 + Math.max(1, shown.length) * rowHeight;
-  const esc = (value: string): string => value.replace(/[&<>"']/g,
-    (char) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;",
-      "\"": "&quot;", "'": "&apos;"})[char] ?? char);
-  const rows = shown.length ? shown.map((b, index) => {
-    const y = 54 + index * rowHeight;
-    const barWidth = Math.max(4, Math.round(780 * b.count / max));
-    const value = `${num(b.count)} · ${mnt(b.creditTotal + b.debitTotal)}`;
-    return `<text x="0" y="${y}" class="label">${esc(b.label)}</text>`
-      + `<rect x="155" y="${y - 15}" width="${barWidth}" height="10" rx="2" fill="#00B8D0"/>`
-      + `<text x="1308" y="${y}" text-anchor="end" class="value">${esc(value)}</text>`;
-  }).join("") : `<text x="0" y="54" class="label">Мэдээлэл алга</text>`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${sourceWidth}" height="${sourceHeight}" viewBox="0 0 ${sourceWidth} ${sourceHeight}">
-    <rect width="100%" height="100%" fill="#FFFFFF"/>
-    <style>text{font-family:Arial,sans-serif}.title{font-size:20px;font-weight:700;fill:#16324F}.label{font-size:17px;fill:#6B7280}.value{font-size:17px;fill:#1F2937}</style>
-    <text x="0" y="22" class="title">${esc(title)}</text>${rows}
-  </svg>`;
-  const png = await sharp(Buffer.from(svg)).png().toBuffer();
-  return new Paragraph({
-    spacing: {before: 70, after: 70},
-    children: [new ImageRun({
-      type: "png", data: png,
-      transformation: {width: 656, height: Math.round(sourceHeight / 2)},
-      altText: {title, description: `${title} гүйлгээний график`,
-        name: title},
-    })],
-  });
 }
 
 // The template's Тайлбар sentence, with the blanks filled from measured peaks.

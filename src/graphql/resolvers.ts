@@ -16,7 +16,8 @@ import type {ImportKind, ImportService} from "../services/importService";
 import {
   uploadStart, uploadAppend, uploadContent, uploadRelease,
 } from "../services/import/uploadBuffer";
-import type {ReportService} from "../services/reportService";
+import type {ReportService, VerdictInput}
+  from "../services/reportService";
 import type {AuditLogService} from "../services/auditLogService";
 import type {EvidenceService} from "../services/evidenceService";
 import type {PeopleService} from "../services/peopleService";
@@ -46,12 +47,8 @@ import type {
   BankAccount, BankTransaction, CaseFile, Suspect,
 } from "../models/types";
 import {buildRelations} from "../services/relationService";
-import type {RelationRow} from "../services/relationService";
 import {
   analyseAccounts, directTransfers,
-} from "../services/accountAnalysisService";
-import type {
-  AccountAnalysis, DirectTransfer,
 } from "../services/accountAnalysisService";
 
 export interface GraphQLContext {
@@ -302,15 +299,7 @@ async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
 // scoped helpers.
 async function verdictReportInput(c: GraphQLContext): Promise<{
   active: CaseFile;
-  input: {
-    caseId: string;
-    caseName: string;
-    period: {from: string | null; to: string | null};
-    analyses: AccountAnalysis[];
-    mutualRelations: RelationRow[];
-    transfers: DirectTransfer[];
-    conclusions: CaseConclusion[];
-  };
+  input: VerdictInput;
 }> {
   const active = await c.session.getCurrentCase();
   if (!active) throw new Error("Хэрэг сонгоогүй байна");
@@ -663,7 +652,7 @@ export const resolvers = {
     },
     reportVerdictHtml: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const {active, input} = await verdictReportInput(c);
-      const buf = c.reports.generateVerdictHtml(input);
+      const buf = await c.reports.generateVerdictHtml(input);
       const filename = `Tailan-${active.caseId}.html`
         .replace(/[^A-Za-z0-9._-]/g, "-");
       await c.audit.record("Report.Generated", `File:${filename}`);

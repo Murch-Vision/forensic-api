@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@apollo/server": "^4.11.3",
+    "@turbodocx/html-to-docx": "^1.22.2",
     "better-sqlite3": "^12.11.1",
     "cors": "^2.8.6",
     "docx": "^9.7.1",
