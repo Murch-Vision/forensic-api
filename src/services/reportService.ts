@@ -628,11 +628,13 @@ export class ReportService {
     b.push(htmlContents(analyses));
 
     for (const [index, a] of analyses.entries()) {
-      b.push(pageBreak());
-      if (index === 0) b.push(htmlMajorBar("1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ"));
+      if (index === 0) {
+        b.push(htmlMajorBar("1. ДАНСНЫ ДҮН ШИНЖИЛГЭЭ", "account-1"));
+      }
       b.push(htmlAccountBar(`1.${index + 1}`,
         `${a.ownerName || "ЭЗЭМШИГЧ ТОДОРХОЙГҮЙ"} · `
-        + `${a.accountNumber} ДУГААРТАЙ ДАНС`, `account-${index + 1}`));
+        + `${a.accountNumber} ДУГААРТАЙ ДАНС`,
+        index === 0 ? undefined : `account-${index + 1}`));
       b.push(htmlKv([
         ["Нийт гүйлгээ", num(a.txnCount)],
         ["Харилцагч", num(a.counterpartyCount)],
@@ -671,7 +673,6 @@ export class ReportService {
         + `${htmlEscape(narrative(a))}</p>`);
     }
 
-    b.push(pageBreak());
     b.push(htmlMajorBar("2. ДАНСНУУДЫН ХОЛБООС", "relations"));
     b.push(htmlSectionBar("2.1 ДУНДЫН ХАРИЛЦАГЧИД"));
     b.push(htmlDataTable(
@@ -686,7 +687,6 @@ export class ReportService {
       transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel,
         num(t.txnCount), mnt(t.total)])));
 
-    b.push(pageBreak());
     b.push(htmlMajorBar("3. ДҮГНЭЛТ", "conclusions"));
     for (const [index, a] of analyses.entries()) {
       b.push(htmlAccountBar(`3.${index + 1}`,
@@ -970,15 +970,20 @@ function htmlSectionBar(title: string, id?: string): string {
 }
 
 // PDF-ийн majorSectionBar: цэнхэр хөндлөвч, том гарчиг, доогуур саарал зураас.
+// ⛔ Энэ гарчиг ЗААВАЛ шинэ хуудаснаас эхэлнэ (1. 2. 3. — эхний хуудсанд
+// зөвхөн нүүр ба агуулга үлдэнэ).
+// ⚠️ Хуудас таслалтыг ХООСОН догол мөрөнд бус, ГАРЧГИЙН өөрийнх нь догол
+// мөрөнд бичнэ: хоосон мөр дээр байхад өмнөх агуулга хуудсаа яг дүүргэсэн
+// тохиолдолд Pages давхар тасалж, БҮТЭН ХООСОН хуудас үлдээдэг. Гарчиг өөрөө
+// таслалтыг үүрч байвал шинэ хуудас нь ямагт гарчгаар эхэлнэ.
+// Ийм учраас энэ гарчиг хүснэгт БИШ, догол мөр: цэнхэр хөндлөвч, доогуур
+// зураас хоёр нь браузерын хэсэг (Word тэдгээрийг үл тоодог ч гарчиг нь
+// том, тод хэвээр).
 function htmlMajorBar(title: string, id?: string): string {
-  const border = "border-bottom:0.8pt solid #B8C6D4";
-  return gap(9) + layoutTable([`<tr>`
-    + htmlCell("", {w: 5,
-      style: `background-color:${ACCENT_CYAN};${border}`})
-    + htmlCell(htmlEscape(title), {w: HTML_CW - 5, id,
-      style: `font-size:14pt;color:${DARK_BLUE};`
-        + `padding:4pt 0 6pt 9pt;${border}`})
-    + `</tr>`]);
+  return `<p${id ? ` id="${id}"` : ""} style="page-break-before:always;`
+    + `font-size:14pt;color:${DARK_BLUE};margin:0;padding:8pt 0 6pt 9pt;`
+    + `border-left:5pt solid ${ACCENT_CYAN};`
+    + `border-bottom:0.8pt solid #B8C6D4">${htmlEscape(title)}</p>`;
 }
 
 // PDF-ийн accountSectionBar: дугаарын цайвар шошго + дансны нэр.
@@ -1150,15 +1155,6 @@ function htmlFindings(findings: string[]): string {
     + `</ol>`;
 }
 
-// ⛔ Word-д ХУУДАС ТАСЛАХГҮЙ. Албадсан таслалт бүр Pages дээр БҮТЭН ХООСОН
-// хуудас үлдээж байв: өмнөх агуулга хуудсаа дүүргэсэн байхад дээрээс нь
-// дахиад таслалт ордог. Word баримт өөрөө урсаж, эхлэх газраа өөрөө олно.
-// Браузер болон ХЭВЛЭЛТ дээр таслалт хэвээр — класс нь зөвхөн CSS-д
-// тодорхойлогдсон тул хөрвүүлэгч түүнийг огт хардаггүй.
-function pageBreak(): string {
-  return `<div class="pagebreak"></div>`;
-}
-
 // PDF-ийн pdfBuckets графикийн хуулбар: шошго, цэнхэр багана, тоо.
 // ⛔ Зураг ашиглаж БОЛОХГҮЙ: контейнерт фонт суугаагүй тул SVG→PNG хөрвүүлэг
 // кирилл үсгийг дөрвөлжин хайрцаг болгодог (Word-ын хуучин график яг ийм
@@ -1216,7 +1212,6 @@ function verdictScreenCss(stamp: string): string {
     text-overflow: ellipsis; }
   ol { margin-top: 6pt; }
   @page { size: A4; margin: 40pt; }
-  .pagebreak { break-before: page; }
   @media print {
     body { background: #FFFFFF; }
     .sheet { width: auto; margin: 0; padding: 0; }
