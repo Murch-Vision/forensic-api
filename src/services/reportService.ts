@@ -606,13 +606,13 @@ export class ReportService {
       + `margin:0 0 16pt 0">Тайлан</p>`);
     const headBorder = "border-bottom:1pt solid #111111;padding-bottom:10pt";
     b.push(layoutTable([`<tr>`
-      + htmlCell(`${htmlEscape(dateLine1)}<br />${htmlEscape(dateLine2)}`,
+      + htmlCell(line(htmlEscape(dateLine1)) + line(htmlEscape(dateLine2)),
         {w: 172, style: `font-size:10.5pt;color:#111111;${headBorder}`})
-      + htmlCell("Дугаар .......",
+      + htmlCell(line("Дугаар ......."),
         {w: 171, align: "center",
           style: `font-size:10.5pt;color:#111111;${headBorder}`})
-      + htmlCell(`${htmlEscape(locationTop)}<br />`
-        + `${htmlEscape(locationBottom)}`,
+      + htmlCell(line(htmlEscape(locationTop))
+        + line(htmlEscape(locationBottom)),
       {w: 172, align: "right",
         style: `font-size:10.5pt;color:#111111;${headBorder}`})
       + `</tr>`]));
@@ -913,6 +913,13 @@ function htmlCell(inner: string, opts: {
     + `${opts.style ?? ""}">${inner}</td>`;
 }
 
+// Нүдэн доторх НЭГ мөр. ⚠️ <br /> хэрэглэж БОЛОХГҮЙ: html-to-docx түүнийг
+// бүтэн хоосон догол мөр болгодог тул Word дээр карт, толгой хоёулаа
+// задарч харагдана.
+function line(text: string, style = ""): string {
+  return `<p style="margin:0;${style}">${text}</p>`;
+}
+
 // Зураасгүй байрлуулах хүснэгт. Нэг мөрөнд хоёр зүйл тавих ганц найдвартай
 // арга нь хүснэгт: браузер, Word хоёр дээр адилхан ажиллана.
 function layoutTable(rows: string[]): string {
@@ -930,7 +937,7 @@ function htmlSectionBar(title: string, id?: string): string {
   // хэмждэг). Бага зэрэг илүү авч, nowrap тавьсан нь гарчиг хоёр мөр болж
   // цэнхэр зураас таслагдахаас сэргийлнэ.
   const width = Math.min(HTML_CW,
-    Math.max(42, Math.round(title.length * 7 + 6)));
+    Math.max(52, Math.round(title.length * 7.4 + 24)));
   const pad = "padding:9pt 0 3pt 0";
   return layoutTable([`<tr>`
     + htmlCell(`<span class="bar">${htmlEscape(title)}</span>`,
@@ -986,13 +993,13 @@ function htmlAccountCards(analyses: AccountAnalysis[]): string {
   const card = (a: AccountAnalysis | undefined, index: number): string => {
     if (!a) return htmlCell("", {w: 150}) + htmlCell("", {w: 101});
     return htmlCell(
-      `<span style="font-size:7.5pt;color:${MUTED}">${index + 1}. ДАНС</span>`
-      + `<br /><span style="font-size:8.5pt;color:${INK}">`
-      + `${htmlEscape(a.ownerName || "Эзэмшигч тодорхойгүй")}</span>`,
+      line(`${index + 1}. ДАНС`, `font-size:7.5pt;color:${MUTED}`)
+      + line(htmlEscape(a.ownerName || "Эзэмшигч тодорхойгүй"),
+        `font-size:8.5pt;color:${INK}`),
       {w: 150, style: `${tint};border-left:4pt solid ${ACCENT_CYAN};`
         + `padding:6pt 0 6pt 9pt`})
-      + htmlCell(`<span style="font-size:8.5pt;color:${DARK_BLUE}">`
-        + `${htmlEscape(a.accountNumber)}</span>`,
+      + htmlCell(line(htmlEscape(a.accountNumber),
+        `font-size:8.5pt;color:${DARK_BLUE}`),
       {w: 101, align: "right", style: `${tint};padding:6pt 9pt 6pt 0`});
   };
   const rows: string[] = [];
@@ -1023,8 +1030,8 @@ function htmlContents(analyses: AccountAnalysis[]): string {
     + `</tr>`;
   const sub = (number: string, title: string, href: string): string =>
     `<tr>`
-    + htmlCell(number, {w: 46, style: `font-size:9.5pt;color:${MUTED};`
-      + `padding:3pt 0 3pt 18pt`})
+    + htmlCell(`<p style="margin:0;margin-left:18pt">${number}</p>`,
+      {w: 46, style: `font-size:9.5pt;color:${MUTED};padding:3pt 0`})
     + htmlCell(`<a href="#${href}" style="color:${INK};`
       + `text-decoration:none" class="clip">${htmlEscape(title)}</a>`,
     {w: HTML_CW - 46, style: `font-size:9.5pt;color:${INK};padding:3pt 0`})
@@ -1163,7 +1170,12 @@ async function fixDocxTableGrids(buf: Buffer): Promise<Buffer> {
   const zip = await JSZip.loadAsync(buf);
   const entry = zip.file("word/document.xml");
   if (!entry) return buf;
-  const xml = (await entry.async("string")).replace(
+  const xml = (await entry.async("string"))
+    // Агуулгын холбоосыг энгийн бичвэр болгоно: PDF дээр доогуур зураас
+    // байхгүй бөгөөд Word дотор «#account-1» рүү үсрэх холбоос ажилладаггүй.
+    .replace(/<w:hyperlink[^>]*>([\s\S]*?)<\/w:hyperlink>/g, "$1")
+    .replace(/<w:rStyle w:val="Hyperlink"\/>/g, "")
+    .replace(
     /<w:tbl>[\s\S]*?<\/w:tbl>/g, (table) => {
       const firstRow = /<w:tr[\s\S]*?<\/w:tr>/.exec(table);
       if (!firstRow) return table;
@@ -1176,6 +1188,15 @@ async function fixDocxTableGrids(buf: Buffer): Promise<Buffer> {
       if (!fixed.includes("<w:tblLayout")) {
         fixed = fixed.replace("</w:tblPr>",
           "<w:tblLayout w:type=\"fixed\"/></w:tblPr>");
+      }
+      if (!fixed.includes("<w:tblCellMar>")) {
+        fixed = fixed.replace("</w:tblPr>",
+          "<w:tblCellMar>"
+          + "<w:top w:w=\"0\" w:type=\"dxa\"/>"
+          + "<w:left w:w=\"60\" w:type=\"dxa\"/>"
+          + "<w:bottom w:w=\"0\" w:type=\"dxa\"/>"
+          + "<w:right w:w=\"60\" w:type=\"dxa\"/>"
+          + "</w:tblCellMar></w:tblPr>");
       }
       return fixed;
     });
