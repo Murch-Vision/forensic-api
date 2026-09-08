@@ -1053,20 +1053,22 @@ function htmlAccountCards(analyses: AccountAnalysis[]): string {
 function htmlContents(analyses: AccountAnalysis[]): string {
   const chapter = (number: string, title: string, href: string): string =>
     `<tr>`
-    + htmlCell(number, {w: 46, style: `font-size:11pt;color:${DARK_BLUE};`
+    + htmlCell(number, {w: 62, style: `font-size:11pt;color:${DARK_BLUE};`
+      + `white-space:nowrap;`
       + `padding:9pt 0 6pt 0;border-top:0.7pt solid #D7E0E8`})
     + htmlCell(`<a href="#${href}" style="color:${DARK_BLUE};`
       + `text-decoration:none">${htmlEscape(title)}</a>`,
-    {w: HTML_CW - 46, style: `font-size:11pt;color:${DARK_BLUE};`
+    {w: HTML_CW - 62, style: `font-size:11pt;color:${DARK_BLUE};`
       + `padding:9pt 0 6pt 0;border-top:0.7pt solid #D7E0E8`})
     + `</tr>`;
   const sub = (number: string, title: string, href: string): string =>
     `<tr>`
-    + htmlCell(`<p style="margin:0;margin-left:18pt">${number}</p>`,
-      {w: 46, style: `font-size:9.5pt;color:${MUTED};padding:3pt 0`})
+    + htmlCell(`<p style="margin:0;margin-left:12pt">${number}</p>`,
+      {w: 62, style: `font-size:9.5pt;color:${MUTED};padding:3pt 0;`
+        + `white-space:nowrap`})
     + htmlCell(`<a href="#${href}" style="color:${INK};`
       + `text-decoration:none" class="clip">${htmlEscape(title)}</a>`,
-    {w: HTML_CW - 46, style: `font-size:9.5pt;color:${INK};padding:3pt 0`})
+    {w: HTML_CW - 62, style: `font-size:9.5pt;color:${INK};padding:3pt 0`})
     + `</tr>`;
   return layoutTable([
     chapter("1", "Дансны дүн шинжилгээ", "account-1"),
