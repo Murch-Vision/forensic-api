@@ -682,7 +682,7 @@ export class ReportService {
         mnt(r.debitTotal), mnt(r.netTotal)])));
     b.push(htmlSectionBar("2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ"));
     b.push(htmlDataTable(["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"],
-      [185, 185, 55, 90],
+      [200, 200, 45, 70],
       transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel,
         num(t.txnCount), mnt(t.total)])));
 
@@ -913,6 +913,14 @@ function htmlCell(inner: string, opts: {
     + `${opts.style ?? ""}">${inner}</td>`;
 }
 
+// Гарчгийн ДЭЭРХ зай. Word нь нүдний padding-ыг үл тоодог тул зайг жинхэнэ
+// догол мөрөөр өгнө — эс тэгвээс гарчиг өмнөх жагсаалтад наалдаж, баримт
+// шахагдаж уншигдахгүй болно.
+function gap(sizePt = 7): string {
+  return `<p style="font-size:${sizePt}pt;margin:0;`
+    + `line-height:${sizePt}pt">&nbsp;</p>`;
+}
+
 // Нүдэн доторх НЭГ мөр. ⚠️ <br /> хэрэглэж БОЛОХГҮЙ: html-to-docx түүнийг
 // бүтэн хоосон догол мөр болгодог тул Word дээр карт, толгой хоёулаа
 // задарч харагдана.
@@ -952,7 +960,7 @@ function htmlSectionBar(title: string, id?: string): string {
   const width = Math.min(HTML_CW,
     Math.max(52, Math.round(title.length * 7.4 + 24)));
   const pad = "padding:9pt 0 3pt 0";
-  return layoutTable([`<tr>`
+  return gap(7) + layoutTable([`<tr>`
     + htmlCell(`<span class="bar">${htmlEscape(title)}</span>`,
       {w: width, id,
         style: `font-size:10.5pt;color:${DARK_BLUE};${pad};white-space:nowrap;`
@@ -964,7 +972,7 @@ function htmlSectionBar(title: string, id?: string): string {
 // PDF-ийн majorSectionBar: цэнхэр хөндлөвч, том гарчиг, доогуур саарал зураас.
 function htmlMajorBar(title: string, id?: string): string {
   const border = "border-bottom:0.8pt solid #B8C6D4";
-  return layoutTable([`<tr>`
+  return gap(9) + layoutTable([`<tr>`
     + htmlCell("", {w: 5,
       style: `background-color:${ACCENT_CYAN};${border}`})
     + htmlCell(htmlEscape(title), {w: HTML_CW - 5, id,
@@ -976,7 +984,7 @@ function htmlMajorBar(title: string, id?: string): string {
 // PDF-ийн accountSectionBar: дугаарын цайвар шошго + дансны нэр.
 function htmlAccountBar(label: string, title: string, id?: string): string {
   const border = "border-bottom:0.6pt solid #D7E0E8";
-  return layoutTable([`<tr>`
+  return gap(7) + layoutTable([`<tr>`
     + htmlCell(htmlEscape(label), {w: 34, align: "center",
       style: `background-color:#DDF5F8;color:#007F90;font-size:9.5pt;`
         + `padding:4pt 0;${border}`})
@@ -1068,12 +1076,32 @@ function htmlContents(analyses: AccountAnalysis[]): string {
 // ⛔ Хүснэгтийн нүд ХЭЗЭЭ Ч хоёр мөр болж болохгүй: бүх мөр ижил өндөртэй
 // байх ёстой бөгөөд дансны дугаар таслагдвал уншиж болохгүй болно. Word нь
 // CSS-ийн taslah (ellipsis) ойлголтыг мэддэггүй тул бичвэрийг СЕРВЕР ДЭЭР
-// нь тааруулж таслана — ингэснээр браузер, Word хоёр ЯГ ижил харагдана.
-// Arial-ийн дундаж үсгийн өргөн ≈ 0.56em; нүдний захын зайг хасаж тооцов.
+// нь тааруулж таслана.
+// ⚠️ Дундаж үсгийн өргөнөөр ТААМАГЛАЖ болохгүй: кирилл том үсэг латинаас
+// хамаагүй өргөн тул «дундаж» тооцоо мөрийг хоёр болгосоор байв. PDF-ийн
+// фонтоор нь ЖИНХЭНЭ өргөнийг хэмжинэ.
+let measureDoc: PDFKit.PDFDocument | null = null;
+
+function textWidthPt(text: string, sizePt: number): number {
+  if (!measureDoc) {
+    measureDoc = new PDFDocument({size: "A4", margin: 40});
+    const font = resolveFont();
+    if (font) measureDoc.registerFont("Body", font);
+    measureDoc.font(font ? "Body" : "Helvetica");
+  }
+  return measureDoc.fontSize(sizePt).widthOfString(text);
+}
+
 function fit(text: string, widthPt: number, fontPt: number): string {
-  const max = Math.max(3, Math.floor((widthPt - 8) / (fontPt * 0.56)));
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 1).trimEnd()}\u2026`;
+  // Нүдний хоёр талын зай (tblCellMar 3pt) + Word-ын бага зэргийн зөрүү.
+  const avail = widthPt - 9;
+  if (avail <= 0 || textWidthPt(text, fontPt) <= avail) return text;
+  let out = text;
+  while (out.length > 1
+    && textWidthPt(`${out}\u2026`, fontPt) > avail) {
+    out = out.slice(0, -1);
+  }
+  return `${out.trimEnd()}\u2026`;
 }
 
 // PDF-ийн pdfRows: хар хөх толгой, сондгой мөрөнд цайвар дэвсгэр, 3 дахь
@@ -1122,10 +1150,13 @@ function htmlFindings(findings: string[]): string {
     + `</ol>`;
 }
 
-// Word-д хуудас таслах (браузерт хэвлэхэд мөн адил). html-to-docx нь ЗӨВХӨН
-// ийм байдлаар бичсэн таслалтыг ойлгодог — <br class="page-break"> ажиллахгүй.
+// ⛔ Word-д ХУУДАС ТАСЛАХГҮЙ. Албадсан таслалт бүр Pages дээр БҮТЭН ХООСОН
+// хуудас үлдээж байв: өмнөх агуулга хуудсаа дүүргэсэн байхад дээрээс нь
+// дахиад таслалт ордог. Word баримт өөрөө урсаж, эхлэх газраа өөрөө олно.
+// Браузер болон ХЭВЛЭЛТ дээр таслалт хэвээр — класс нь зөвхөн CSS-д
+// тодорхойлогдсон тул хөрвүүлэгч түүнийг огт хардаггүй.
 function pageBreak(): string {
-  return `<div style="page-break-before:always"></div>`;
+  return `<div class="pagebreak"></div>`;
 }
 
 // PDF-ийн pdfBuckets графикийн хуулбар: шошго, цэнхэр багана, тоо.
@@ -1185,6 +1216,7 @@ function verdictScreenCss(stamp: string): string {
     text-overflow: ellipsis; }
   ol { margin-top: 6pt; }
   @page { size: A4; margin: 40pt; }
+  .pagebreak { break-before: page; }
   @media print {
     body { background: #FFFFFF; }
     .sheet { width: auto; margin: 0; padding: 0; }
