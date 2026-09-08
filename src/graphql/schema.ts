@@ -54,6 +54,9 @@ export const typeDefs = /* GraphQL */ `
     updatedAt: String!
     caseId: String
 
+    "Хэрэгтний бүртгэлд регистрээр нь таарсан эсэх."
+    offender: Boolean!
+
     "Computed [NotMapped] members from the C# Suspect model."
     initials: String!
     age: Int!
@@ -169,6 +172,9 @@ export const typeDefs = /* GraphQL */ `
     referenceNumber: String
     counterpartyAccount: String
     counterpartyName: String
+    counterpartyNationalId: String
+    "Харьцсан тал хэрэгтний бүртгэлд байгаа эсэх."
+    counterpartyOffender: Boolean!
     channel: String
     location: String
     runningBalance: Float!
@@ -234,6 +240,8 @@ export const typeDefs = /* GraphQL */ `
     name: String!
     account: String
     nationalId: String
+    "Хэрэгтний бүртгэлд регистрээр нь таарсан эсэх."
+    offender: Boolean!
     txnCount: Int!
     creditCount: Int!
     debitCount: Int!
@@ -437,6 +445,8 @@ export const typeDefs = /* GraphQL */ `
     photoData: String
     occupation: String
     nationalId: String
+    "Хэрэгтний бүртгэлд регистрээр нь таарсан эсэх."
+    offender: Boolean!
     "Why records were grouped: NAME | PHONE | NATIONAL_ID."
     matchedBy: [String!]!
     suspects: [Suspect!]!
@@ -723,6 +733,43 @@ export const typeDefs = /* GraphQL */ `
     networkCalls: Int!
     phonesEnsured: Int!
     linksCreated: Int!
+  }
+
+  """
+  Хэрэгтний бүртгэл — гаднаас (Excel) ирсэн регистрийн жагсаалт. Хэргийн
+  өгөгдөл БИШ: бүх хэрэгт нэг адил үйлчилнэ. labels нь тухайн хүн эх файлын
+  аль баганад (жагсаалтад) байсныг заана.
+  """
+  type KnownOffender {
+    id: Int!
+    nationalId: String!
+    labels: [String!]!
+    sourceFile: String
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  type KnownOffenderPage {
+    rows: [KnownOffender!]!
+    total: Int!
+  }
+
+  type OffenderLabel {
+    label: String!
+    count: Int!
+  }
+
+  "Импортын үр дүн. Нүд бүрийг тоолсон нь файл засахад л хэрэгтэй."
+  type OffenderImportSummary {
+    readCells: Int!
+    validCells: Int!
+    invalidCells: Int!
+    uniquePeople: Int!
+    added: Int!
+    updated: Int!
+    total: Int!
+    labels: [OffenderLabel!]!
+    invalidSample: [String!]!
   }
 
   type ReportFile {
@@ -1188,6 +1235,11 @@ export const typeDefs = /* GraphQL */ `
       endRow: Int
     ): ImportPreview!
     excelSheets(content: String!, filename: String!, uploadId: String): [String!]!
+    """Хэрэгтний бүртгэл. search = регистрийн хэсэг, label = нэг жагсаалт."""
+    knownOffenders(search: String, label: String, take: Int, skip: Int): KnownOffenderPage!
+    "Бүртгэл дэх жагсаалт бүр хэдэн хүнтэй вэ."
+    knownOffenderLabels: [OffenderLabel!]!
+    knownOffenderCount: Int!
     reportPdf: ReportFile!
     "Per-suspect financial PDF: profile, income/outgoing totals and the transaction ledger. minAmount hides transactions below the given amount."
     reportSuspectPdf(suspectId: Int!, minAmount: Int): ReportFile!
@@ -1296,6 +1348,15 @@ export const typeDefs = /* GraphQL */ `
     deleteCaseGraph(id: Int!): Boolean!
     runAccountAnalysis(bankAccountId: Int!): AnalysisResult!
     setAmlJurisdiction(jurisdiction: String!): AmlConfig!
+    """
+    Хэрэгтний бүртгэлийг Excel-ээс уншина. ⛔ Багана СОНГОХГҮЙ: багана бүр нь
+    жагсаалт, нүд бүр нь регистр. Дахин оруулахад давхардахгүй, зөвхөн шинэ
+    жагсаалт нэмэгдэнэ.
+    """
+    importKnownOffenders(content: String!, filename: String!, uploadId: String): OffenderImportSummary!
+    deleteKnownOffender(id: Int!): Boolean!
+    "Бүртгэлийг бүхэлд нь цэвэрлэнэ. Устгасан мөрийн тоог буцаана."
+    clearKnownOffenders: Int!
     importData(
       content: String!
       kind: ImportKind!

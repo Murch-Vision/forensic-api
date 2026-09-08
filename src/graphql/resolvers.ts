@@ -35,6 +35,7 @@ import type {CaseGraphService} from "../services/caseGraphService";
 import type {CaseConclusion, ConclusionService}
   from "../services/conclusionService";
 import type {AuthService, AuthUser} from "../services/authService";
+import type {OffenderService} from "../services/offenderService";
 import {sendMaestroFeedback} from "../services/supportService";
 import type {UpdateService} from "../services/updateService";
 import type {AlertSeverity, EvidenceSourceType} from "../models/enums";
@@ -72,6 +73,7 @@ export interface GraphQLContext {
   noise    : NoiseFilterService;
   graphs   : CaseGraphService;
   conclusions : ConclusionService;
+  offenders : OffenderService;
   auth     : AuthService;
   update   : UpdateService;
   // The authenticated caller (null when the request carries no valid token).
@@ -613,6 +615,22 @@ export const resolvers = {
       c: GraphQLContext
     ) => c.imports.excelSheets(
       a.uploadId ? uploadContent(a.uploadId) : a.content, a.filename),
+    knownOffenders: (
+      _p: unknown,
+      a: {search?: string; label?: string; take?: number; skip?: number},
+      c: GraphQLContext
+    ) => {
+      requireUser(c);
+      return c.offenders.list(a);
+    },
+    knownOffenderLabels: (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireUser(c);
+      return c.offenders.labelCounts();
+    },
+    knownOffenderCount: (_p: unknown, _a: unknown, c: GraphQLContext) => {
+      requireUser(c);
+      return c.offenders.count();
+    },
     reportPdf: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const verdict = await c.audit.verify();
       const buf = await c.reports.generatePdf(verdict);
@@ -1032,6 +1050,38 @@ export const resolvers = {
         `jurisdiction=${a.jurisdiction}`);
       return AmlThresholds.current;
     },
+    // Хэрэгтний бүртгэл. ⛔ Багана сонгох алхам БАЙХГҮЙ — файл бүр өөр
+    // баганатай ирдэг тул баганы нэрийг жагсаалтын нэр болгож, доорх бүх
+    // нүднээс регистрийг таньж авна.
+    importKnownOffenders: async (
+      _p: unknown,
+      a: {content: string; filename: string; uploadId?: string},
+      c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const content = a.uploadId ? uploadContent(a.uploadId) : a.content;
+      const res = await c.offenders.importWorkbook(content, a.filename);
+      await c.audit.record("Offenders.Imported",
+        `File:${a.filename}`,
+        `${res.uniquePeople} регистр · шинэ ${res.added}`);
+      return res;
+    },
+    deleteKnownOffender: async (
+      _p: unknown, a: {id: number}, c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const ok = await c.offenders.remove(a.id);
+      if (ok) await c.audit.record("Offenders.Deleted", `Offender:${a.id}`);
+      return ok;
+    },
+    clearKnownOffenders: async (
+      _p: unknown, _a: unknown, c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const n = await c.offenders.clear();
+      await c.audit.record("Offenders.Cleared", `Rows:${n}`);
+      return n;
+    },
     importData: async (
       _p: unknown,
       a: {content: string; kind: ImportKind; bankAccountId?: number;
@@ -1421,6 +1471,9 @@ export const resolvers = {
   },
 
   Suspect: {
+    // Улаанаар ялгах ганц эх сурвалж: гаднаас ирсэн хэрэгтний бүртгэл.
+    offender: (s: Suspect, _a: unknown, c: GraphQLContext) =>
+      c.offenders.isOffender(s.nationalId),
     initials: (s: Suspect) => initials(s.fullName),
     age: (s: Suspect) => age(s.dateOfBirth),
     bankAccounts: (s: Suspect, _a: unknown, c: GraphQLContext) =>
@@ -1435,6 +1488,22 @@ export const resolvers = {
       c.suspects.getLinks(s.id),
     recordCounts: (s: Suspect, _a: unknown, c: GraphQLContext) =>
       c.suspects.getRecordCounts(s.id),
+  },
+
+  CaseRelation: {
+    offender: (r: {nationalId?: string | null}, _a: unknown,
+      c: GraphQLContext) => c.offenders.isOffender(r.nationalId ?? null),
+  },
+
+  GlobalPerson: {
+    offender: (p: {nationalId?: string | null}, _a: unknown,
+      c: GraphQLContext) => c.offenders.isOffender(p.nationalId ?? null),
+  },
+
+  BankTransaction: {
+    counterpartyOffender: (t: {counterpartyNationalId?: string | null},
+      _a: unknown, c: GraphQLContext) =>
+      c.offenders.isOffender(t.counterpartyNationalId ?? null),
   },
 
   SuspectLink: {
