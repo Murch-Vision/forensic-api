@@ -15,8 +15,11 @@
 // outbound internet to the maestro host for this to work; without the key the
 // mutation fails with a clear message and nothing else is affected.
 
+// ⚠️ Хүсэлт хүлээж авах цэг маестрогоос ТУСДАА үйлчилгээ рүү нүүсэн:
+// maestro.longbinarycity.com/api/feedback нь одоо 404 буцаадаг тул хуучин
+// хаягтай суулгац бүр «Хүсэлт илгээж чадсангүй» гэж алдаад байсан.
 const URL = process.env.MAESTRO_FEEDBACK_URL
-  ?? "https://maestro.longbinarycity.com/api/feedback";
+  ?? "https://feedback.longbinarycity.com/feedback";
 
 const KEY = process.env.MAESTRO_FEEDBACK_KEY ?? "";
 
@@ -62,7 +65,17 @@ export const sendMaestroFeedback = async (
   }
 
   if (!res.ok) {
-    console.error("maestro feedback failed:", res.status, await res.text());
-    throw new Error("Хүсэлт илгээж чадсангүй. Дараа дахин оролдоно уу.");
+    const body = (await res.text()).slice(0, 200);
+    console.error("maestro feedback failed:", res.status, body);
+    // Статусыг хэрэглэгчид ХАРУУЛНА: «дараа дахин оролдоно уу» гэдэг нь
+    // буруу түлхүүр (401), буруу хаяг (404), хэт том зураг (413) гурвыг
+    // ялгахгүй тул хэн ч засаж чадахгүй алдаа болдог.
+    throw new Error(res.status === 401 || res.status === 403
+      ? "Хүсэлт илгээх түлхүүр буруу байна (MAESTRO_FEEDBACK_KEY)."
+      : res.status === 404
+        ? `Хүсэлт хүлээн авах хаяг олдсонгүй: ${URL}`
+        : res.status === 413
+          ? "Хавсаргасан зураг хэт том байна."
+          : `Хүсэлт илгээж чадсангүй (алдаа ${res.status}).`);
   }
 };
