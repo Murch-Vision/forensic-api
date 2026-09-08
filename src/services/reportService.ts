@@ -556,12 +556,6 @@ export class ReportService {
   // зөрөх боломжгүй — нэг газар засвал гурвуулаа өөрчлөгдөнө.
   async generateVerdictDocx(input: VerdictInput): Promise<Buffer> {
     const html = (await this.generateVerdictHtml(input)).toString("utf8");
-    // Word-ын жинхэнэ хөл: pageNumber сонголт хуудасны дугаарыг ЭНЭ мөрийн
-    // ард залгадаг тул «Хуудас» гэдэг үгээр төгсгөнө.
-    const footer = `<p style="font-size:7pt;color:${MUTED}">`
-      + `Forensic Analyst Workstation  ·  НУУЦ  ·  `
-      + `${formatDateLike(new Date().toISOString(), true)}`
-      + `  ·  Хуудас </p>`;
     const out = await htmlToDocx(html, null, {
       // A4, PDF-ийн 40pt захтай ижил (40pt = 800 twip) ⇒ агуулгын өргөн 515pt.
       pageSize: {width: 11906, height: 16838},
@@ -570,9 +564,9 @@ export class ReportService {
       font: "Arial",
       fontSize: 18,
       table: {row: {cantSplit: true}, addSpacingAfter: false},
-      footer: true,
-      pageNumber: true,
-    }, footer);
+      // ⛔ Хөлгүй: «Forensic Analyst Workstation · НУУЦ · огноо · хуудас»
+      // мөрийг хасуулав (2026-09-08). PDF дээр нь хэвээр.
+    });
     const buf = Buffer.isBuffer(out)
       ? out
       : Buffer.from(out instanceof ArrayBuffer
@@ -709,14 +703,12 @@ export class ReportService {
       b.push(htmlBodyText(generalWritten));
     }
 
-    const stamp = `Forensic Analyst Workstation  ·  НУУЦ  ·  `
-      + `${formatDateLike(new Date().toISOString(), true)}`;
     return Buffer.from(`<!doctype html>
 <html lang="mn">
 <head>
 <meta charset="utf-8" />
 <title>Тайлан · ${htmlEscape(input.caseId)}</title>
-<style>${verdictScreenCss(stamp)}</style>
+<style>${verdictScreenCss()}</style>
 </head>
 <body>
 <div class="sheet">
@@ -1191,15 +1183,12 @@ function activityChart(title: string,
 // ЗӨВХӨН браузерт хамаатай хэсэг: html-to-docx <style> блокийг уншдаггүй тул
 // эндээс Word-д юу ч очихгүй. Тийм болохоор энд зөвхөн харагдац засна —
 // байрлал, өргөн, өнгө бүгд мөр дотор (inline) бичигдсэн байна.
-function verdictScreenCss(stamp: string): string {
+function verdictScreenCss(): string {
   return `
   body { margin: 0; background: #E9EDF3; color: ${INK};
     font-family: Arial, "Helvetica Neue", Helvetica, sans-serif; }
   .sheet { box-sizing: border-box; width: 595pt; margin: 16pt auto;
     padding: 40pt; background: #FFFFFF; }
-  .sheet::after { content: "${stamp.replace(/"/g, "'")}"; display: block;
-    margin-top: 20pt; padding-top: 6pt; border-top: 0.5pt solid #E2E8F0;
-    font-size: 7pt; color: ${MUTED}; }
   /* Нүдний дотоод зай өргөнд НЭМЭГДЭХГҮЙ: эс тэгвээс хүснэгт бүр
      баганынхаа тоогоор өргөсөж, цагаан хуудаснаас халина. Word өөрөө ийм
      байдлаар (нүдний нийт өргөнөөр) боддог тул энэ нь зөвхөн браузерын
