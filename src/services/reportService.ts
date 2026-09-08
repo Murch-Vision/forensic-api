@@ -569,7 +569,7 @@ export class ReportService {
       orientation: "portrait",
       font: "Arial",
       fontSize: 18,
-      table: {row: {cantSplit: true}},
+      table: {row: {cantSplit: true}, addSpacingAfter: false},
       footer: true,
       pageNumber: true,
     }, footer);
@@ -655,7 +655,7 @@ export class ReportService {
       b.push(htmlDataTable(
         ["Эх данс", "Харилцсан данс", "Харилцсан тал", "Гүйлгээ",
           "Орлого", "Зарлага"],
-        [92, 92, 121, 40, 85, 85],
+        [100, 100, 105, 40, 85, 85],
         frequentCounterparties.map((r) => [a.accountNumber,
           r.account ?? "Дугааргүй", r.name, num(r.txnCount),
           mnt(r.creditTotal), mnt(r.debitTotal)])));
@@ -676,7 +676,7 @@ export class ReportService {
     b.push(htmlSectionBar("2.1 ДУНДЫН ХАРИЛЦАГЧИД"));
     b.push(htmlDataTable(
       ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
-      [130, 95, 48, 82, 82, 78],
+      [120, 102, 48, 82, 82, 81],
       input.mutualRelations.slice(0, 60).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal),
         mnt(r.debitTotal), mnt(r.netTotal)])));
@@ -720,7 +720,7 @@ export class ReportService {
 </head>
 <body>
 <div class="sheet">
-${b.join("\n")}
+${separateTables(b).join("\n")}
 </div>
 </body>
 </html>
@@ -924,11 +924,24 @@ function line(text: string, style = ""): string {
 // арга нь хүснэгт: браузер, Word хоёр дээр адилхан ажиллана.
 function layoutTable(rows: string[]): string {
   return `<table style="width:${HTML_CW}pt;border-collapse:collapse;`
-    + `table-layout:fixed;margin:0"><tbody>${rows.join("")}</tbody></table>`
-    // ⚠️ Word нь хооронд нь ямар ч догол мөргүй зэрэгцсэн хоёр хүснэгтийг НЭГ
-    // хүснэгт болгон нийлүүлдэг — багана нь зөрж, тайлан эвдэрнэ. 1pt-ийн
-    // хоосон мөр нь браузерт үл мэдэгдэх ч тэр нийлэлтийг таслана.
-    + `<p style="font-size:1pt;margin:0;line-height:1pt">&nbsp;</p>`;
+    + `table-layout:fixed;margin:0"><tbody>${rows.join("")}</tbody></table>`;
+}
+
+// ⚠️ Word нь хооронд нь ямар ч догол мөргүй зэрэгцсэн хоёр хүснэгтийг НЭГ
+// хүснэгт болгон нийлүүлдэг. 1pt-ийн хоосон мөр түүнийг таслана — гэхдээ
+// ЗӨВХӨН хоёр хүснэгтийн хооронд: хаа сайгүй тарааж тавих нь баримт даяар
+// хоосон зай болж хуримтлагддаг.
+function separateTables(parts: string[]): string[] {
+  const out: string[] = [];
+  parts.forEach((part, index) => {
+    out.push(part);
+    const next = parts[index + 1];
+    if (part.trimEnd().endsWith("</table>") && next?.trimStart()
+      .startsWith("<table")) {
+      out.push(`<p style="font-size:1pt;margin:0;line-height:1pt">&nbsp;</p>`);
+    }
+  });
+  return out;
 }
 
 // PDF-ийн sectionBar: гарчгийн УРТААР нь татсан цэнхэр зураас.
@@ -967,8 +980,9 @@ function htmlAccountBar(label: string, title: string, id?: string): string {
     + htmlCell(htmlEscape(label), {w: 34, align: "center",
       style: `background-color:#DDF5F8;color:#007F90;font-size:9.5pt;`
         + `padding:4pt 0;${border}`})
-    + htmlCell(`<span class="clip">${htmlEscape(title)}</span>`,
-      {w: HTML_CW - 34, id,
+    + htmlCell(`<span class="clip">`
+      + `${htmlEscape(fit(title, HTML_CW - 45, 10.5))}</span>`,
+    {w: HTML_CW - 34, id,
         style: `font-size:10.5pt;color:${DARK_BLUE};`
           + `padding:4pt 0 4pt 11pt;${border}`})
     + `</tr>`]);
@@ -998,9 +1012,14 @@ function htmlAccountCards(analyses: AccountAnalysis[]): string {
         `font-size:8.5pt;color:${INK}`),
       {w: 150, style: `${tint};border-left:4pt solid ${ACCENT_CYAN};`
         + `padding:6pt 0 6pt 9pt`})
+      // ⚠️ border-left-ийг ЗААВАЛ хаана: html-to-docx картын зүүн ирмэгийн
+      // цэнхэр зураасыг дараагийн нүдэнд ч хуулж, карт дундуураа зураастай
+      // болж байв. Мөр дотор align хийхгүй бол Word нь <td>-гийн
+      // text-align-ыг үл тоодог тул дугаар зүүн тийш наалддаг.
       + htmlCell(line(htmlEscape(a.accountNumber),
-        `font-size:8.5pt;color:${DARK_BLUE}`),
-      {w: 101, align: "right", style: `${tint};padding:6pt 9pt 6pt 0`});
+        `font-size:8.5pt;color:${DARK_BLUE};text-align:right`),
+      {w: 101, align: "right",
+        style: `${tint};border-left:none;padding:6pt 9pt 6pt 0`});
   };
   const rows: string[] = [];
   for (let index = 0; index < analyses.length; index += 2) {
@@ -1046,13 +1065,25 @@ function htmlContents(analyses: AccountAnalysis[]): string {
   ]);
 }
 
+// ⛔ Хүснэгтийн нүд ХЭЗЭЭ Ч хоёр мөр болж болохгүй: бүх мөр ижил өндөртэй
+// байх ёстой бөгөөд дансны дугаар таслагдвал уншиж болохгүй болно. Word нь
+// CSS-ийн taslah (ellipsis) ойлголтыг мэддэггүй тул бичвэрийг СЕРВЕР ДЭЭР
+// нь тааруулж таслана — ингэснээр браузер, Word хоёр ЯГ ижил харагдана.
+// Arial-ийн дундаж үсгийн өргөн ≈ 0.56em; нүдний захын зайг хасаж тооцов.
+function fit(text: string, widthPt: number, fontPt: number): string {
+  const max = Math.max(3, Math.floor((widthPt - 8) / (fontPt * 0.56)));
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}\u2026`;
+}
+
 // PDF-ийн pdfRows: хар хөх толгой, сондгой мөрөнд цайвар дэвсгэр, 3 дахь
 // баганаас эхлэн саарал бичвэр. Багана бүр PDF-ийн ЯГ ТЭР өргөнтэй.
 function htmlDataTable(heads: string[], widths: number[],
   rows: string[][]): string {
   const isRight = (label: string, index: number): boolean =>
     index > 1 && /Гүйлгээ|Орлого|Зарлага|Дүн|Зөрүү/.test(label);
-  const head = `<tr>${heads.map((label, i) => htmlCell(htmlEscape(label), {
+  const head = `<tr>${heads.map((label, i) => htmlCell(
+    htmlEscape(fit(label, widths[i], 8)), {
     w: widths[i], align: isRight(label, i) ? "right" : "left",
     style: `background-color:${TABLE_HEAD};color:#FFFFFF;font-size:8pt;`
       + `padding:4pt 6pt`,
@@ -1064,7 +1095,8 @@ function htmlDataTable(heads: string[], widths: number[],
       + `</tr>`]);
   }
   const body = rows.map((row, index) => `<tr>${row.map((value, i) =>
-    htmlCell(`<span class="clip">${htmlEscape(value)}</span>`, {
+    htmlCell(`<span class="clip">${htmlEscape(fit(value, widths[i], 7.6))}`
+      + `</span>`, {
       w: widths[i], align: isRight(heads[i], i) ? "right" : "left",
       style: `font-size:7.6pt;color:${i >= 2 ? MUTED : INK};`
         + `padding:2.5pt 6pt;`
