@@ -1,7 +1,7 @@
 /* -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
  * File Name   : dataService.ts
  * Created at  : 2026-06-23
- * Updated at  : 2026-06-23
+ * Updated at  : 2026-09-14
  * Author      : jeefo
  * Purpose     :
  * Description :
@@ -834,7 +834,10 @@ export class DataService {
       caseName: input.caseName,
       description: input.description ?? null,
       priority: input.priority,
-      leadInvestigator: input.leadInvestigator ?? null,
+      // Засах цонх «Мөрдөгч» талбаргүй болсон (бүртгэлээс уншина) — ирээгүй
+      // бол хуучин хэргийн гараар бичсэн утгыг бүү арилга.
+      ...(input.leadInvestigator !== undefined
+        ? {leadInvestigator: input.leadInvestigator} : {}),
       updatedAt: new Date().toISOString(),
     });
     return (await this.db<CaseFile>("case_files").where({id}).first()) ?? null;

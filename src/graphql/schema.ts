@@ -1,7 +1,7 @@
 /* -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
  * File Name   : schema.ts
  * Created at  : 2026-06-23
- * Updated at  : 2026-08-07
+ * Updated at  : 2026-09-14
  * Author      : jeefo
  * Purpose     :
  * Description :
@@ -228,6 +228,11 @@ export const typeDefs = /* GraphQL */ `
     closedAt: String
     "The detective who owns this case (null for legacy cases)."
     ownerUserId: Int
+    """
+    Мөрдөгч: хэргийг бүртгэсэн алба хаагч — эзэмшигч бүртгэлийн «цол нэр».
+    Эзэмшигчгүй хуучин хэрэгт гараар бичсэн leadInvestigator.
+    """
+    investigator: String
   }
 
   """

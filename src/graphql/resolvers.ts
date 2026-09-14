@@ -1,7 +1,7 @@
 /* -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
  * File Name   : resolvers.ts
  * Created at  : 2026-06-23
- * Updated at  : 2026-08-07
+ * Updated at  : 2026-09-14
  * Author      : jeefo
  * Purpose     :
  * Description :
@@ -1468,6 +1468,19 @@ export const resolvers = {
     // Cases this account owns — shown before deleting, since they change hands.
     ownedCaseCount: (u: {id: number}, _a: unknown, c: GraphQLContext) =>
       c.auth.ownedCaseCount(u.id),
+  },
+
+  CaseFile: {
+    // «Мөрдөгч» гараар бичдэг байсан тул хоосон үлдэж, ямар алба хаагч ямар
+    // хэрэг оруулсан нь харагддаггүй байв (клиентийн хүсэлт, 2026-09-14).
+    // Одоо хэргийг бүртгэсэн бүртгэлээс (ownerUserId — createCaseFile тамгалдаг,
+    // бүртгэл устахад хүлээн авагч руу шилждэг) цаанаас нь уншина. Эзэмшигчгүй
+    // хуучин хэрэгт л гараар бичсэн утга үлдэнэ.
+    investigator: async (cf: CaseFile, _a: unknown, c: GraphQLContext) => {
+      const owner = cf.ownerUserId != null
+        ? await c.auth.userLabel(cf.ownerUserId) : null;
+      return owner ?? cf.leadInvestigator ?? null;
+    },
   },
 
   Suspect: {

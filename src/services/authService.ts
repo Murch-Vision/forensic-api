@@ -226,6 +226,16 @@ export class AuthService {
 
   // How many cases this account owns. The admin page shows it before deleting,
   // because those cases change hands.
+  // «Цол Нэр» — хүн уншдаг нэр; аль аль нь хоосон бол нэвтрэх нэр.
+  async userLabel(userId: number): Promise<string | null> {
+    const u = await this.db<User>("users").where({id: userId})
+      .select("username", "rank", "fullName").first();
+    if (!u) return null;
+    const label = [u.rank, u.fullName].map((v) => (v ?? "").trim())
+      .filter(Boolean).join(" ");
+    return label || u.username;
+  }
+
   async ownedCaseCount(userId: number): Promise<number> {
     const [row] = await this.db("case_files").where({ownerUserId: userId})
       .count({n: "*"});
