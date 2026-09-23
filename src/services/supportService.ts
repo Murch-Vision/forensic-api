@@ -22,7 +22,7 @@ const URL = process.env.MAESTRO_FEEDBACK_URL
   ?? "https://feedback.longbinarycity.com/feedback";
 
 const KEY = process.env.MAESTRO_FEEDBACK_KEY
-  ?? "5ea392cb8073085526f4c2da56fecf4899dbf948b09f0c54";
+  ?? "fk_78b336f3ce3c9311f0040b395a55b5d6bca6fa0aebae3699";
 
 // Screenshots ride along as base64, so give the post more patience than a
 // plain JSON call would need.
