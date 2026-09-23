@@ -12,8 +12,8 @@
 // Хүсэлт). The key is minted per project in the maestro UI; it both
 // authorises and identifies the caller, and it stays server-side — browsers
 // go through the sendSupportRequest mutation. An on-premise install needs
-// outbound internet to the maestro host for this to work; without the key the
-// mutation fails with a clear message and nothing else is affected.
+// outbound internet to the feedback host. Windows installs use the bundled
+// project key by default; MAESTRO_FEEDBACK_KEY overrides it when set.
 
 // ⚠️ Хүсэлт хүлээж авах цэг маестрогоос ТУСДАА үйлчилгээ рүү нүүсэн:
 // maestro.longbinarycity.com/api/feedback нь одоо 404 буцаадаг тул хуучин
@@ -21,7 +21,8 @@
 const URL = process.env.MAESTRO_FEEDBACK_URL
   ?? "https://feedback.longbinarycity.com/feedback";
 
-const KEY = process.env.MAESTRO_FEEDBACK_KEY ?? "";
+const KEY = process.env.MAESTRO_FEEDBACK_KEY
+  ?? "5ea392cb8073085526f4c2da56fecf4899dbf948b09f0c54";
 
 // Screenshots ride along as base64, so give the post more patience than a
 // plain JSON call would need.
