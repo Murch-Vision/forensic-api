@@ -49,6 +49,7 @@ import type {
   BankAccount, BankTransaction, CaseFile, Suspect,
 } from "../models/types";
 import {buildRelations} from "../services/relationService";
+import {accountNameLookup} from "../services/accountNames";
 import {
   analyseAccounts, directTransfers,
 } from "../services/accountAnalysisService";
@@ -273,6 +274,13 @@ async function scopedTransactions(
     scoped = txns.filter((t) =>
       accountIds.has(t.bankAccountId) || scope.txnIds.has(t.id));
   }
+  // Enrich the read model only; keep the imported statement rows unchanged.
+  // Relations and transaction drilldowns must use the same resolved names.
+  const ownerName = accountNameLookup(await scopedAccounts(c));
+  scoped = scoped.map((t) => {
+    const name = ownerName(t.counterpartyAccount);
+    return name ? {...t, counterpartyName: name} : t;
+  });
   if (includeRemoved) return scoped;
   const ignored = await ignoredTxnIds(c);
   return ignored.size ? scoped.filter((t) => !ignored.has(t.id)) : scoped;

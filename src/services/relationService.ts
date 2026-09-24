@@ -16,6 +16,7 @@
  *               analyst removed.
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import type {BankTransaction} from "../models/types";
+import {accountNameLookup, realPartyName} from "./accountNames";
 
 export interface RelationRow {
   key           : string;
@@ -111,11 +112,11 @@ function normId(s: string | null | undefined): string | null {
 // A counterparty account the detective has put a name on (Субьектийн
 // жагсаалт → данс → эзэмшигч) is named by it wherever the statement printed
 // only the number — the statement row itself is never rewritten.
-type Owners = Map<string, string>;
+type Owners = ReturnType<typeof accountNameLookup>;
 
 function partyName(t: BankTransaction, owners: Owners): string | null {
   const acct = clean(t.counterpartyAccount);
-  return clean(t.counterpartyName) ?? (acct ? owners.get(acct) ?? null : null);
+  return owners(acct) ?? realPartyName(t.counterpartyName);
 }
 
 function relationKey(t: BankTransaction, owners: Owners): string | null {
@@ -159,19 +160,14 @@ function blank(key: string, t: BankTransaction, owners: Owners): Acc {
 export function buildRelations(
   transactions : BankTransaction[],
   accounts     : {id: number; bankName: string | null; accountNumber: string;
-    accountHolderName: string | null;}[],
+    accountHolderName: string | null; iban?: string | null;}[],
   subjectNationalIds : string[]
 ): RelationSummary {
   const subjects = new Set(
     subjectNationalIds.map(normId).filter((v): v is string => !!v));
   const byKey = new Map<string, Acc>();
   // An account whose "holder" is its own number is still unnamed.
-  const owners: Owners = new Map();
-  for (const a of accounts) {
-    const number = a.accountNumber.trim();
-    const holder = clean(a.accountHolderName);
-    if (holder && holder !== number) owners.set(number, holder);
-  }
+  const owners = accountNameLookup(accounts);
 
   let txnCount = 0, creditCount = 0, debitCount = 0;
   let creditTotal = 0, debitTotal = 0, unnamedTxnCount = 0;
@@ -228,7 +224,7 @@ export function buildRelations(
   // until it is read to the end.
   const acctOwner = (id: number): string | null => {
     const a = accounts.find((x) => x.id === id);
-    return a ? owners.get(a.accountNumber.trim()) ?? null : null;
+    return a ? owners(a.accountNumber) : null;
   };
   const acctLabel = (id: number): string => {
     const a = accounts.find((x) => x.id === id);
