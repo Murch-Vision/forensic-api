@@ -108,8 +108,18 @@ function normId(s: string | null | undefined): string | null {
 // neither. ⚠️ Two different people who share a name therefore merge — the
 // statement gives nothing to tell them apart, and the analyst can see the
 // split in the transaction list.
-function relationKey(t: BankTransaction): string | null {
-  const name = clean(t.counterpartyName);
+// A counterparty account the detective has put a name on (Субьектийн
+// жагсаалт → данс → эзэмшигч) is named by it wherever the statement printed
+// only the number — the statement row itself is never rewritten.
+type Owners = Map<string, string>;
+
+function partyName(t: BankTransaction, owners: Owners): string | null {
+  const acct = clean(t.counterpartyAccount);
+  return clean(t.counterpartyName) ?? (acct ? owners.get(acct) ?? null : null);
+}
+
+function relationKey(t: BankTransaction, owners: Owners): string | null {
+  const name = partyName(t, owners);
   if (name) return `name:${normName(name)}`;
   const nat = normId(t.counterpartyNationalId);
   if (nat) return `nat:${nat}`;
@@ -131,11 +141,11 @@ interface Acc {
   perAcct : Map<number, PerAcct>;
 }
 
-function blank(key: string, t: BankTransaction): Acc {
+function blank(key: string, t: BankTransaction, owners: Owners): Acc {
   return {
     row: {
       key,
-      name: clean(t.counterpartyName) ?? clean(t.counterpartyAccount) ?? "—",
+      name: partyName(t, owners) ?? clean(t.counterpartyAccount) ?? "—",
       account: clean(t.counterpartyAccount),
       nationalId: normId(t.counterpartyNationalId),
       txnCount: 0, creditCount: 0, debitCount: 0,
@@ -155,6 +165,13 @@ export function buildRelations(
   const subjects = new Set(
     subjectNationalIds.map(normId).filter((v): v is string => !!v));
   const byKey = new Map<string, Acc>();
+  // An account whose "holder" is its own number is still unnamed.
+  const owners: Owners = new Map();
+  for (const a of accounts) {
+    const number = a.accountNumber.trim();
+    const holder = clean(a.accountHolderName);
+    if (holder && holder !== number) owners.set(number, holder);
+  }
 
   let txnCount = 0, creditCount = 0, debitCount = 0;
   let creditTotal = 0, debitTotal = 0, unnamedTxnCount = 0;
@@ -165,19 +182,19 @@ export function buildRelations(
     if (isCredit) {creditCount++; creditTotal += t.amount;}
     else {debitCount++; debitTotal += t.amount;}
 
-    const key = relationKey(t);
+    const key = relationKey(t, owners);
     // A row with no counterparty at all still counts toward the case totals —
     // it just isn't a relation anybody can be named in.
     if (!key) {unnamedTxnCount++; continue;}
 
     let a = byKey.get(key);
-    if (!a) {a = blank(key, t); byKey.set(key, a);}
+    if (!a) {a = blank(key, t, owners); byKey.set(key, a);}
     const r = a.row;
     r.txnCount++;
     if (isCredit) {r.creditCount++; r.creditTotal += t.amount;}
     else {r.debitCount++; r.debitTotal += t.amount;}
     // Fill in details a later row may carry when the first one didn't.
-    const laterName = clean(t.counterpartyName);
+    const laterName = partyName(t, owners);
     if (r.name === "—" && laterName) r.name = laterName;
     if (!r.nationalId) r.nationalId = normId(t.counterpartyNationalId);
     // Now that one person's accounts merge, the first row seen may be the one
@@ -211,7 +228,7 @@ export function buildRelations(
   // until it is read to the end.
   const acctOwner = (id: number): string | null => {
     const a = accounts.find((x) => x.id === id);
-    return a ? clean(a.accountHolderName) : null;
+    return a ? owners.get(a.accountNumber.trim()) ?? null : null;
   };
   const acctLabel = (id: number): string => {
     const a = accounts.find((x) => x.id === id);

@@ -169,6 +169,20 @@ export class SuspectService {
       photoData    : input.photoData ?? existing.photoData,
       updatedAt    : new Date().toISOString(),
     });
+    // A new name reaches the counterparty lists too: they name an account
+    // the statement printed only as a number by its holder name. Only holder
+    // names that still mirror the old record (or are empty / the number
+    // itself) follow — a name the statement printed stays as printed.
+    const oldName = String(existing.fullName ?? "").trim();
+    const newName = String(input.fullName ?? "").trim();
+    if (newName && newName !== oldName) {
+      await this.db("bank_accounts").where({suspectId: id})
+        .where((q) => q.whereNull("accountHolderName")
+          .orWhere("accountHolderName", "")
+          .orWhere("accountHolderName", oldName)
+          .orWhereRaw("trim(accountHolderName) = trim(accountNumber)"))
+        .update({accountHolderName: newName});
+    }
     const updated = await this.getSuspectById(id);
     if (!updated) throw new Error(`Suspect ${id} not found`);
     return updated;
