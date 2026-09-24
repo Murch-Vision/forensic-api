@@ -37,6 +37,7 @@ import {TelemetryService} from "./services/telemetryService";
 import {NoiseFilterService} from "./services/noiseFilterService";
 import {ConclusionService} from "./services/conclusionService";
 import {OffenderService} from "./services/offenderService";
+import {BankLookupService} from "./services/bankLookupService";
 import {CaseGraphService} from "./services/caseGraphService";
 import {AuthService} from "./services/authService";
 import {UpdateService} from "./services/updateService";
@@ -81,6 +82,8 @@ async function main(): Promise<void> {
   // ⚠️ Хүсэлт бүрт ШИНЭ биш: регистрийн олонлогийг санах ойд барьдаг тул нэг
   // л хувь байх ёстой (мөр бүр дээр давтан асуудаг).
   const offenders = new OffenderService(db);
+  // Keeps the bank list between requests.
+  const bankLookup = new BankLookupService(db);
   // Per-request context: resolve the caller from the Authorization: Bearer
   // token so every resolver knows who's asking (and which cases they may see).
   const context = async ({req}: {req?: {headers: Record<string, unknown>}}):
@@ -110,6 +113,7 @@ async function main(): Promise<void> {
       noise    : new NoiseFilterService(db),
       conclusions : new ConclusionService(db),
       offenders   : offenders,
+      bankLookup,
       graphs   : new CaseGraphService(db),
       auth,
       update,

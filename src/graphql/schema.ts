@@ -151,6 +151,21 @@ export const typeDefs = /* GraphQL */ `
     evidence: Int!
   }
 
+  """
+  Дансыг IBAN лавлагаагаар (egolomt.mn/cam/check) шалгасан дүн. found=false
+  бол аль ч банкнаас олдоогүй; nameUpdated = хүний нэр нь дансны дугаар
+  байсныг эзэмшигчийн нэрээр сольсон.
+  """
+  type BankAccountVerification {
+    accountNumber: String!
+    found: Boolean!
+    iban: String
+    bankName: String
+    holderName: String
+    nameUpdated: Boolean!
+    message: String!
+  }
+
   "Устгасны дараа яг хэдэн мөр устсаныг мэдээлнэ."
   type AccountDeletion {
     accountNumber: String!
@@ -458,6 +473,8 @@ export const typeDefs = /* GraphQL */ `
     cases: [PersonCaseRef!]!
     phoneNumbers: [String!]!
     accountNumbers: [String!]!
+    "Дансууд бүрэн мэдээлэлтэйгээ (банк, IBAN, эзэмшигч)."
+    bankAccounts: [BankAccount!]!
     transactionCount: Int!
     callRecordCount: Int!
   }
@@ -1397,6 +1414,12 @@ export const typeDefs = /* GraphQL */ `
     togglePin(suspectId: Int!): [Int!]!
     generateAnbChart: AnbGenResult!
     createBankAccount(input: BankAccountInput!): BankAccount!
+    """
+    Банк нь эсвэл эзэмшигч нь тодорхойгүй дансыг IBAN лавлагаагаар шалгаж
+    банк, бүтэн IBAN, эзэмшигчийн нэрийг бөглөнө. Хүний нэр нь дансны дугаар
+    байвал эзэмшигчийн нэрээр солино. Дансны дугаар өөрөө өөрчлөгдөхгүй.
+    """
+    verifyBankAccount(accountNumber: String!): BankAccountVerification!
     """
     Нэг дансыг бүх гүйлгээ, шинжилгээ, дүгнэлт, баримтын холбоосынх нь хамт
     устгана — буруу оруулсан хуулгыг буцааж авах зам. Хүн (субьект) устахгүй,

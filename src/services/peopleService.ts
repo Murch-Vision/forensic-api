@@ -39,6 +39,7 @@ export interface GlobalPerson {
   cases            : PersonCaseRef[];
   phoneNumbers     : string[];
   accountNumbers   : string[];
+  bankAccounts     : BankAccount[];
   transactionCount : number;
   callRecordCount  : number;
 }
@@ -193,6 +194,7 @@ export class PeopleService {
       const reasons = new Set<string>();
       const phoneSet = new Set<string>();
       const accountSet = new Set<string>();
+      const bankAccounts: BankAccount[] = [];
       const aliasSet = new Set<string>();
       const cases: PersonCaseRef[] = [];
       const seenCaseIds = new Set<number>();
@@ -217,6 +219,7 @@ export class PeopleService {
           phoneSet.add(p.number);
         }
         for (const a of accountsBySuspect.get(s.id) ?? []) {
+          if (!accountSet.has(a.accountNumber)) bankAccounts.push(a);
           accountSet.add(a.accountNumber);
           transactionCount += txnByAccount.get(a.id) ?? 0;
         }
@@ -252,6 +255,7 @@ export class PeopleService {
         cases,
         phoneNumbers   : [...phoneSet],
         accountNumbers : [...accountSet],
+        bankAccounts,
         transactionCount,
         callRecordCount,
       });

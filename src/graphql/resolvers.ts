@@ -36,6 +36,7 @@ import type {CaseConclusion, ConclusionService}
   from "../services/conclusionService";
 import type {AuthService, AuthUser} from "../services/authService";
 import type {OffenderService} from "../services/offenderService";
+import type {BankLookupService} from "../services/bankLookupService";
 import {sendMaestroFeedback} from "../services/supportService";
 import type {UpdateService} from "../services/updateService";
 import type {AlertSeverity, EvidenceSourceType} from "../models/enums";
@@ -74,6 +75,7 @@ export interface GraphQLContext {
   graphs   : CaseGraphService;
   conclusions : ConclusionService;
   offenders : OffenderService;
+  bankLookup : BankLookupService;
   auth     : AuthService;
   update   : UpdateService;
   // The authenticated caller (null when the request carries no valid token).
@@ -1191,6 +1193,20 @@ export const resolvers = {
       await c.audit.record("BankAccount.Create", `BankAccount:${acc.id}`,
         acc.accountNumber);
       return acc;
+    },
+    // Fill in an unknown bank / holder from the public IBAN lookup. Same
+    // audience as the people page that shows the button.
+    verifyBankAccount: async (
+      _p: unknown, a: {accountNumber: string}, c: GraphQLContext
+    ) => {
+      const user = requireAdmin(c);
+      const res = await c.bankLookup.verifyAccount(a.accountNumber);
+      if (res.found) {
+        await c.audit.record("BankAccount.Verify", `BankAccount:${a.accountNumber}`,
+          `${res.iban} · ${res.bankName} · ${res.holderName ?? ""}`
+          + `${res.nameUpdated ? " · нэр шинэчлэгдсэн" : ""} · ${user.username}`);
+      }
+      return res;
     },
     // Take a wrong import back out — the account and everything hanging off
     // it. Only accounts inside the analyst's active case can be deleted, so a
