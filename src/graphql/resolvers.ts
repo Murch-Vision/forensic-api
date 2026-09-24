@@ -379,10 +379,22 @@ async function ignoredTxnIds(c: GraphQLContext): Promise<Set<number>> {
 
 export const resolvers = {
   Query: {
-    suspects: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+    suspects: async (_p: unknown, a: {includeAccountOwners?: boolean}, c: GraphQLContext) => {
       const all = await c.suspects.getAllSuspects();
       const scope = await caseScope(c);
-      return scope ? all.filter((s) => scope.suspectIds.has(s.id)) : all;
+      if (!scope) return all;
+      const visibleIds = new Set(scope.suspectIds);
+      if (a.includeAccountOwners) {
+        // A tagged account can belong to a person registered in another case.
+        // Include that existing owner, never unrelated people or their accounts.
+        const accounts = await c.data.getAllBankAccounts();
+        for (const account of accounts) {
+          if (scope.accountIds.has(account.id) && account.suspectId != null) {
+            visibleIds.add(account.suspectId);
+          }
+        }
+      }
+      return all.filter((s) => visibleIds.has(s.id));
     },
     suspect: (_p: unknown, a: {id: number}, c: GraphQLContext) =>
       c.suspects.getSuspectById(a.id),

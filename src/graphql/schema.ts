@@ -1193,7 +1193,8 @@ export const typeDefs = /* GraphQL */ `
   }
 
   type Query {
-    suspects: [Suspect!]!
+    "Include registered owners of this scope's explicitly tagged accounts for the link chart."
+    suspects(includeAccountOwners: Boolean = false): [Suspect!]!
     suspect(id: Int!): Suspect
     dashboardStats: DashboardStats!
     "Running version + git commit for the Settings page."
