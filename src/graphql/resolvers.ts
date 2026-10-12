@@ -1141,7 +1141,9 @@ export const resolvers = {
       // into the case through that ownership, so we never tag the potentially
       // thousands of individual rows (that turned a CDR import into ~5 DB writes
       // per call → gateway timeout).
-      if (sum.importedRows > 0) {
+      // Re-importing an old statement also repairs missing account/owner
+      // evidence without inserting its duplicate transactions again.
+      if (sum.importedRows > 0 || sum.duplicateRows > 0) {
         const src = a.filename ?? "импорт";
         for (const id of sum.touchedSuspectIds ?? []) {
           await c.evidence.tag(active.id, "SUSPECT", id,

@@ -8,6 +8,7 @@
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import * as XLSX from "xlsx";
 import type {Knex} from "knex";
+import {parseMnIban} from "./bankLookupService";
 import {
   cell,
   EMPTY_TABLE,
@@ -162,14 +163,18 @@ export class ImportService {
     const key = accountNumber.trim();
     const hit = cache.get(key);
     if (hit != null) return hit;
+    const iban = parseMnIban(key)?.iban ?? null;
     const existing = await this.db("bank_accounts")
       .where({accountNumber: key}).first();
     if (existing) {
+      if (iban && !existing.iban) {
+        await this.db("bank_accounts").where({id: existing.id}).update({iban});
+      }
       cache.set(key, Number(existing.id));
       return Number(existing.id);
     }
     const [id] = await this.db("bank_accounts").insert({
-      accountNumber: key, bankName: null, branchCode: null, iban: null,
+      accountNumber: key, bankName: null, branchCode: null, iban,
       accountType: "Current", currency: "MNT", currentBalance: 0,
       status: "ACTIVE", suspectId: null, accountHolderName: null,
       createdAt: new Date().toISOString(),
@@ -386,27 +391,26 @@ export class ImportService {
             }
           }
         }
-        // The counterparty's registry number names a real person too:
-        // find-or-create them (anonymous when unnamed) and, when the row
-        // names their account, create/attach it — this is what lets link
-        // generation connect statement owners to their counterparties.
-        const cpNatId = get("counterpartyNationalId");
-        const counterpartyNationalId = normalizeIdentity(cpNatId);
-        if (counterpartyNationalId) {
-          const cpSid = await this.ensurePerson(
-            counterpartyNationalId, get("counterpartyName"), ownerCache);
-          if (cpSid != null) {
-            ownerIds.add(cpSid);
-            const cpAcctRaw = get("counterpartyAccount");
-            if (cpAcctRaw) {
-              const cpAcctId =
-                await this.findOrCreateAccount(cpAcctRaw, acctCache);
-              const attachKey = `${cpAcctId}|${cpSid}`;
-              if (!attachTried.has(attachKey)) {
-                attachTried.add(attachKey);
-                await this.attachAccountOwner(
-                  cpAcctId, cpSid, get("counterpartyName"));
-              }
+        // A counterparty account is evidence even when the bank statement
+        // omits its owner's name/register. Keep unknown owners per account.
+        const counterpartyNationalId = normalizeIdentity(get("counterpartyNationalId"));
+        const cpAcctRaw = meaningfulText(get("counterpartyAccount"));
+        const cpAcctId = cpAcctRaw
+          ? await this.findOrCreateAccount(cpAcctRaw, acctCache) : null;
+        const cpSid = counterpartyNationalId
+          ? await this.ensurePerson(
+            counterpartyNationalId, get("counterpartyName"), ownerCache)
+          : cpAcctId != null
+            ? await this.ensureAccountPerson(
+              cpAcctId, cpAcctRaw!, get("counterpartyName"), ownerCache)
+            : null;
+        if (cpSid != null) {
+          ownerIds.add(cpSid);
+          if (cpAcctId != null) {
+            const attachKey = `${cpAcctId}|${cpSid}`;
+            if (!attachTried.has(attachKey)) {
+              attachTried.add(attachKey);
+              await this.attachAccountOwner(cpAcctId, cpSid, get("counterpartyName"));
             }
           }
         }

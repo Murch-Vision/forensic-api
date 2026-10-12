@@ -56,7 +56,10 @@ function ibanChecksum(bban: string): string {
 // Valid Mongolian IBAN → {bankCode, account}; anything else → null.
 export function parseMnIban(value: string):
   {iban: string; bankCode: string; account: string} | null {
-  const iban = value.replace(/\s+/g, "").toUpperCase();
+  const compact = value.replace(/\s+/g, "").toUpperCase();
+  // Some statements export the complete IBAN digits without the country.
+  // Only restore MN when the resulting IBAN passes the checksum below.
+  const iban = /^\d{18}$/.test(compact) ? `MN${compact}` : compact;
   if (!/^MN\d{18}$/.test(iban)) return null;
   if (ibanChecksum(iban.slice(4)) !== iban.slice(2, 4)) return null;
   return {iban, bankCode: iban.slice(4, 8), account: iban.slice(8)};
