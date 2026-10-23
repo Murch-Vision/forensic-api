@@ -72,7 +72,13 @@ export class EvidenceService {
     const row = await this.db<EvidenceEntry>("evidence_entries")
       .where({id: evidenceEntryId}).first();
     if (!row) return;
-    await this.db("evidence_entries").where({id: evidenceEntryId}).del();
+    await this.db.transaction(async trx => {
+      await trx("evidence_entries").where({id: evidenceEntryId}).del();
+      if (row.sourceType === "BANK_ACCOUNT") {
+        await trx("case_bank_accounts")
+          .where({caseFileId: row.caseFileId, bankAccountId: row.sourceId}).del();
+      }
+    });
     await this.audit.record("Evidence.Untagged",
       `${row.sourceType}:${row.sourceId}`,
       `Case=${row.caseFileId} Exhibit=#${row.exhibitNumber}`, "INFO");

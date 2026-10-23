@@ -77,6 +77,7 @@ export interface ImportSummary {
   // Internal (not in the GraphQL type): what the import touched, so the
   // resolver can link it into the active case as evidence entries.
   touchedAccountIds?: number[];
+  statementAccountIds?: number[];
   touchedSuspectIds?: number[];
   newCallRecordIds?: number[];
 }
@@ -340,6 +341,7 @@ export class ImportService {
     const acctCache = new Map<string, number>();
     const ownerCache = new Map<string, number>();
     const ownerIds = new Set<number>();
+    const statementIds = new Set<number>();
     // One attach attempt per (account, person) pair — not one per row.
     const attachTried = new Set<string>();
     let defaultAccountId: number | null = null;
@@ -441,6 +443,7 @@ export class ImportService {
         if (ref) {
           const refKey = `${bankAccountId}|${ref}`;
           if (seenRefs.has(refKey)) {
+            statementIds.add(bankAccountId);
             res.duplicateRows++;
             continue;
           }
@@ -501,9 +504,11 @@ export class ImportService {
           // Санд байсан хувийг нь "ашиглав" гэж тэмдэглэнэ — ингэснээр файл
           // дээрх гурав дахь ижил мөр нь сангийн хоёрыг өнгөрөөд орж ирнэ.
           seen.set(fp, already - 1);
+          statementIds.add(bankAccountId);
           res.duplicateRows++;
           continue;
         }
+        statementIds.add(bankAccountId);
         rowsToInsert.push(txn);
         res.importedRows++;
       } catch {
@@ -516,6 +521,7 @@ export class ImportService {
     const accountIds = new Set<number>(acctCache.values());
     if (defaultAccountId != null) accountIds.add(defaultAccountId);
     res.touchedAccountIds = [...accountIds];
+    res.statementAccountIds = [...statementIds];
     const suspectIds = new Set<number>(ownerIds);
     if (accountIds.size > 0) {
       for (const sid of await this.db("bank_accounts")

@@ -4,6 +4,7 @@ import path from "node:path";
 import knex from "knex";
 import {ImportService} from "../src/services/importService";
 import {parseMnIban, BankLookupService} from "../src/services/bankLookupService";
+import {DataService} from "../src/services/dataService";
 import {EvidenceService} from "../src/services/evidenceService";
 import {AuditLogService} from "../src/services/auditLogService";
 import {resolvers, type GraphQLContext} from "../src/graphql/resolvers";
@@ -45,7 +46,7 @@ async function main() {
     await db("bank_accounts").where({suspectId: unknown.id})
       .update({accountHolderName: "Verified owner"});
     // A duplicate-only re-import must repair case evidence, then stay idempotent.
-    const ctx = {imports, audit, evidence,
+    const ctx = {imports, audit, evidence, data: new DataService(db),
       session: {getCurrentCase: async () => ({id: caseId})}} as unknown as GraphQLContext;
     const args = {content, kind: "BANK" as const, filename: "test.csv",
       mapping: Object.entries(mapping).map(([field, column]) => ({field, column}))};

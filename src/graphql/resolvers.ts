@@ -118,13 +118,14 @@ function age(dateOfBirth: string | null): number {
 // CASE SCOPE — when the analyst has an active case, the evidence list queries
 // (suspects, bankAccounts, transactions, callRecords, correlations) return
 // only that case's records. Membership comes from evidence_entries:
-// SUSPECT entries (КЕЙСТ ТЭМДЭГЛЭХ; suspects.caseId is a legacy fallback)
-// chain suspect → accounts/phones → txns/calls, and imports link their data
+// SUSPECT entries identify people, never every bank account they own.
+// Imports link their exact statement/counterparty accounts separately and data
 // directly with BANK_ACCOUNT / CALL_RECORD entries so freshly imported rows
 // are visible in the case they were imported into. null = no active case.
 interface CaseScope {
   suspectIds : Set<number>;
   accountIds : Set<number>;
+  statementAccountIds : Set<number>;
   txnIds     : Set<number>;
   callIds    : Set<number>;
 }
@@ -179,12 +180,37 @@ async function scopeForCases(
       || (s.caseId != null && caseIds.has(s.caseId)))
       .map((s) => s.id)
   );
-  return {
-    suspectIds,
-    accountIds: by("BANK_ACCOUNT"),
-    txnIds: by("TRANSACTION"),
-    callIds: by("CALL_RECORD"),
-  };
+  const memberships = await c.data.getCaseBankAccounts(cases.map(cf => cf.id));
+  const memberByKey = new Map(memberships.map(m =>
+    [`${m.caseFileId}:${m.bankAccountId}`, m]));
+  const accountIds = new Set<number>();
+  const statementAccountIds = new Set<number>();
+  for (const m of memberships) {
+    if (m.removed) continue;
+    accountIds.add(m.bankAccountId);
+    if (m.isStatement) statementAccountIds.add(m.bankAccountId);
+  }
+  for (const entry of entries.filter(e => e.sourceType === "BANK_ACCOUNT")) {
+    const member = memberByKey.get(`${entry.caseFileId}:${entry.sourceId}`);
+    if (member?.removed) continue;
+    accountIds.add(entry.sourceId);
+    // Explicit operator-added legacy evidence has no import role.
+    if (!member) statementAccountIds.add(entry.sourceId);
+  }
+  const txnIds = new Set<number>();
+  const txnEntries = entries.filter(e => e.sourceType === "TRANSACTION");
+  if (txnEntries.length) {
+    const txns = new Map((await c.data.getAllTransactions()).map(t => [t.id, t]));
+    for (const entry of txnEntries) {
+      const txn = txns.get(entry.sourceId);
+      if (!txn || memberByKey.get(`${entry.caseFileId}:${txn.bankAccountId}`)?.removed) continue;
+      txnIds.add(txn.id);
+      accountIds.add(txn.bankAccountId);
+      // A tagged transaction scopes that row, not the whole statement.
+    }
+  }
+  return {suspectIds, accountIds, statementAccountIds, txnIds,
+    callIds: by("CALL_RECORD")};
 }
 
 // Хэрэг устгах / устгахын өмнө тоолоход хэрэгтэй хоёр хүрээ: тухайн хэргийнх,
@@ -270,9 +296,8 @@ async function scopedTransactions(
   const scope = await caseScope(c);
   let scoped = txns;
   if (scope) {
-    const accountIds = new Set((await scopedAccounts(c)).map((x) => x.id));
     scoped = txns.filter((t) =>
-      accountIds.has(t.bankAccountId) || scope.txnIds.has(t.id));
+      scope.statementAccountIds.has(t.bankAccountId) || scope.txnIds.has(t.id));
   }
   // Enrich the read model only; keep the imported statement rows unchanged.
   // Relations and transaction drilldowns must use the same resolved names.
@@ -300,9 +325,17 @@ async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
   const accounts = await c.data.getAllBankAccounts();
   const scope = await caseScope(c);
   if (!scope) return accounts;
-  return accounts.filter((a) =>
-    (a.suspectId != null && scope.suspectIds.has(a.suspectId))
-    || scope.accountIds.has(a.id));
+  return accounts.filter((a) => scope.accountIds.has(a.id));
+}
+
+// Hundreds of nested Suspect.bankAccounts fields share one scoped read in a
+// request. The context is new for every HTTP request; scope-changing mutations
+// invalidate it so serial mutation fields cannot reuse the previous case.
+const suspectAccountReads = new WeakMap<GraphQLContext, Promise<BankAccount[]>>();
+function accountsForSuspect(c: GraphQLContext): Promise<BankAccount[]> {
+  let read = suspectAccountReads.get(c);
+  if (!read) { read = scopedAccounts(c); suspectAccountReads.set(c, read); }
+  return read;
 }
 
 // Everything ТАЙЛАН needs, built once and shared by all three editions (PDF,
@@ -444,9 +477,13 @@ export const resolvers = {
     // listed: they are the empty shells a counterparty column left behind
     // (hundreds of them, plus the bank's "-" placeholder), and they are not
     // what anyone means by "delete this account's data".
-    accountRecords: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
+    accountRecords: async (_p: unknown, a: {caseFileId?: number}, c: GraphQLContext) => {
       requireUser(c);
-      const records = await c.data.getAccountRecords(await scopedAccounts(c));
+      const scope = a.caseFileId == null ? await caseScope(c)
+        : await caseScopeById(c, a.caseFileId);
+      const accounts = (await c.data.getAllBankAccounts()).filter(a =>
+        !scope || scope.statementAccountIds.has(a.id));
+      const records = await c.data.getAccountRecords(accounts);
       return records
         .filter((r) => r.txnCount > 0)
         .sort((a, b) => b.txnCount - a.txnCount
@@ -587,25 +624,17 @@ export const resolvers = {
       const suspects = scope
         ? allSuspects.filter((s) => scope.suspectIds.has(s.id))
         : allSuspects;
-      // A person appearing as a counterparty may also own statement accounts
-      // imported into a different case. Those accounts must not be pulled into
-      // this flow merely because the person is visible here. Prefer accounts
-      // explicitly tagged to this case; suspect ownership is only the legacy
-      // fallback for old cases that have no BANK_ACCOUNT evidence entries.
-      const explicitAccountScope = scope && scope.accountIds.size > 0;
       const accounts = scope
-        ? allAccounts.filter((account) => explicitAccountScope
-          ? scope.accountIds.has(account.id)
-          : account.suspectId != null
-            && scope.suspectIds.has(account.suspectId))
+        ? allAccounts.filter(account => scope.accountIds.has(account.id))
         : allAccounts;
       const accountIds = new Set(accounts.map((account) => account.id));
       const transactions = allTransactions.filter((transaction) =>
         !ignored.has(transaction.id)
-        && (!scope || accountIds.has(transaction.bankAccountId)
+        && (!scope || scope.statementAccountIds.has(transaction.bankAccountId)
           || scope.txnIds.has(transaction.id)));
       return c.analysis.analyzeNetworkFlow(
-        suspects, accounts, transactions);
+        suspects.map(s => ({...s, bankAccounts: s.bankAccounts
+          .filter(a => accountIds.has(a.id))})), accounts, transactions);
     },
     suspectLocations: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const suspects = await c.suspects.getAllSuspects();
@@ -891,6 +920,7 @@ export const resolvers = {
       a: {input: SuspectInput},
       c: GraphQLContext
     ) => {
+      suspectAccountReads.delete(c);
       const s = await c.suspects.createSuspect(a.input);
       await c.audit.record("Suspect.Create", `Suspect:${s.id}`, s.fullName);
       return s;
@@ -925,6 +955,7 @@ export const resolvers = {
       return s;
     },
     deleteSuspect: async (_p: unknown, a: {id: number}, c: GraphQLContext) => {
+      suspectAccountReads.delete(c);
       const ok = await c.suspects.deleteSuspect(a.id);
       if (ok) await c.audit.record("Suspect.Delete", `Suspect:${a.id}`);
       return ok;
@@ -1125,6 +1156,7 @@ export const resolvers = {
         ? Object.fromEntries(a.mapping.map((m) => [m.field, m.column]))
         : null;
       const content = a.uploadId ? uploadContent(a.uploadId) : a.content;
+      suspectAccountReads.delete(c);
       const sum = await c.imports.importData({
         content, kind: a.kind,
         bankAccountId: a.bankAccountId ?? null,
@@ -1145,6 +1177,10 @@ export const resolvers = {
       // evidence without inserting its duplicate transactions again.
       if (sum.importedRows > 0 || sum.duplicateRows > 0) {
         const src = a.filename ?? "импорт";
+        if (sum.statementAccountIds !== undefined) {
+          await c.data.linkCaseBankAccounts(active.id,
+            sum.touchedAccountIds ?? [], sum.statementAccountIds ?? []);
+        }
         for (const id of sum.touchedSuspectIds ?? []) {
           await c.evidence.tag(active.id, "SUSPECT", id,
             `Импорт: ${src}`).catch(() => undefined);
@@ -1164,14 +1200,22 @@ export const resolvers = {
       _p: unknown,
       a: {uploadId: string; chunk: string}
     ) => uploadAppend(a.uploadId, a.chunk),
-    tagEvidence: (
+    tagEvidence: async (
       _p: unknown,
       a: {caseFileId: number; sourceType: EvidenceSourceType; sourceId: number;
         description?: string; severity?: AlertSeverity},
       c: GraphQLContext
-    ) => c.evidence.tag(a.caseFileId, a.sourceType, a.sourceId,
-      a.description ?? null, a.severity ?? "INFO"),
+    ) => {
+      suspectAccountReads.delete(c);
+      const entry = await c.evidence.tag(a.caseFileId, a.sourceType, a.sourceId,
+        a.description ?? null, a.severity ?? "INFO");
+      if (a.sourceType === "BANK_ACCOUNT") {
+        await c.data.linkCaseBankAccounts(a.caseFileId, [a.sourceId], [a.sourceId]);
+      }
+      return entry;
+    },
     untagEvidence: async (_p: unknown, a: {id: number}, c: GraphQLContext) => {
+      suspectAccountReads.delete(c);
       await c.evidence.untag(a.id);
       return true;
     },
@@ -1196,6 +1240,7 @@ export const resolvers = {
       if (id != null && !(await c.auth.canAccessCase(user, id))) {
         throw new Error("Энэ кейс рүү хандах эрхгүй байна");
       }
+      suspectAccountReads.delete(c);
       return c.session.setCurrentCase(id);
     },
     togglePin: (_p: unknown, a: {suspectId: number}, c: GraphQLContext) =>
@@ -1211,7 +1256,13 @@ export const resolvers = {
       a: {input: Record<string, unknown>},
       c: GraphQLContext
     ) => {
+      suspectAccountReads.delete(c);
       const acc = await c.data.createBankAccount(a.input);
+      const active = await c.session.getCurrentCase();
+      if (active) {
+        await c.data.linkCaseBankAccounts(active.id, [acc.id], [acc.id]);
+        await c.evidence.tag(active.id, "BANK_ACCOUNT", acc.id);
+      }
       await c.audit.record("BankAccount.Create", `BankAccount:${acc.id}`,
         acc.accountNumber);
       return acc;
@@ -1234,12 +1285,19 @@ export const resolvers = {
     // it. Only accounts inside the analyst's active case can be deleted, so a
     // detective cannot reach another case's evidence through this.
     deleteBankAccount: async (
-      _p: unknown, a: {id: number}, c: GraphQLContext
+      _p: unknown, a: {id: number; caseFileId?: number}, c: GraphQLContext
     ) => {
       const user = requireUser(c);
-      const inScope = (await scopedAccounts(c)).some((x) => x.id === a.id);
+      const active = await c.session.getCurrentCase();
+      if (!active) throw new Error("Данс устгахын өмнө хэрэг сонгоно уу.");
+      if (a.caseFileId != null && a.caseFileId !== active.id) {
+        throw new Error("Идэвхтэй хэрэг солигдсон байна. Дансаа дахин сонгоно уу.");
+      }
+      const scope = await caseScope(c);
+      const inScope = scope?.statementAccountIds.has(a.id);
       if (!inScope) throw new Error("Энэ данс идэвхтэй хэрэгт алга.");
-      const res = await c.data.deleteBankAccountDeep(a.id);
+      suspectAccountReads.delete(c);
+      const res = await c.data.removeBankAccountFromCase(active.id, a.id);
       if (!res) throw new Error("Данс олдсонгүй.");
       await c.audit.record("BankAccount.Delete", `BankAccount:${a.id}`,
         `${res.accountNumber} · ${res.transactions} гүйлгээ · ${user.username}`,
@@ -1300,6 +1358,7 @@ export const resolvers = {
     ) => {
       const admin = requireAdmin(c);
       const {mine, others} = await caseScopePair(c, a.caseFileId);
+      suspectAccountReads.delete(c);
       const purged = await c.data.deleteCaseDeep(a.caseFileId, mine, others);
       if (!purged) throw new Error("Хэрэг олдсонгүй.");
       await c.audit.record("CaseFile.Delete", `CaseFile:${a.caseFileId}`,
@@ -1317,6 +1376,7 @@ export const resolvers = {
       // Merging detectives' cases (and their data) into one big case is a
       // boss-only power.
       requireAdmin(c);
+      suspectAccountReads.delete(c);
       const cf = await c.data.mergeCases(
         a.sourceCaseFileIds, a.targetCaseFileId);
       const current = await c.session.getCurrentCase();
@@ -1527,8 +1587,8 @@ export const resolvers = {
       c.offenders.isOffender(s.nationalId),
     initials: (s: Suspect) => initials(s.fullName),
     age: (s: Suspect) => age(s.dateOfBirth),
-    bankAccounts: (s: Suspect, _a: unknown, c: GraphQLContext) =>
-      c.suspects.getBankAccounts(s.id),
+    bankAccounts: async (s: Suspect, _a: unknown, c: GraphQLContext) =>
+      (await accountsForSuspect(c)).filter(a => a.suspectId === s.id),
     phoneNumbers: (s: Suspect, _a: unknown, c: GraphQLContext) =>
       c.suspects.getPhoneNumbers(s.id),
     tags: (s: Suspect, _a: unknown, c: GraphQLContext) =>

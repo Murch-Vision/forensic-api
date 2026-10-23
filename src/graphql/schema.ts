@@ -1209,7 +1209,7 @@ export const typeDefs = /* GraphQL */ `
     дансууд, мөрийн тоотойгоо, хамгийн олон мөртэй нь эхэлж. Гүйлгээгүй данс
     энд ОРОХГҮЙ: тэдгээр нь харилцагчийн баганаас үүссэн хоосон бүртгэл.
     """
-    accountRecords: [AccountRecord!]!
+    accountRecords(caseFileId: Int): [AccountRecord!]!
     transactions(includeRemoved: Boolean): [BankTransaction!]!
     "Харьцаа of the active case's statement accounts, aggregated."
     caseRelations: CaseRelationSummary!
@@ -1427,7 +1427,7 @@ export const typeDefs = /* GraphQL */ `
     бусад дансны хуулга дээр энэ данс харилцагчаар бичигдсэн мөрүүд ч устахгүй
     (тэдгээр нь тэр дансны хуулга). Дахин импортлоход данс дахин үүснэ.
     """
-    deleteBankAccount(id: Int!): AccountDeletion!
+    deleteBankAccount(id: Int!, caseFileId: Int): AccountDeletion!
     createPhoneNumber(input: PhoneNumberInput!): PhoneNumber!
     createCaseFile(input: CaseFileInput!): CaseFile!
     updateCaseFile(caseFileId: Int!, input: CaseFileUpdateInput!): CaseFile!

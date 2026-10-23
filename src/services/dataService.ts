@@ -387,6 +387,72 @@ export class DataService {
       .where({id: Number(id)}).first())!;
   }
 
+  async getCaseBankAccounts(caseFileIds: number[]): Promise<{
+    caseFileId: number; bankAccountId: number; isStatement: number | boolean;
+    removed: number | boolean;
+  }[]> {
+    if (!caseFileIds.length) return [];
+    const groups = await Promise.all(chunked(caseFileIds, 400).map(ids =>
+      this.db("case_bank_accounts").whereIn("caseFileId", ids)));
+    return groups.flat();
+  }
+
+  // A counterparty reference can add graph context, but cannot restore a
+  // removed statement or turn another case's statement into this case's import.
+  async linkCaseBankAccounts(
+    caseFileId: number, accountIds: number[], statementAccountIds: number[]
+  ): Promise<void> {
+    const statements = new Set(statementAccountIds);
+    await this.db.transaction(async trx => {
+      for (const bankAccountId of accountIds) {
+        const key = {caseFileId, bankAccountId};
+        const existing = await trx("case_bank_accounts").where(key).first();
+        if (!existing) {
+          await trx("case_bank_accounts").insert({...key,
+            isStatement: statements.has(bankAccountId), removed: false});
+        } else if (statements.has(bankAccountId)) {
+          await trx("case_bank_accounts").where(key)
+            .update({isStatement: true, removed: false});
+        }
+      }
+    });
+  }
+
+  async removeBankAccountFromCase(
+    caseFileId: number, bankAccountId: number
+  ): Promise<AccountDeletion | null> {
+    return this.db.transaction(async trx => {
+      const account = await trx<BankAccount>("bank_accounts")
+        .where({id: bankAccountId}).first();
+      if (!account) return null;
+      const shared = await trx("case_bank_accounts")
+        .where({bankAccountId, removed: false})
+        .whereNot({caseFileId}).first();
+      const taggedElsewhere = await trx("evidence_entries")
+        .whereNot({caseFileId}).where(q => q
+          .where({sourceType: "BANK_ACCOUNT", sourceId: bankAccountId})
+          .orWhere(sub => sub.where({sourceType: "TRANSACTION"})
+            .whereIn("sourceId", trx("bank_transactions")
+              .where({bankAccountId}).select("id")))).first();
+      if (!shared && !taggedElsewhere) {
+        return this.deleteAccountRows(trx, bankAccountId);
+      }
+      const key = {caseFileId, bankAccountId};
+      await trx("case_bank_accounts").insert({...key, isStatement: false, removed: true})
+        .onConflict(["caseFileId", "bankAccountId"])
+        .merge({isStatement: false, removed: true});
+      const evidence = await trx("evidence_entries").where({caseFileId})
+        .where(q => q.where({sourceType: "BANK_ACCOUNT", sourceId: bankAccountId})
+          .orWhere(sub => sub.where({sourceType: "TRANSACTION"})
+            .whereIn("sourceId", trx("bank_transactions")
+              .where({bankAccountId}).select("id")))).del();
+      const conclusions = await trx("case_conclusions")
+        .where({caseFileId, bankAccountId}).del();
+      return {accountNumber: account.accountNumber, transactions: 0,
+        analyses: 0, conclusions, evidence, links: 0};
+    });
+  }
+
   // What each of the given accounts actually holds — the RAW row count, first
   // and last statement date. Raw, not noise-filtered: this list answers "what
   // will disappear if I delete this account", and a delete takes the removed
@@ -528,6 +594,7 @@ export class DataService {
         }
       }
 
+      await trx("case_bank_accounts").where({bankAccountId: id}).del();
       await trx("bank_accounts").where({id}).del();
 
       return {
@@ -545,20 +612,22 @@ export class DataService {
     txnIds: number[];
   }> {
     const otherSuspects = new Set(others.suspectIds);
-    const suspectIds = mine.suspectIds.filter((id) => !otherSuspects.has(id));
+    let suspectIds = mine.suspectIds.filter((id) => !otherSuspects.has(id));
 
-    // Дансыг эздээр нь ч, шууд хавсаргасан баримтаар нь ч харна.
-    const accountsOf = async (suspects: number[], tagged: number[]) => {
-      const out = new Set<number>(tagged);
-      for (const chunk of chunked(suspects, 400)) {
-        for (const id of await this.db("bank_accounts")
-          .whereIn("suspectId", chunk).pluck("id")) out.add(Number(id));
+    // Membership is explicit per account, never all accounts of a person.
+    const otherAccounts = new Set(others.accountIds);
+    const accountIds = mine.accountIds.filter(id => !otherAccounts.has(id));
+
+    const retained = new Set<number>();
+    const deleting = new Set(accountIds);
+    for (const chunk of chunked(suspectIds, 400)) {
+      const owned = await this.db("bank_accounts").whereIn("suspectId", chunk)
+        .select("id", "suspectId");
+      for (const account of owned) {
+        if (!deleting.has(account.id)) retained.add(Number(account.suspectId));
       }
-      return out;
-    };
-    const mineAccounts = await accountsOf(mine.suspectIds, mine.accountIds);
-    const otherAccounts = await accountsOf(others.suspectIds, others.accountIds);
-    const accountIds = [...mineAccounts].filter((id) => !otherAccounts.has(id));
+    }
+    suspectIds = suspectIds.filter(id => !retained.has(id));
 
     const callsOf = async (suspects: number[], tagged: number[]) => {
       const out = new Set<number>(tagged);
@@ -650,6 +719,7 @@ export class DataService {
       await trx("case_graphs").where({caseFileId}).del();
       await trx("case_conclusions").where({caseFileId}).del();
       await trx("case_noise_filters").where({caseFileId}).del();
+      await trx("case_bank_accounts").where({caseFileId}).del();
       await trx("case_members").where({caseFileId}).del();
       await trx("case_notes").where({caseFileId}).del();
       await trx("evidence_entries").where({caseFileId}).del();
@@ -887,6 +957,19 @@ export class DataService {
             .update({caseFileId: targetId, exhibitNumber: next});
         }
       }
+      for (const member of await trx("case_bank_accounts")
+        .whereIn("caseFileId", sources).where({removed: false})) {
+        const key = {caseFileId: targetId, bankAccountId: member.bankAccountId};
+        const existing = await trx("case_bank_accounts").where(key).first();
+        if (!existing) {
+          await trx("case_bank_accounts").insert({...key,
+            isStatement: member.isStatement, removed: false});
+        } else if (member.isStatement) {
+          await trx("case_bank_accounts").where(key)
+            .update({isStatement: true, removed: false});
+        }
+      }
+      await trx("case_bank_accounts").whereIn("caseFileId", sources).del();
       await trx("case_notes").whereIn("caseFileId", sources)
         .update({caseFileId: targetId});
       for (const id of sources) {
