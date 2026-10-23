@@ -1,0 +1,46 @@
+name: Windows startup
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          architecture: x64
+      - uses: pnpm/action-setup@v4
+      - name: Runtime and launcher regressions (Windows PowerShell 5.1)
+        run: |
+          node --test tests/runtimeCheck.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./tests/windowsRuntime.ps1
+      - name: Install locked dependencies, check native modules, migrate and build
+        env:
+          DB_FILE: ${{ runner.temp }}\windows-smoke.sqlite
+          PORT: 4400
+        run: |
+          & ./scripts/windows-runtime.ps1 -Action Prepare
+      - name: Start actual server and check HTTP, then stop its process tree
+        env:
+          DB_FILE: ${{ runner.temp }}\windows-smoke.sqlite
+          PORT: 4400
+        run: |
+          & ./tests/windowsSmoke.ps1
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: startup-node-${{ matrix.node }}
+          path: logs/startup.log

@@ -236,9 +236,14 @@ export class UpdateService {
     return new Promise((resolve, reject) => {
       const win = process.platform === "win32";
       this.push(`$ ${pm} ${args.join(" ")}`);
-      const child = spawn(win ? `${pm}.cmd` : pm, args, {
+      // The Windows launcher may find a standalone pnpm.exe outside PATH.
+      // Preserve that exact executable for the in-app updater as well.
+      const executable = win && pm === "pnpm" && process.env.FAW_PNPM
+        ? process.env.FAW_PNPM : win ? `${pm}.cmd` : pm;
+      const shell = win && /\.(cmd|bat)$/i.test(executable);
+      const child = spawn(shell ? `"${executable}"` : executable, args, {
         cwd,
-        shell: win,
+        shell,
         // There is no TTY here, and pnpm ABORTS instead of assuming yes when
         // it wants to confirm something (e.g. purging an npm-made
         // node_modules). CI=true makes every such prompt non-interactive.
@@ -458,7 +463,7 @@ export class UpdateService {
         && this.builtCommit(root) !== after) {
         const pm = this.packageManager(root);
         try {
-          await this.runPm(pm, root, "install");
+          await this.runPm(pm, root, "install", "--frozen-lockfile", "--prod=false");
           await this.runPm(pm, root, "run", "build");
           writeFileSync(path.join(root, "dist", ".commit"), after);
           note = " — build шинэчлэгдлээ";
