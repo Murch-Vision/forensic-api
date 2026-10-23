@@ -176,6 +176,14 @@ export const typeDefs = /* GraphQL */ `
     links: Int!
   }
 
+  "Нэгдсэн бүртгэлийн үлдэгдэл данс цэвэрлэхийн өмнөх шалгалт. ADMIN only."
+  type BankAccountCleanupPreview {
+    id: Int!
+    accountNumber: String!
+    txnCount: Int!
+    cases: [CaseFile!]!
+  }
+
   type BankTransaction {
     id: Int!
     bankAccountId: Int!
@@ -1234,6 +1242,7 @@ export const typeDefs = /* GraphQL */ `
     """
     casePurgePreview(caseFileId: Int!): CasePurge!
     globalPeople: [GlobalPerson!]!
+    bankAccountCleanupPreview(id: Int!): BankAccountCleanupPreview!
     analysisResults: [AnalysisResult!]!
     auditEvents(limit: Int): [AuditEvent!]!
     accessLogEntries(suspectId: Int): [AccessLogEntry!]!
@@ -1428,6 +1437,8 @@ export const typeDefs = /* GraphQL */ `
     (тэдгээр нь тэр дансны хуулга). Дахин импортлоход данс дахин үүснэ.
     """
     deleteBankAccount(id: Int!, caseFileId: Int): AccountDeletion!
+    "Хэрэгт холбоогүй дансыг нэгдсэн бүртгэлээс цэвэрлэнэ. ADMIN only."
+    deleteOrphanBankAccount(id: Int!): AccountDeletion!
     createPhoneNumber(input: PhoneNumberInput!): PhoneNumber!
     createCaseFile(input: CaseFileInput!): CaseFile!
     updateCaseFile(caseFileId: Int!, input: CaseFileUpdateInput!): CaseFile!

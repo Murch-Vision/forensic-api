@@ -72,6 +72,13 @@ export interface AccountDeletion {
   links         : number;
 }
 
+export interface BankAccountCleanupPreview {
+  id: number;
+  accountNumber: string;
+  txnCount: number;
+  cases: CaseFile[];
+}
+
 // Хэрэгт юу хамаарахыг заасан ID-ууд (resolvers.ts-ийн case scope).
 export interface ScopeIds {
   suspectIds : number[];
@@ -504,6 +511,73 @@ export class DataService {
         lastTxn       : st?.last ?? null,
         createdAt     : a.createdAt,
       };
+    });
+  }
+
+  // Registry cleanup is independent of the active case. An owner's case
+  // membership is NOT an account reference: old imports leave empty accounts
+  // on people who still belong to cases. Check the exact account/transactions.
+  getBankAccountCleanupPreview(id: number): Promise<BankAccountCleanupPreview | null> {
+    return this.accountCleanupPreview(this.db, id);
+  }
+
+  private async accountCleanupPreview(
+    db: Knex, id: number
+  ): Promise<BankAccountCleanupPreview | null> {
+    const account = await db<BankAccount>("bank_accounts").where({id}).first();
+    if (!account) return null;
+    const txnIds = (await db("bank_transactions").where({bankAccountId: id})
+      .pluck("id")).map(Number);
+    const caseIds = new Set<number>();
+    const addCases = (rows: {caseFileId: number}[]) => {
+      for (const row of rows) caseIds.add(Number(row.caseFileId));
+    };
+    addCases(await db("case_bank_accounts")
+      .where({bankAccountId: id, removed: false}).select("caseFileId"));
+    addCases(await db("evidence_entries").where(q => q
+      .where({sourceType: "BANK_ACCOUNT", sourceId: id})
+      .orWhere(sub => sub.where({sourceType: "TRANSACTION"})
+        .whereIn("sourceId", db("bank_transactions")
+          .where({bankAccountId: id}).select("id")))).select("caseFileId"));
+    addCases(await db("case_conclusions").where({bankAccountId: id})
+      .select("caseFileId"));
+
+    // A saved/tagged finding backed by these transactions is case data too,
+    // even when legacy imports omitted the direct account evidence.
+    if (txnIds.length) {
+      const txnSet = new Set(txnIds);
+      const links = (await db("suspect_links").whereNotNull("contributingTxnIds")
+        .select("id", "caseGraphId", "contributingTxnIds"))
+        .filter(link => parseJsonArray<number>(link.contributingTxnIds)
+          .some(txnId => txnSet.has(Number(txnId))));
+      for (const ids of chunked(links.map(link => Number(link.id)), 400)) {
+        addCases(await db("evidence_entries").where({sourceType: "SUSPECT_LINK"})
+          .whereIn("sourceId", ids).select("caseFileId"));
+      }
+      const graphIds = [...new Set(links.filter(link => link.caseGraphId != null)
+        .map(link => Number(link.caseGraphId)))];
+      for (const ids of chunked(graphIds, 400)) {
+        addCases(await db("case_graphs").whereIn("id", ids).select("caseFileId"));
+      }
+    }
+    const cases: CaseFile[] = [];
+    for (const ids of chunked([...caseIds], 400)) {
+      cases.push(...await db<CaseFile>("case_files").whereIn("id", ids));
+    }
+    cases.sort((a, b) => a.caseId.localeCompare(b.caseId));
+    return {id, accountNumber: account.accountNumber, txnCount: txnIds.length, cases};
+  }
+
+  async deleteOrphanBankAccount(id: number): Promise<AccountDeletion | null> {
+    return this.db.transaction(async trx => {
+      // Recheck inside the write transaction: a preview is never permission
+      // to delete an account that has since been imported into another case.
+      const preview = await this.accountCleanupPreview(trx, id);
+      if (!preview) return null;
+      if (preview.cases.length) {
+        throw new Error("Энэ данс хэрэгт ашиглагдаж байна. Нэгдсэн бүртгэлээс устгах боломжгүй.");
+      }
+      return this.deleteAccountRows(trx, id);
     });
   }
 

@@ -589,6 +589,14 @@ export const resolvers = {
       requireAdmin(c);
       return c.people.getGlobalPeople();
     },
+    bankAccountCleanupPreview: async (
+      _p: unknown, a: {id: number}, c: GraphQLContext
+    ) => {
+      requireAdmin(c);
+      const preview = await c.data.getBankAccountCleanupPreview(a.id);
+      if (!preview) throw new Error("Данс олдсонгүй.");
+      return preview;
+    },
     analysisResults: (_p: unknown, _a: unknown, c: GraphQLContext) =>
       c.data.getAllAnalysisResults(),
     auditEvents: (_p: unknown, a: {limit?: number}, c: GraphQLContext) =>
@@ -1302,6 +1310,17 @@ export const resolvers = {
       await c.audit.record("BankAccount.Delete", `BankAccount:${a.id}`,
         `${res.accountNumber} · ${res.transactions} гүйлгээ · ${user.username}`,
         "HIGH");
+      return res;
+    },
+    deleteOrphanBankAccount: async (
+      _p: unknown, a: {id: number}, c: GraphQLContext
+    ) => {
+      const user = requireAdmin(c);
+      const res = await c.data.deleteOrphanBankAccount(a.id);
+      if (!res) throw new Error("Данс олдсонгүй.");
+      suspectAccountReads.delete(c);
+      await c.audit.record("BankAccount.Cleanup", `BankAccount:${a.id}`,
+        `${res.accountNumber} · ${res.transactions} гүйлгээ · ${user.username}`, "HIGH");
       return res;
     },
     createPhoneNumber: async (
