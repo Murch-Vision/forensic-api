@@ -7,8 +7,50 @@ function Assert-True($Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 
-# No installs, actual database changes, process termination or background jobs.
-# Exercise the launcher control flow with a simulated package manager.
+function Open-ExclusiveLog([string]$Path) {
+    if ($env:OS -ne 'Windows_NT') {
+        # Unix does not enforce Windows sharing flags. Make the path unwritable
+        # instead, to exercise the same fallback with a real filesystem error.
+        $backup = $Path + '.test-lock-backup'
+        if (Test-Path -LiteralPath $Path) { Move-Item -LiteralPath $Path -Destination $backup }
+        New-Item -ItemType Directory -Path $Path | Out-Null
+        return [pscustomobject]@{IsDirectoryBlock=$true; Path=$Path; Backup=$backup}
+    }
+    # On Windows reproduce the actual exclusive lock in another process.
+    # Wait for its readiness handshake and always reap it in the caller's finally.
+    $escaped = $Path.Replace("'", "''")
+    $code = "`$stream = [IO.File]::Open('$escaped', [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None); try { [Console]::Out.WriteLine('locked'); Start-Sleep -Seconds 60 } finally { `$stream.Dispose() }"
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $info
+    $null = $process.Start()
+    if ($process.StandardOutput.ReadLine() -ne 'locked') {
+        $errorText = $process.StandardError.ReadToEnd()
+        Close-ExclusiveLog $process
+        throw "Could not acquire test log lock: $errorText"
+    }
+    return $process
+}
+
+function Close-ExclusiveLog($Process) {
+    if ($Process.PSObject.Properties['IsDirectoryBlock']) {
+        Remove-Item -LiteralPath $Process.Path -Force
+        if (Test-Path -LiteralPath $Process.Backup) { Move-Item -LiteralPath $Process.Backup -Destination $Process.Path }
+        return
+    }
+    if (-not $Process.HasExited) { $Process.Kill() }
+    $Process.WaitForExit()
+    $Process.Dispose()
+}
+
+# No installs, actual database changes or termination of application processes.
+# Lock helper children are reaped; the package manager is simulated.
 $originalLocation = Get-Location
 $fixture = Join-Path $repo ('logs/Windows test (space)-' + [char]0x041C + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $fixture -Force | Out-Null
@@ -16,6 +58,36 @@ $script:ProjectDir = $fixture
 $script:LogFile = Join-Path $fixture 'startup.log'
 $nativeNode = (Get-Command node -ErrorAction Stop).Source
 $originalInvoker = ${function:Invoke-Checked}
+$primaryLog = $script:LogFile
+$heldLog = Open-ExclusiveLog $primaryLog
+try {
+    # Reproduce the screenshot: another process owns the main startup log.
+    Write-Log 'locked log regression'
+    $fallbackLog = Join-Path $fixture ("startup-$PID.log")
+    Assert-True ($script:LogFile -eq $fallbackLog) 'Use a process-specific log while startup.log is exclusively locked.'
+    Assert-True ((Get-Content -LiteralPath $fallbackLog -Raw) -match 'locked log regression') 'Preserve the diagnostic in the fallback log.'
+    $nativeCode = & $originalInvoker $nativeNode @('-e', 'process.exit(0)')
+    Assert-True ($nativeCode -eq 0) 'A locked startup.log must not abort successful commands.'
+    $nativeFailure = $false
+    try { & $originalInvoker $nativeNode @('-e', 'process.exit(7)') } catch {
+        $nativeFailure = $_.Exception.Message -match 'failed \(exit 7\)'
+    }
+    Assert-True $nativeFailure 'Keep the real process error when the main log is locked.'
+
+    $heldFallback = Open-ExclusiveLog $fallbackLog
+    try {
+        Write-Log 'both logs locked; console survives'
+        Assert-True $script:LogDisabled 'Fall back to console if neither log can be written.'
+        $nativeCode = & $originalInvoker $nativeNode @('-e', 'process.exit(0)')
+        Assert-True ($nativeCode -eq 0) 'Even unavailable fallback logs must not stop the command.'
+    } finally { Close-ExclusiveLog $heldFallback }
+} finally {
+    Close-ExclusiveLog $heldLog
+    $script:LogFile = $primaryLog
+    $script:LogDisabled = $false
+}
+Write-Log 'log available again'
+Assert-True ((Get-Content -LiteralPath $primaryLog -Raw) -match 'log available again') 'Write normally after releasing the file.'
 $nativeCode = & $originalInvoker $nativeNode @('-e', 'console.error("stderr can accompany success"); process.exit(0)')
 Assert-True ($nativeCode -eq 0) 'Log stderr without rejecting successful native commands.'
 $nativeFailure = $false
@@ -63,6 +135,20 @@ try {
     Assert-True ((Invoke-Launcher) -eq 0) 'Successful setup should start the API.'
     Assert-True ($script:Calls.Contains('run start')) 'Start the API after preparing it.'
     Assert-True ($script:Calls.Contains('install --frozen-lockfile --prod=false')) 'Use locked dependencies including startup tools.'
+
+    $script:LogFile = $primaryLog
+    $heldLog = Open-ExclusiveLog $primaryLog
+    try {
+        $script:Calls.Clear()
+        Assert-True ((Invoke-Launcher) -eq 0) 'Start the service even when the first startup log line is locked.'
+        Assert-True ($script:Calls.Contains('run start')) 'A diagnostic file lock must not prevent serving.'
+        $script:FailAt = '^install '
+        Assert-True ((Invoke-Launcher) -eq 1) 'Keep setup failure status without throwing again from the catch logger.'
+    } finally {
+        Close-ExclusiveLog $heldLog
+        $script:LogFile = $primaryLog
+        $script:FailAt = ''
+    }
 
     $script:Calls.Clear(); $script:RestartOnce = $true
     Assert-True ((Invoke-Launcher) -eq 0) 'Restart after an in-app update exits with code 42.'

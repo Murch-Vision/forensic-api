@@ -42,6 +42,11 @@ checkout бүрийн `logs\startup.log` файлд хадгалагдана. Ш
 `scripts\start-windows.bat` ашиглана. Давхар шинэ launcher нэг checkout-ыг
 хоёр удаа асаахгүй.
 
+`startup.log`-ийг хуучин launcher эсвэл өөр програм түгжсэн бол шинэ launcher
+`logs\startup-<процессын дугаар>.log` файл руу шилжиж, тэр замыг цонхонд харуулна.
+Лог бичих боломжгүйгээс серверийг зогсоохгүй; аль ч файлд бичиж чадахгүй бол
+мэдээллээ цонхонд харуулна. Оношлогоонд заасан fallback логийг ашиглана.
+
 **Одоо байгаа `.env`, `data` хавтас болон мэдээллийн сангаа устгахгүй.**
 Өгөгдлийн сангийн тохиргоог энэ засвар солихгүй. Ажиллаж буй өгөгдлийн сангийн
 байршлыг өөрчилж шинэ хоосон сан руу зааж болохгүй.
@@ -50,6 +55,7 @@ checkout бүрийн `logs\startup.log` файлд хадгалагдана. Ш
 
 | Алдаа | Засах алхам |
 | --- | --- |
+| `startup.log ... being used by another process` | Хоёр checkout-д `git pull --ff-only` ажиллуулж логийн түгжрэлийн засварыг авна. Дараа нь `scripts\install-startup-windows.bat`-ийг тус бүрт ажиллуулна. Лог болон өгөгдлийн сангаа устгах шаардлагагүй. |
 | Node.js / pnpm not found, unsupported Node | Дээрх x64 Node LTS, pnpm 10 суулган терминалаа дахин нээнэ. |
 | Native module / NODE_MODULE_VERSION / SQLite binding | Node хувилбараа зассаны дараа бүх Forensic серверийг хааж, API хавтсанд `pnpm rebuild better-sqlite3 sharp esbuild`, дараа нь `scripts\start-windows.bat` ажиллуулна. Дахин алдахад install логийг шалгана. |
 | Migration failed | Логийн эхний migration алдааг шалгана. Санг устгах, rollback хийхгүй; алдааны логийг өгнө. |

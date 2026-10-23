@@ -10,10 +10,45 @@ $script:LogFile = Join-Path $script:ProjectDir 'logs\startup.log'
 $script:Runner = $PSCommandPath
 $script:PowerShellExe = Join-Path $PSHOME 'powershell.exe'
 
+function Try-AppendLog([string]$Path, [string]$Line) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Line + [Environment]::NewLine)
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        $stream = $null
+        try {
+            # Keep the handle only for this write. Read sharing lets log viewers
+            # follow the file; denying concurrent writes prevents lost lines.
+            $stream = [IO.File]::Open($Path, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush()
+            return $true
+        } catch [IO.IOException] {
+            if ($attempt -lt 2) { Start-Sleep -Milliseconds 25 }
+        } catch {
+            return $false
+        } finally {
+            if ($stream) { try { $stream.Dispose() } catch { <# Logging must remain best effort. #> } }
+        }
+    }
+    return $false
+}
+
 function Write-Log([string]$Message) {
     $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
     Write-Host $line
-    Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8
+    if ($script:LogDisabled) { return }
+    if (Try-AppendLog $script:LogFile $line) { return }
+
+    # A legacy launcher can hold startup.log open for its entire lifetime.
+    # Parent updater and child launcher must not depend on that same handle.
+    $fallback = Join-Path (Split-Path $script:LogFile -Parent) ("startup-$PID.log")
+    if ($fallback -ne $script:LogFile -and (Try-AppendLog $fallback $line)) {
+        $script:LogFile = $fallback
+        Write-Host "WARNING: startup.log is unavailable; logging to $fallback"
+        return
+    }
+    # Diagnostics must never stop startup or replace the original setup error.
+    $script:LogDisabled = $true
+    Write-Host 'WARNING: Cannot write startup logs. Continuing with console output.'
 }
 
 function Invoke-Checked {
@@ -133,7 +168,7 @@ function Install-Startup([string]$Kind) {
     try { & schtasks.exe /Delete /TN $name /F *> $null } catch { <# Optional legacy task may not exist. #> }
     Write-Log "Startup shortcut installed: $shortcutPath"
     Start-Hidden $script:Runner
-    Write-Log 'Start requested. Check logs/startup.log for the server result.'
+    Write-Log "Start requested. Check $script:LogFile for the server result."
 }
 
 function Uninstall-Startup([string]$Kind) {
