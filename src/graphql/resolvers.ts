@@ -245,7 +245,7 @@ async function scopedDashboardStats(
       scopedAccounts(c),
       scopedTransactions(c, false),
       c.data.getAllCallRecords(),
-      c.data.getAllLinks(),
+      scopedLinks(c),
       c.data.getAllPhoneNumbers(),
       c.data.getAllCaseFiles(),
     ]);
@@ -328,6 +328,64 @@ async function scopedAccounts(c: GraphQLContext): Promise<BankAccount[]> {
   return accounts.filter((a) => scope.accountIds.has(a.id));
 }
 
+async function scopedLinks(c: GraphQLContext) {
+  const [links, scope, active, accounts] = await Promise.all([
+    c.data.getAllLinks(), caseScope(c), c.session.getCurrentCase(), scopedAccounts(c),
+  ]);
+  if (!scope) return links;
+  const people = new Set(scope.suspectIds);
+  for (const a of accounts) if (a.suspectId != null) people.add(a.suspectId);
+  const allowedCases = active ? new Set([active.id])
+    : c.user ? await c.auth.accessibleCaseIds(c.user) : new Set<number>();
+  const visible = links.filter(l => people.has(l.sourceSuspectId)
+    && people.has(l.targetSuspectId)
+    && (l.linkType === "MANUAL" || (l.caseFileId != null
+      && (allowedCases === null || allowedCases.has(l.caseFileId)))));
+  // Old global links have no reliable origin; never expose their totals in a
+  // case. Re-total generated money against the case's currently visible rows.
+  const txns = new Map((await scopedTransactions(c, false)).map(t => [t.id, t]));
+  return visible.flatMap(l => {
+    if (l.linkType !== "FINANCIAL_TRANSFER") return [l];
+    let ids: number[];
+    try { const raw = JSON.parse(l.contributingTxnIds ?? "[]");
+      ids = Array.isArray(raw) ? raw : []; } catch { ids = []; }
+    const kept = [...new Set(ids)].flatMap(id => txns.get(id) ? [txns.get(id)!] : []);
+    if (!kept.length) return [];
+    const total = kept.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+    return [{...l, totalFinancialValue: total, strength: Math.min(10, kept.length),
+      contributingTxnIds: JSON.stringify(kept.map(t => t.id)),
+      description: `${kept.length} гүйлгээ · нийт ${total}`}];
+  });
+}
+
+async function generateCaseLinks(c: GraphQLContext) {
+  requireUser(c);
+  const active = await c.session.getCurrentCase();
+  if (!active) throw new Error("Эхлээд хэрэг сонгоно уу.");
+  const scope = await caseScopeById(c, active.id);
+  const [people, allAccounts, txns, allCalls, ignored] = await Promise.all([
+    c.data.getSuspectsWithRelations(), c.data.getAllBankAccounts(),
+    c.data.getAllTransactions(), c.data.getAllCallRecords(),
+    ignoredTxnIds(c, active.id),
+  ]);
+  const accounts = allAccounts.filter(a => scope.accountIds.has(a.id));
+  const ids = new Set(scope.suspectIds);
+  for (const a of accounts) if (a.suspectId != null) ids.add(a.suspectId);
+  const calls = allCalls.filter(r => (r.suspectId != null
+    && scope.suspectIds.has(r.suspectId)) || scope.callIds.has(r.id));
+  const phoneNumbers = new Set(calls.flatMap(r => [r.callerNumber, r.calledNumber]));
+  const suspects = people.filter(s => ids.has(s.id)).map(s => ({...s,
+    bankAccounts: accounts.filter(a => a.suspectId === s.id),
+    phoneNumbers: s.phoneNumbers.filter(p => phoneNumbers.has(p.number)),
+  }));
+  if ((await c.session.getCurrentCase())?.id !== active.id) {
+    throw new Error("Идэвхтэй хэрэг солигдсон байна. Дахин оролдоно уу.");
+  }
+  return c.analysis.generateLinks({caseFileId: active.id, suspects, accounts,
+    transactions: txns.filter(t => !ignored.has(t.id)
+      && (scope.statementAccountIds.has(t.bankAccountId) || scope.txnIds.has(t.id))), calls});
+}
+
 // Hundreds of nested Suspect.bankAccounts fields share one scoped read in a
 // request. The context is new for every HTTP request; scope-changing mutations
 // invalidate it so serial mutation fields cannot reuse the previous case.
@@ -395,10 +453,10 @@ function matchesDescRules(
 // individual ids, sub-threshold amounts, description rules and pair removals
 // combined. Applied to EVERY analysis (timeline, correlations, links, charts)
 // so removed noise never resurfaces anywhere, not just on the Transactions page.
-async function ignoredTxnIds(c: GraphQLContext): Promise<Set<number>> {
-  const active = await c.session.getCurrentCase();
-  if (!active) return new Set();
-  const nf = await c.noise.getForCase(active.id);
+async function ignoredTxnIds(c: GraphQLContext, caseFileId?: number): Promise<Set<number>> {
+  const id = caseFileId ?? (await c.session.getCurrentCase())?.id;
+  if (id == null) return new Set();
+  const nf = await c.noise.getForCase(id);
   const ignored = new Set<number>(nf.ignoredTxns);
   const hasRules = nf.descRules.length > 0;
   const hasPairs = nf.ignoredPairs.length > 0;
@@ -543,14 +601,7 @@ export const resolvers = {
         (r.suspectId != null && scope.suspectIds.has(r.suspectId))
         || scope.callIds.has(r.id));
     },
-    suspectLinks: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const links = await c.data.getAllLinks();
-      const scope = await caseScope(c);
-      if (!scope) return links;
-      return links.filter((l) =>
-        scope.suspectIds.has(l.sourceSuspectId)
-        && scope.suspectIds.has(l.targetSuspectId));
-    },
+    suspectLinks: (_p: unknown, _a: unknown, c: GraphQLContext) => scopedLinks(c),
     caseFiles: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       const all = await c.data.getAllCaseFiles();
       const user = c.user;
@@ -969,7 +1020,7 @@ export const resolvers = {
       return ok;
     },
     generateLinks: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const links = await c.analysis.generateLinks(await ignoredTxnIds(c));
+      const links = await generateCaseLinks(c);
       await c.audit.record("Link.Generate", null, `${links.length} links`);
       return links;
     },
@@ -985,7 +1036,7 @@ export const resolvers = {
       // NOTE: never touch the analyst's noise filter here — clearing it wipes
       // their manually-marked "unimportant" transactions. Left untouched.
       // Rebuild the link network so the new calls/devices become connections.
-      const links = await c.analysis.generateLinks(await ignoredTxnIds(c));
+      const links = await generateCaseLinks(c);
       await c.audit.record("Data.Sample", null,
         `+${r.networkCalls} calls, ~${r.enrichedCalls} enriched`);
       return {...r, linksCreated: links.length};
@@ -1653,8 +1704,9 @@ export const resolvers = {
       c.suspects.getTags(s.id),
     caseNotes: (s: Suspect, _a: unknown, c: GraphQLContext) =>
       c.suspects.getCaseNotes(s.id),
-    links: (s: Suspect, _a: unknown, c: GraphQLContext) =>
-      c.suspects.getLinks(s.id),
+    links: async (s: Suspect, _a: unknown, c: GraphQLContext) =>
+      (await scopedLinks(c)).filter(l => l.sourceSuspectId === s.id
+        || l.targetSuspectId === s.id),
     recordCounts: (s: Suspect, _a: unknown, c: GraphQLContext) =>
       c.suspects.getRecordCounts(s.id),
   },

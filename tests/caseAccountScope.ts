@@ -11,6 +11,7 @@ import {EvidenceService} from "../src/services/evidenceService";
 import {NoiseFilterService} from "../src/services/noiseFilterService";
 import {resolvers, type GraphQLContext} from "../src/graphql/resolvers";
 import {up as backfill, down as removeMemberships} from "../src/db/migrations/20261023000000_case_bank_accounts";
+import {up as scopeLinks, down as unScopeLinks} from "../src/db/migrations/20261108000000_case_generated_links";
 
 async function main() {
   const db = knex({client: "better-sqlite3", connection: {filename: ":memory:"},
@@ -111,6 +112,31 @@ async function main() {
     assert(!(await accountIds()).includes("5555555555"));
     active = null; // Existing admin global registry behavior remains available.
     assert.equal((await resolvers.Query.bankAccounts(null, {}, ctx)).length, 3);
+    // Exercise migrated uniqueness and atomic replacement using this existing
+    // isolated fixture: the same pair can have independent evidence per case.
+    const [linkCase] = await db("case_files").insert({caseId: "link-case", caseName: "Links",
+      createdAt: now, updatedAt: now});
+    const [peer] = await db("suspects").insert({suspectId: "LINK-PEER", fullName: "Peer",
+      createdAt: now, updatedAt: now});
+    const link = {sourceSuspectId: owner.id, targetSuspectId: Number(peer),
+      linkType: "FINANCIAL_TRANSFER" as const, totalFinancialValue: 100,
+      contributingTxnIds: "[1]"};
+    const legacy = await data.createLink(link);
+    const manual = await data.createLink({...link, linkType: "MANUAL"});
+    const beforeMigration = await db("suspect_links").orderBy("id");
+    await unScopeLinks(db); await scopeLinks(db);
+    assert.deepEqual(await db("suspect_links").orderBy("id"), beforeMigration,
+      "Migration must preserve existing manual and legacy rows");
+    await data.replaceCaseGeneratedLinks(Number(b), [link]);
+    const separate = await data.replaceCaseGeneratedLinks(Number(linkCase), [{...link, totalFinancialValue: 900}]);
+    await data.replaceCaseGeneratedLinks(Number(b), [{...link, totalFinancialValue: 200}]);
+    assert.deepEqual(await db("suspect_links").where({caseFileId: Number(linkCase)}), separate);
+    const beforeFailure = await db("suspect_links").where({caseFileId: Number(b)});
+    await assert.rejects(data.replaceCaseGeneratedLinks(Number(b), [{...link, targetSuspectId: -1}]));
+    assert.deepEqual(await db("suspect_links").where({caseFileId: Number(b)}), beforeFailure);
+    assert(await db("suspect_links").where({id: legacy.id}).first());
+    assert(await db("suspect_links").where({id: manual.id}).first());
+    console.log("PASS: case link migration permits independent pairs, preserves manual/legacy/other-case links and rolls back failed replacement");
     console.log("PASS: exact per-case accounts, nested owners, CP roles, delete/reimport, shared preservation, purge, legacy migration");
   } finally { await db.destroy(); }
 }

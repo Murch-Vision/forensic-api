@@ -77,6 +77,9 @@ export interface SuspectLink {
   // so connections don't leak across boards. NULL = unsaved/default view, and
   // always NULL for auto-generated evidence links.
   caseGraphId             : number | null;
+  // Auto-generated evidence belongs to exactly one case, even when both
+  // people also appear in another case. Null on legacy and manual links.
+  caseFileId?             : number | null;
 }
 
 export interface BankAccount {
