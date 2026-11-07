@@ -119,7 +119,7 @@ function partyName(t: BankTransaction, owners: Owners): string | null {
   return owners(acct) ?? realPartyName(t.counterpartyName);
 }
 
-function relationKey(t: BankTransaction, owners: Owners): string | null {
+export function relationKey(t: BankTransaction, owners: Owners): string | null {
   const name = partyName(t, owners);
   if (name) return `name:${normName(name)}`;
   const nat = normId(t.counterpartyNationalId);

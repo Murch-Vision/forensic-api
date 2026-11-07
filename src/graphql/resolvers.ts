@@ -48,7 +48,7 @@ import {
 import type {
   BankAccount, BankTransaction, CaseFile, Suspect,
 } from "../models/types";
-import {buildRelations} from "../services/relationService";
+import {buildRelations, relationKey} from "../services/relationService";
 import {accountNameLookup} from "../services/accountNames";
 import {
   analyseAccounts, directTransfers,
@@ -1038,6 +1038,45 @@ export const resolvers = {
       const ok = await c.data.deleteLink(a.id);
       if (ok) await c.audit.record("Connection.Delete", `Link:${a.id}`);
       return ok;
+    },
+    // Remove only the clicked relation's rows from the named case. Resolve
+    // the identity with the SAME rule as the list (including verified owners,
+    // multi-account people and unnamed parties), never by a loose name match.
+    // Mark transaction ids so the existing Removed view can restore every row;
+    // imported statements and other cases remain unchanged.
+    removeCaseRelation: async (
+      _p: unknown,
+      a: {caseFileId: number; relationKey: string; bankAccountIds: number[]},
+      c: GraphQLContext
+    ) => {
+      const scope = await caseScopeById(c, a.caseFileId);
+      const active = await c.session.getCurrentCase();
+      if (active?.id !== a.caseFileId) {
+        throw new Error("Идэвхтэй хэрэг солигдсон байна. Харьцаагаа дахин сонгоно уу.");
+      }
+      const ids = new Set(a.bankAccountIds);
+      if (!ids.size || [...ids].some(id => !scope.accountIds.has(id))) {
+        throw new Error("Энэ хэргийн дансыг сонгоно уу.");
+      }
+      const [allTxns, allAccounts, filter] = await Promise.all([
+        c.data.getAllTransactions(), c.data.getAllBankAccounts(),
+        c.noise.getForCase(a.caseFileId),
+      ]);
+      const owners = accountNameLookup(allAccounts.filter(x => scope.accountIds.has(x.id)));
+      const removed = allTxns.filter(t => ids.has(t.bankAccountId)
+        && (scope.statementAccountIds.has(t.bankAccountId) || scope.txnIds.has(t.id))
+        && relationKey(t, owners) === a.relationKey).map(t => t.id);
+      if (!removed.length) throw new Error("Харьцаа олдсонгүй. Жагсаалтаа шинэчилнэ үү.");
+      // Recheck after the reads as the user may switch cases during the request.
+      if ((await c.session.getCurrentCase())?.id !== a.caseFileId) {
+        throw new Error("Идэвхтэй хэрэг солигдсон байна. Харьцаагаа дахин сонгоно уу.");
+      }
+      const saved = await c.noise.saveForCase(a.caseFileId, {...filter,
+        ignoredTxns: [...new Set([...filter.ignoredTxns, ...removed])],
+      });
+      await c.audit.record("Relation.Remove", `Case:${a.caseFileId}`,
+        `accounts=${[...ids].join(",")} txns=${removed.length}`);
+      return saved;
     },
     saveCaseNoiseFilter: async (
       _p: unknown,

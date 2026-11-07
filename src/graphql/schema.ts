@@ -1365,6 +1365,7 @@ export const typeDefs = /* GraphQL */ `
     deleteManualLink(id: Int!): Boolean!
     "Persist the active case's noise-filter (unimportant-data decisions)."
     saveCaseNoiseFilter(input: NoiseFilterInput!): NoiseFilter!
+    removeCaseRelation(caseFileId: Int!, relationKey: String!, bankAccountIds: [Int!]!): NoiseFilter!
     """
     Save the current connection graph as a new named board. When
     claimUnassignedLinks is true, any manual connections drawn in the default
