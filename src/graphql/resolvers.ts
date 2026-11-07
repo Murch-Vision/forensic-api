@@ -50,6 +50,9 @@ import type {
 } from "../models/types";
 import {buildRelations, relationKey} from "../services/relationService";
 import {accountNameLookup} from "../services/accountNames";
+import {buildCaseScope, type CaseScope} from "../services/caseScope";
+import {buildMultiCaseAnalysis} from "../services/multiCaseAnalysis";
+import {ignoredTransactionIds} from "../services/transactionNoise";
 import {
   analyseAccounts, directTransfers,
 } from "../services/accountAnalysisService";
@@ -122,13 +125,6 @@ function age(dateOfBirth: string | null): number {
 // Imports link their exact statement/counterparty accounts separately and data
 // directly with BANK_ACCOUNT / CALL_RECORD entries so freshly imported rows
 // are visible in the case they were imported into. null = no active case.
-interface CaseScope {
-  suspectIds : Set<number>;
-  accountIds : Set<number>;
-  statementAccountIds : Set<number>;
-  txnIds     : Set<number>;
-  callIds    : Set<number>;
-}
 
 async function caseScope(c: GraphQLContext): Promise<CaseScope | null> {
   const active = await c.session.getCurrentCase();
@@ -170,47 +166,12 @@ async function scopeForCases(
 ): Promise<CaseScope> {
   const entries = (await Promise.all(
     cases.map((cf) => c.evidence.getForCase(cf.id)))).flat();
-  const by = (t: string) => new Set(
-    entries.filter((e) => e.sourceType === t).map((e) => e.sourceId));
-  const tagged = by("SUSPECT");
-  const caseIds = new Set(cases.map((cf) => cf.caseId));
-  const all = await c.suspects.getAllSuspects();
-  const suspectIds = new Set(
-    all.filter((s) => tagged.has(s.id)
-      || (s.caseId != null && caseIds.has(s.caseId)))
-      .map((s) => s.id)
-  );
-  const memberships = await c.data.getCaseBankAccounts(cases.map(cf => cf.id));
-  const memberByKey = new Map(memberships.map(m =>
-    [`${m.caseFileId}:${m.bankAccountId}`, m]));
-  const accountIds = new Set<number>();
-  const statementAccountIds = new Set<number>();
-  for (const m of memberships) {
-    if (m.removed) continue;
-    accountIds.add(m.bankAccountId);
-    if (m.isStatement) statementAccountIds.add(m.bankAccountId);
-  }
-  for (const entry of entries.filter(e => e.sourceType === "BANK_ACCOUNT")) {
-    const member = memberByKey.get(`${entry.caseFileId}:${entry.sourceId}`);
-    if (member?.removed) continue;
-    accountIds.add(entry.sourceId);
-    // Explicit operator-added legacy evidence has no import role.
-    if (!member) statementAccountIds.add(entry.sourceId);
-  }
-  const txnIds = new Set<number>();
-  const txnEntries = entries.filter(e => e.sourceType === "TRANSACTION");
-  if (txnEntries.length) {
-    const txns = new Map((await c.data.getAllTransactions()).map(t => [t.id, t]));
-    for (const entry of txnEntries) {
-      const txn = txns.get(entry.sourceId);
-      if (!txn || memberByKey.get(`${entry.caseFileId}:${txn.bankAccountId}`)?.removed) continue;
-      txnIds.add(txn.id);
-      accountIds.add(txn.bankAccountId);
-      // A tagged transaction scopes that row, not the whole statement.
-    }
-  }
-  return {suspectIds, accountIds, statementAccountIds, txnIds,
-    callIds: by("CALL_RECORD")};
+  const [suspects, memberships, transactions] = await Promise.all([
+    c.suspects.getAllSuspects(), c.data.getCaseBankAccounts(cases.map(cf => cf.id)),
+    entries.some(e => e.sourceType === "TRANSACTION")
+      ? c.data.getAllTransactions() : Promise.resolve([]),
+  ]);
+  return buildCaseScope(cases, {suspects, entries, memberships, transactions});
 }
 
 // Хэрэг устгах / устгахын өмнө тоолоход хэрэгтэй хоёр хүрээ: тухайн хэргийнх,
@@ -437,18 +398,6 @@ async function verdictReportInput(c: GraphQLContext): Promise<{
   };
 }
 
-function matchesDescRules(
-  description: string | null, rules: {mode: string; text: string}[]
-): boolean {
-  if (!rules.length) return false;
-  const d = (description ?? "").toLowerCase();
-  return rules.some((r) => {
-    const t = r.text.toLowerCase();
-    return r.mode === "starts" ? d.startsWith(t)
-      : r.mode === "ends" ? d.endsWith(t) : d.includes(t);
-  });
-}
-
 // Every transaction id the analyst marked "unimportant" for the active case —
 // individual ids, sub-threshold amounts, description rules and pair removals
 // combined. Applied to EVERY analysis (timeline, correlations, links, charts)
@@ -457,27 +406,33 @@ async function ignoredTxnIds(c: GraphQLContext, caseFileId?: number): Promise<Se
   const id = caseFileId ?? (await c.session.getCurrentCase())?.id;
   if (id == null) return new Set();
   const nf = await c.noise.getForCase(id);
-  const ignored = new Set<number>(nf.ignoredTxns);
-  const hasRules = nf.descRules.length > 0;
-  const hasPairs = nf.ignoredPairs.length > 0;
-  if (nf.minAmount <= 0 && !hasRules && !hasPairs) return ignored;
-  const pairs = new Set(nf.ignoredPairs);
-  for (const t of await c.data.getAllTransactions()) {
-    if (ignored.has(t.id)) continue;
-    if (nf.minAmount > 0 && t.amount < nf.minAmount) { ignored.add(t.id); continue; }
-    if (hasRules && matchesDescRules(t.description, nf.descRules)) {
-      ignored.add(t.id); continue;
-    }
-    if (hasPairs) {
-      const cp = t.counterpartyAccount?.trim();
-      if (cp && pairs.has(`${t.bankAccountId}→${cp}`)) ignored.add(t.id);
-    }
+  if (nf.minAmount <= 0 && !nf.descRules.length && !nf.ignoredPairs.length) {
+    return new Set(nf.ignoredTxns);
   }
-  return ignored;
+  return ignoredTransactionIds(await c.data.getAllTransactions(), nf);
 }
 
 export const resolvers = {
   Query: {
+    adminCaseAnalysis: async (_p: unknown, a: {caseFileIds: number[]}, c: GraphQLContext) => {
+      requireAdmin(c);
+      const ids = [...new Set(a.caseFileIds)].sort((x, y) => x - y);
+      if (!ids.length || ids.some(id => !Number.isInteger(id) || id <= 0)) {
+        throw new Error("Харах хэргүүдээ сонгоно уу.");
+      }
+      const allCases = await c.data.getAllCaseFiles();
+      const cases = ids.map(id => allCases.find(cf => cf.id === id));
+      if (cases.some(cf => !cf)) throw new Error("Сонгосон хэрэг олдсонгүй.");
+      const selected = cases as CaseFile[];
+      const [suspects, accounts, transactions, links, memberships, entries, filters] = await Promise.all([
+        c.suspects.getAllSuspects(), c.data.getAllBankAccounts(),
+        c.data.getAllTransactions(), c.data.getAllLinks(), c.data.getCaseBankAccounts(ids),
+        Promise.all(ids.map(id => c.evidence.getForCase(id))),
+        Promise.all(ids.map(async id => [id, await c.noise.getForCase(id)] as const)),
+      ]);
+      return buildMultiCaseAnalysis({cases: selected, suspects, accounts, transactions,
+        links, memberships, entries: entries.flat(), filters: new Map(filters)});
+    },
     suspects: async (_p: unknown, a: {includeAccountOwners?: boolean}, c: GraphQLContext) => {
       const all = await c.suspects.getAllSuspects();
       const scope = await caseScope(c);

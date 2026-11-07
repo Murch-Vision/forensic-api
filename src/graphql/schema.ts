@@ -1200,7 +1200,36 @@ export const typeDefs = /* GraphQL */ `
     repos: [RepoUpdate!]!
   }
 
+  type MultiCaseAccount {
+    account: BankAccount!
+    caseFileIds: [Int!]!
+    statementCaseFileIds: [Int!]!
+  }
+  type MultiCasePerson {
+    person: Suspect!
+    caseFileIds: [Int!]!
+  }
+  type MultiCaseTransaction {
+    transaction: BankTransaction!
+    caseFileIds: [Int!]!
+    relationKey: String
+  }
+  type MultiCaseRelation {
+    relation: CaseRelation!
+    caseFileIds: [Int!]!
+  }
+  type AdminCaseAnalysis {
+    cases: [CaseFile!]!
+    accounts: [MultiCaseAccount!]!
+    people: [MultiCasePerson!]!
+    transactions: [MultiCaseTransaction!]!
+    relations: [MultiCaseRelation!]!
+    links: [SuspectLink!]!
+  }
+
   type Query {
+    "Read-only union of explicitly selected cases. ADMIN only; independent of the active case."
+    adminCaseAnalysis(caseFileIds: [Int!]!): AdminCaseAnalysis!
     "Include registered owners of this scope's explicitly tagged accounts for the link chart."
     suspects(includeAccountOwners: Boolean = false): [Suspect!]!
     suspect(id: Int!): Suspect
