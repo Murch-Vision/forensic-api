@@ -8,7 +8,7 @@
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import * as XLSX from "xlsx";
 import type {Knex} from "knex";
-import {bankNameIndex, bankNameKey, chooseBankName, type BankNameSubject} from "./import/bankNames";
+import {bankNameIndex, bankNameKey, chooseBankName, isAvisTransitName, type BankNameSubject} from "./import/bankNames";
 import {parseMnIban} from "./bankLookupService";
 import {
   cell,
@@ -304,6 +304,41 @@ export class ImportService {
       .update({suspectId, accountHolderName: holderName?.trim() || null});
   }
 
+  // Re-imports may encounter a previously created "Авизын түр данс"
+  // placeholder. Rename only an imported transit placeholder (or its label),
+  // requiring the same register when present. Preserve real/manual owners.
+  private async repairTransitAccountName(bankAccountId: number, name: string,
+    nationalId: string | null): Promise<void> {
+    await this.db.transaction(async trx => {
+      const account = await trx("bank_accounts").where({id: bankAccountId}).first();
+      if (!account || account.suspectId == null) return;
+      if (meaningfulText(account.accountHolderName) && !isAvisTransitName(account.accountHolderName)
+        && bankNameKey(account.accountHolderName) !== bankNameKey(name)) return;
+      const owner = await trx("suspects").where({id: account.suspectId}).first();
+      if (!owner) return;
+      const register = normalizeIdentity(owner.nationalId);
+      const imported = register ? owner.suspectId === `IMP-${register}` && register === nationalId
+        : owner.suspectId === `IMP-ACCOUNT-${bankAccountId}`;
+      if (!imported || (!isAvisTransitName(owner.fullName)
+        && bankNameKey(owner.fullName) !== bankNameKey(name))) return;
+      // An account-specific placeholder manually reused by another account
+      // is no longer an identity this import can safely rename globally.
+      if (!register && await trx("bank_accounts").where({suspectId: owner.id})
+        .whereNot({id: bankAccountId}).first()) return;
+      if (isAvisTransitName(owner.fullName)) {
+        const target = trx("suspects").where({id: owner.id, fullName: owner.fullName});
+        owner.nationalId == null ? target.whereNull("nationalId") : target.where({nationalId: owner.nationalId});
+        if (!await target.update({fullName: name, updatedAt: new Date().toISOString()})) return;
+      }
+      if (!meaningfulText(account.accountHolderName) || isAvisTransitName(account.accountHolderName)) {
+        const label = trx("bank_accounts").where({id: bankAccountId, suspectId: owner.id});
+        account.accountHolderName == null ? label.whereNull("accountHolderName")
+          : label.where({accountHolderName: account.accountHolderName});
+        await label.update({accountHolderName: name});
+      }
+    });
+  }
+
   private async bankNameSubjects(caseFileId?: number | null): Promise<BankNameSubject[]> {
     if (caseFileId == null) return [];
     const active = await this.db("case_files").where({id: caseFileId}).first();
@@ -406,6 +441,9 @@ export class ImportService {
           : accountId != null
             ? await this.ensureAccountPerson(accountId, number!, choice.name, ownerCache) : null);
         if (sid != null && accountId != null) await this.attachAccountOwner(accountId, sid, choice.name);
+      }
+      if (accountId != null && choice.secondary && choice.name && !isAvisTransitName(choice.name)) {
+        await this.repairTransitAccountName(accountId, choice.name, nationalId);
       }
       const result = {sid, nationalId}; partyCache.set(key, result);
       return result;

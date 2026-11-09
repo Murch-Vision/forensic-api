@@ -8,6 +8,11 @@ export const cleanBankText = (raw: string | null | undefined): string | null => 
 export const bankNameKey = (raw: string | null | undefined): string =>
   (cleanBankText(raw) ?? "").normalize("NFKC").replace(/\s+/gu, " ").toUpperCase();
 
+// This is a bank's transit-account description, not the counterparty's name.
+// Statements can append a currency or branch to it; normalize case/spacing.
+export const isAvisTransitName = (raw: string | null | undefined): boolean =>
+  /^АВИЗЫН ТҮР ДАНС(?:$|[\s(/:.,–—-])/u.test(bankNameKey(raw));
+
 // Only registered subjects can supply a register. Re-imported anonymous
 // account placeholders must not make an otherwise unique identity ambiguous.
 export function bankNameIndex(subjects: BankNameSubject[]) {
@@ -15,7 +20,7 @@ export function bankNameIndex(subjects: BankNameSubject[]) {
   for (const subject of subjects) {
     const name = bankNameKey(subject.fullName);
     const nationalId = cleanBankText(subject.nationalId)?.toUpperCase();
-    if (!name || (!nationalId && subject.suspectId?.startsWith("IMP-ACCOUNT-"))) continue;
+    if (!name || isAvisTransitName(name) || (!nationalId && subject.suspectId?.startsWith("IMP-ACCOUNT-"))) continue;
     const list = index.get(name) ?? [];
     list.push({...subject, nationalId: nationalId ?? null}); index.set(name, list);
   }
@@ -25,7 +30,10 @@ export function bankNameIndex(subjects: BankNameSubject[]) {
 export function chooseBankName(primary: string | null, secondary: string | null,
   register: string | null, index: ReturnType<typeof bankNameIndex>) {
   const nationalId = cleanBankText(register)?.toUpperCase() ?? null;
-  const names = [cleanBankText(primary), cleanBankText(secondary)];
+  const first = cleanBankText(primary), second = cleanBankText(secondary);
+  // Use the actual second name even when the case has no matching subject.
+  // Register inference remains a separate, exact subject-name match.
+  const names = [isAvisTransitName(first) && second && !isAvisTransitName(second) ? null : first, second];
   let ambiguous = false;
   for (const [position, name] of names.entries()) {
     if (!name) continue;

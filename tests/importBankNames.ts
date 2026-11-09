@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import knex from "knex";
 import {ImportService} from "../src/services/importService";
+import {bankNameIndex, chooseBankName} from "../src/services/import/bankNames";
 
 async function main() {
   const db = knex({client: "better-sqlite3", connection: {filename: ":memory:"}, useNullAsDefault: true});
@@ -123,7 +124,85 @@ async function main() {
     const disabled = await db("bank_transactions").where({counterpartyAccount:"6001"}).first();
     assert.equal(disabled.counterpartyName,"Өөр нэр");
     assert.equal(disabled.counterpartyNationalId,null,'An explicitly cleared optional column overrides auto-detection');
-    console.log("PASS: alternate bank names, primary priority, scoped registers, homonyms, explicit/verified identities, exact duplicate repair and account isolation");
+    // Bank transit labels must use the selected second name independently
+    // of whether that person is already a registered case subject.
+    const transitIndex=bankNameIndex([{id:99999,fullName:"Авизын түр данс",nationalId:"ЗЗ12345678"}]);
+    assert.equal(chooseBankName("Авизын түр данс","ШИНЭ ХҮН",null,transitIndex).name,"ШИНЭ ХҮН");
+    assert.equal(chooseBankName("Авизын түр данс",null,null,transitIndex).nationalId,null,
+      'A bank transit label cannot supply a human register');
+    assert.equal(chooseBankName("ЖИНХЭНЭ НЭР","Авизын түр данс",null,transitIndex).name,"ЖИНХЭНЭ НЭР");
+    const transitLines=[
+      "2026-09-10,1001,,,11,7001,Авизын түр данс,ШИНЭ ХАРИЛЦАГЧ,,AVIS-NEW",
+      "2026-09-11,1001,,,12,7002,  аВиЗыН  түр данс (MNT),САРАН БОЛД,,AVIS-SUBJECT",
+      "2026-09-12,1001,,,13,7003,Авизын түр данс,,,AVIS-EMPTY",
+      "2026-09-13,1001,,,14,7004,Авизын түр данс,БҮРТГЭЛТЭЙ ШИНЭ ХҮН,КК12345678,AVIS-REGISTER",
+    ];
+    assert.equal((await run(transitLines)).importedRows,4);
+    const transitAccount=await db("bank_accounts").where({accountNumber:"7001"}).first();
+    assert.equal(transitAccount.accountHolderName,"ШИНЭ ХАРИЛЦАГЧ");
+    assert.equal((await db("suspects").where({id:transitAccount.suspectId}).first()).fullName,"ШИНЭ ХАРИЛЦАГЧ");
+    const transitNew=await db("bank_transactions").where({referenceNumber:"AVIS-NEW"}).first();
+    assert.equal(transitNew.counterpartyName,"ШИНЭ ХАРИЛЦАГЧ");
+    assert.equal(transitNew.counterpartyNationalId,null,'Using name 2 does not invent a register');
+    assert.equal((await db("bank_accounts").where({accountNumber:"7002"}).first()).suspectId,b);
+    assert.equal((await db("bank_transactions").where({referenceNumber:"AVIS-SUBJECT"}).first()).counterpartyNationalId,"ББ12345678");
+    assert.equal((await db("bank_transactions").where({referenceNumber:"AVIS-EMPTY"}).first()).counterpartyName,"Авизын түр данс");
+    assert.equal((await db("bank_transactions").where({referenceNumber:"AVIS-REGISTER"}).first()).counterpartyNationalId,"КК12345678");
+    const disabledTransit="2026-09-14,1001,,,15,7005,Авизын түр данс,СОНГОГДООГҮЙ НЭР,,AVIS-DISABLED";
+    await run([disabledTransit],caseId,{...mapping,counterpartyName2:""});
+    assert.equal((await db("bank_transactions").where({referenceNumber:"AVIS-DISABLED"}).first()).counterpartyName,"Авизын түр данс");
+
+    const repairTransit=async (number:string,register:string,map=mapping) => {
+      const line=`2026-09-15,1001,,,16,${number},Авизын түр данс,ӨМНӨ БҮРТГЭГДЭЭГҮЙ НЭР,${register},AVIS-REPAIR-${number}`;
+      await run([line],caseId,{...map,counterpartyName2:""});
+      const before=await db("bank_transactions").where({counterpartyAccount:number}).orderBy("id");
+      const accountBefore=await db("bank_accounts").where({accountNumber:number}).first();
+      const subjectCount=(await db("suspects").count({n:"id"}).first())?.n;
+      const result=await run([line],caseId,map);
+      assert.equal(result.importedRows,0);assert.equal(result.duplicateRows,1);
+      const after=await db("bank_transactions").where({counterpartyAccount:number}).orderBy("id");
+      assert.equal(after.length,before.length);assert.equal(after[0].id,before[0].id);
+      assert.equal(after[0].amount,before[0].amount);
+      assert.equal(after[0].counterpartyName,"ӨМНӨ БҮРТГЭГДЭЭГҮЙ НЭР");
+      assert.equal(after[0].counterpartyNationalId,register||null);
+      const accountAfter=await db("bank_accounts").where({id:accountBefore.id}).first();
+      assert.equal(accountAfter.suspectId,accountBefore.suspectId);
+      assert.equal(accountAfter.accountHolderName,"ӨМНӨ БҮРТГЭГДЭЭГҮЙ НЭР");
+      assert.equal((await db("suspects").where({id:accountAfter.suspectId}).first()).fullName,"ӨМНӨ БҮРТГЭГДЭЭГҮЙ НЭР");
+      assert.equal((await db("suspects").count({n:"id"}).first())?.n,subjectCount);
+      assert.equal((await run([line],caseId,map)).duplicateRows,1,'Repair is idempotent');
+    };
+    await repairTransit("7101","");
+    await repairTransit("7102","ЛЛ12345678");
+    await repairTransit("7103","",noRef);
+
+    const verifiedLabelLine="2026-09-16,1001,,,17,7200,Авизын түр данс,ӨӨР НЭР,,AVIS-LABEL";
+    await run([verifiedLabelLine],caseId,{...mapping,counterpartyName2:""});
+    const verifiedLabel=await db("bank_accounts").where({accountNumber:"7200"}).first();
+    await db("bank_accounts").where({id:verifiedLabel.id}).update({accountHolderName:"БАТАЛСАН ДАНСНЫ НЭР"});
+    await run([verifiedLabelLine]);
+    assert.equal((await db("bank_accounts").where({id:verifiedLabel.id}).first()).accountHolderName,"БАТАЛСАН ДАНСНЫ НЭР");
+    assert.equal((await db("suspects").where({id:verifiedLabel.suspectId}).first()).fullName,"Авизын түр данс",
+      'A verified account name also protects the existing owner');
+    const sharedOwnerLine="2026-09-16,1001,,,17,7301,Авизын түр данс,ДАНСНЫ НЭР 2,,AVIS-SHARED";
+    await run([sharedOwnerLine],caseId,{...mapping,counterpartyName2:""});
+    const sharedOwner=await db("bank_accounts").where({accountNumber:"7301"}).first();
+    await db("bank_accounts").insert({accountNumber:"7302",suspectId:sharedOwner.suspectId,
+      accountHolderName:"БУСАД ДАНСНЫ НЭР",createdAt:now});
+    await run([sharedOwnerLine]);
+    assert.equal((await db("suspects").where({id:sharedOwner.suspectId}).first()).fullName,"Авизын түр данс",
+      'An unregistered owner shared manually with another account cannot be renamed by one statement');
+    assert.equal((await db("bank_accounts").where({accountNumber:"7302"}).first()).accountHolderName,"БУСАД ДАНСНЫ НЭР");
+    const manualTransit=await person("MANUAL-TRANSIT","Авизын түр данс",null);
+    await db("bank_accounts").insert({accountNumber:"7201",suspectId:manualTransit,
+      accountHolderName:"ГАРААР БАТАЛСАН ЭЗЭМШИГЧ",createdAt:now});
+    await run(["2026-09-16,1001,,,17,7201,Авизын түр данс,ШИНЭ НЭР,,AVIS-MANUAL"]);
+    assert.equal((await db("suspects").where({id:manualTransit}).first()).fullName,"Авизын түр данс");
+    assert.equal((await db("bank_accounts").where({accountNumber:"7201"}).first()).accountHolderName,"ГАРААР БАТАЛСАН ЭЗЭМШИГЧ");
+    await run(["2026-09-17,1001,,,18,2001,Авизын түр данс,ШИНЭ НЭР,,AVIS-PROTECTED"]);
+    assert.equal((await db("bank_accounts").where({accountNumber:"2001"}).first()).suspectId,b);
+    assert.equal((await db("suspects").where({id:b}).first()).fullName,"САРАН БОЛД");
+    console.log("PASS: alternate bank names, primary priority, scoped registers, homonyms, explicit/verified identities, exact duplicate repair, Aviz transit-name fallback without subject matches, and protected owners");
   } finally {await db.destroy();}
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
