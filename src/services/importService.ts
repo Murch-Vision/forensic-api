@@ -8,6 +8,7 @@
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import * as XLSX from "xlsx";
 import type {Knex} from "knex";
+import {bankNameIndex, bankNameKey, chooseBankName, type BankNameSubject} from "./import/bankNames";
 import {parseMnIban} from "./bankLookupService";
 import {
   cell,
@@ -53,6 +54,8 @@ export interface ImportOptions {
   filename?         : string | null;
   sheetName?        : string | null;
   bankAccountId?    : number | null;
+  // Trusted active case from the resolver, never accepted from the browser.
+  caseFileId?       : number | null;
   subjectSuspectId? : number | null;
   subjectNumber?    : string | null;
   mapping?          : ColumnMapping | null;
@@ -189,18 +192,18 @@ export class ImportService {
   // нэмэхгүй — тийм учраас нэг файл доторх жинхэнэ давхар мөрүүд хоёул орно.
   private async loadFingerprints(
     bankAccountId: number,
-    cache: Map<number, Map<string, number>>
-  ): Promise<Map<string, number>> {
+    cache: Map<number, Map<string, number[]>>
+  ): Promise<Map<string, number[]>> {
     const hit = cache.get(bankAccountId);
     if (hit) return hit;
-    const counts = new Map<string, number>();
+    const counts = new Map<string, number[]>();
     const rows = await this.db("bank_transactions")
       .where({bankAccountId})
-      .select("timestamp", "amount", "type", "counterpartyAccount",
+      .select("id", "timestamp", "amount", "type", "counterpartyAccount",
         "description");
     for (const r of rows) {
       const k = txnFingerprint(r);
-      counts.set(k, (counts.get(k) ?? 0) + 1);
+      const ids = counts.get(k) ?? []; ids.push(Number(r.id)); counts.set(k, ids);
     }
     cache.set(bankAccountId, counts);
     return counts;
@@ -301,6 +304,39 @@ export class ImportService {
       .update({suspectId, accountHolderName: holderName?.trim() || null});
   }
 
+  private async bankNameSubjects(caseFileId?: number | null): Promise<BankNameSubject[]> {
+    if (caseFileId == null) return [];
+    const active = await this.db("case_files").where({id: caseFileId}).first();
+    if (!active) return [];
+    const tagged = this.db("evidence_entries").select("sourceId")
+      .where({caseFileId, sourceType: "SUSPECT"});
+    return this.db("suspects").select("id", "suspectId", "fullName", "nationalId").where(q => {
+      q.whereIn("id", tagged);
+      if (active.caseId) q.orWhere("caseId", active.caseId);
+    }).orderBy("id");
+  }
+
+  // A name match enriches this exact account. Never change another account,
+  // merge people, or replace an existing different register.
+  private async attachNamedAccount(bankAccountId: number, subject: BankNameSubject,
+    name: string): Promise<number | null> {
+    return this.db.transaction(async trx => {
+      const account = await trx("bank_accounts").where({id: bankAccountId}).first();
+      if (!account) return null;
+      const owner = account.suspectId == null ? null
+        : await trx("suspects").where({id: account.suspectId}).first();
+      const register = normalizeIdentity(owner?.nationalId);
+      if (register && register !== subject.nationalId) return null;
+      if (owner && !register && owner.suspectId !== `IMP-ACCOUNT-${bankAccountId}`
+        && bankNameKey(owner.fullName) !== bankNameKey(name)) return null;
+      const sid = register ? Number(owner.id) : subject.id;
+      const target = trx("bank_accounts").where({id: bankAccountId});
+      account.suspectId == null ? target.whereNull("suspectId") : target.where({suspectId: account.suspectId});
+      const changed = await target.update({suspectId: sid, accountHolderName: name});
+      return changed ? sid : null;
+    });
+  }
+
   // Fallback when a statement has no account column: an explicit account,
   // the (optional) subject's first account, or a shared unattributed bucket.
   private async resolveDefaultAccount(
@@ -342,26 +378,74 @@ export class ImportService {
     const ownerCache = new Map<string, number>();
     const ownerIds = new Set<number>();
     const statementIds = new Set<number>();
-    // One attach attempt per (account, person) pair — not one per row.
-    const attachTried = new Set<string>();
+    const nameIndex = bankNameIndex(await this.bankNameSubjects(opts.caseFileId));
+    const partyCache = new Map<string, {sid: number | null; nationalId: string | null}>();
+    const matchedAccounts = new Set<number>(), conflictedAccounts = new Set<number>();
+    const ambiguousAccounts = new Set<string>();
+    const resolveParty = async (accountId: number | null, number: string | null,
+      choice: ReturnType<typeof chooseBankName>) => {
+      const key = JSON.stringify([accountId, number, choice]);
+      const cached = partyCache.get(key);
+      if (cached) return cached;
+      if (choice.ambiguous) ambiguousAccounts.add(number ?? choice.name ?? "");
+      let sid: number | null = null;
+      let nationalId = choice.nationalId;
+      if (choice.subject && accountId != null) {
+        sid = await this.attachNamedAccount(accountId, choice.subject, choice.name!);
+        if (sid != null) {
+          matchedAccounts.add(accountId);
+          ownerCache.set(`account:${accountId}`, sid);
+        } else {
+          conflictedAccounts.add(accountId);
+          if (choice.inferred) nationalId = null;
+          sid = await this.ensureAccountPerson(accountId, number!, choice.name, ownerCache);
+        }
+      } else {
+        sid = choice.subject?.id ?? (nationalId
+          ? await this.ensurePerson(nationalId, choice.name, ownerCache)
+          : accountId != null
+            ? await this.ensureAccountPerson(accountId, number!, choice.name, ownerCache) : null);
+        if (sid != null && accountId != null) await this.attachAccountOwner(accountId, sid, choice.name);
+      }
+      const result = {sid, nationalId}; partyCache.set(key, result);
+      return result;
+    };
     let defaultAccountId: number | null = null;
     // Reference numbers are unique per account — collect existing + in-file
     // ones so a manual reference mapping can't trip the unique index.
-    const seenRefs = new Set<string>();
+    const seenRefs = new Map<string, number | null>();
     // Гүйлгээний дугааргүй хуулга ч давхардаж болно: данс бүрийн санд БАЙГАА
     // мөрүүдийн хурууны хээг (огноо+цаг · орлого/зарлага · дүн · харьцсан
     // данс · утга) тоолж хадгална. Файлын мөр тэдгээрийн нэгтэй таарвал
     // алгасна. Тоолж байгаа учир нь: жинхэнэ хуулга дээр яг ижил хоёр мөр
     // байж БОЛНО — тэгвэл хоёул орно, харин файлыг дахин оруулахад алгасна.
-    const fpCache = new Map<number, Map<string, number>>();
+    const fpCache = new Map<number, Map<string, number[]>>();
     if (map.reference) {
       const rows = await this.db("bank_transactions")
         .whereNotNull("referenceNumber")
-        .select("bankAccountId", "referenceNumber");
+        .select("id", "bankAccountId", "referenceNumber");
       for (const r of rows) {
-        seenRefs.add(`${r.bankAccountId}|${r.referenceNumber}`);
+        seenRefs.set(`${r.bankAccountId}|${r.referenceNumber}`, Number(r.id));
       }
     }
+
+    const repairDuplicate = async (id: number | null | undefined, account: string | null,
+      name: string | null, register: string | null, useSecondName: boolean) => {
+      if (id == null || (!register && !name)) return;
+      const previous = await this.db("bank_transactions").where({id}).first();
+      if (!previous || meaningfulText(previous.counterpartyAccount) !== meaningfulText(account)) return;
+      const known = normalizeIdentity(previous.counterpartyNationalId);
+      if (known && known !== register) return;
+      const update: Record<string, string> = {};
+      if (!known && register) update.counterpartyNationalId = register;
+      if (name && (!meaningfulText(previous.counterpartyName) || useSecondName)) update.counterpartyName = name;
+      if (Object.keys(update).length) {
+        const target = this.db("bank_transactions").where({id});
+        previous.counterpartyNationalId == null ? target.whereNull("counterpartyNationalId")
+          : target.where({counterpartyNationalId: previous.counterpartyNationalId});
+        await target.update(update);
+      }
+    };
 
     for (const row of table.rows) {
       res.totalRows++;
@@ -373,49 +457,21 @@ export class ImportService {
           ? await this.findOrCreateAccount(acctRaw, acctCache)
           : (defaultAccountId ??=
               await this.resolveDefaultAccount(opts, acctCache));
-        // The statement names its owner: find-or-create the person by
-        // Регистрийн дугаар (dedupes people) and attach the account.
-        const natId = get("nationalId");
-        const ownerNationalId = normalizeIdentity(natId);
-        if (ownerNationalId || (acctRaw && meaningfulText(acctRaw))) {
-          const sid = ownerNationalId
-            ? await this.ensurePerson(
-              ownerNationalId, get("ownerName"), ownerCache)
-            : await this.ensureAccountPerson(
-              bankAccountId, acctRaw!, get("ownerName"), ownerCache);
-          if (sid != null) {
-            ownerIds.add(sid);
-            const attachKey = `${bankAccountId}|${sid}`;
-            if (!attachTried.has(attachKey)) {
-              attachTried.add(attachKey);
-              await this.attachAccountOwner(
-                bankAccountId, sid, get("ownerName"));
-            }
-          }
+        const ownerName = chooseBankName(get("ownerName"), null, get("nationalId"), nameIndex);
+        if (ownerName.nationalId || (acctRaw && meaningfulText(acctRaw))) {
+          const owner = await resolveParty(bankAccountId, acctRaw ?? String(bankAccountId), ownerName);
+          if (owner.sid != null) ownerIds.add(owner.sid);
         }
-        // A counterparty account is evidence even when the bank statement
-        // omits its owner's name/register. Keep unknown owners per account.
-        const counterpartyNationalId = normalizeIdentity(get("counterpartyNationalId"));
+        // Both name columns describe the SAME counterparty account; the
+        // second is an alternative, never a second owner or concatenated name.
+        const chosen = chooseBankName(get("counterpartyName"), get("counterpartyName2"),
+          get("counterpartyNationalId"), nameIndex);
         const cpAcctRaw = meaningfulText(get("counterpartyAccount"));
         const cpAcctId = cpAcctRaw
           ? await this.findOrCreateAccount(cpAcctRaw, acctCache) : null;
-        const cpSid = counterpartyNationalId
-          ? await this.ensurePerson(
-            counterpartyNationalId, get("counterpartyName"), ownerCache)
-          : cpAcctId != null
-            ? await this.ensureAccountPerson(
-              cpAcctId, cpAcctRaw!, get("counterpartyName"), ownerCache)
-            : null;
-        if (cpSid != null) {
-          ownerIds.add(cpSid);
-          if (cpAcctId != null) {
-            const attachKey = `${cpAcctId}|${cpSid}`;
-            if (!attachTried.has(attachKey)) {
-              attachTried.add(attachKey);
-              await this.attachAccountOwner(cpAcctId, cpSid, get("counterpartyName"));
-            }
-          }
-        }
+        const party = await resolveParty(cpAcctId, cpAcctRaw, chosen);
+        const counterpartyNationalId = party.nationalId;
+        if (party.sid != null) ownerIds.add(party.sid);
         const dateStr = get("date");
         if (!dateStr) {
           res.skippedRows++;
@@ -443,17 +499,19 @@ export class ImportService {
         if (ref) {
           const refKey = `${bankAccountId}|${ref}`;
           if (seenRefs.has(refKey)) {
+            await repairDuplicate(seenRefs.get(refKey), cpAcctRaw, chosen.name,
+              counterpartyNationalId, chosen.secondary);
             statementIds.add(bankAccountId);
             res.duplicateRows++;
             continue;
           }
-          seenRefs.add(refKey);
+          seenRefs.set(refKey, null);
         }
         const currencyRaw = get("currency");
         const txn: Record<string, unknown> = {
           bankAccountId, timestamp: date, description: desc,
           flagStatus: "NORMAL", counterpartyAccount: get("counterpartyAccount"),
-          counterpartyName: get("counterpartyName"), runningBalance: 0,
+          counterpartyName: chosen.name, runningBalance: 0,
           counterpartyNationalId,
           referenceNumber: ref || null, category: get("category"),
           channel: get("channel"),
@@ -499,11 +557,12 @@ export class ImportService {
         }
         const seen = await this.loadFingerprints(bankAccountId, fpCache);
         const fp = txnFingerprint(txn);
-        const already = seen.get(fp) ?? 0;
-        if (already > 0) {
+        const already = seen.get(fp);
+        if (already?.length) {
           // Санд байсан хувийг нь "ашиглав" гэж тэмдэглэнэ — ингэснээр файл
           // дээрх гурав дахь ижил мөр нь сангийн хоёрыг өнгөрөөд орж ирнэ.
-          seen.set(fp, already - 1);
+          await repairDuplicate(already.shift(), cpAcctRaw, chosen.name,
+            counterpartyNationalId, chosen.secondary);
           statementIds.add(bankAccountId);
           res.duplicateRows++;
           continue;
@@ -531,6 +590,9 @@ export class ImportService {
       }
     }
     res.touchedSuspectIds = [...suspectIds];
+    if (matchedAccounts.size) res.messages.push(`Субъектын нэрээр ${matchedAccounts.size} данс тааруулж, бүртгэлтэй регистрийг холболоо.`);
+    if (ambiguousAccounts.size) res.messages.push(`${ambiguousAccounts.size} данс/нэр олон өөр регистртэй таарсан тул нэрээр регистр нөхөөгүй.`);
+    if (conflictedAccounts.size) res.messages.push(`${conflictedAccounts.size} дансны өмнөх эзэмшигч зөрсөн тул нэрээр эзэмшигчийг солиогүй.`);
     return res;
   }
 
@@ -837,7 +899,8 @@ export class ImportService {
 }
 
 // Lay the analyst's per-field overrides over the detected mapping. Empty
-// override values are ignored so they don't clear a detected column.
+// override values are ignored, except the optional second-name column which
+// the analyst can explicitly disable after auto-detection.
 function mergeMapping(
   base: ColumnMapping,
   override?: ColumnMapping | null
@@ -845,7 +908,8 @@ function mergeMapping(
   const m: ColumnMapping = {...base};
   if (override) {
     for (const [field, col] of Object.entries(override)) {
-      if (col && col.trim()) m[field] = col.trim();
+      if (field === "counterpartyName2" && !col?.trim()) delete m[field];
+      else if (col && col.trim()) m[field] = col.trim();
     }
   }
   return m;

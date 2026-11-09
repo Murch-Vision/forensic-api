@@ -263,6 +263,11 @@ export function detectProfile(table: NormalizedTable): DetectionResult {
     };
   }
   const mapping = resolveMapping(best, table.headers);
+  if (best.domain === "BANK") {
+    const secondName = table.headers.find(h => ["харьцсан харилцагчийн нэр 2",
+      "харьцсан дансны нэр 2", "counterpartyname2"].includes(norm(h)));
+    if (secondName) mapping.counterpartyName2 = secondName;
+  }
   const clear = bestScore >= 0.8 && bestScore - secondScore >= 0.15;
   return {
     profile: best, domain: best.domain,

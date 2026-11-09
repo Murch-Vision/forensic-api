@@ -1253,7 +1253,7 @@ export const resolvers = {
       const content = a.uploadId ? uploadContent(a.uploadId) : a.content;
       suspectAccountReads.delete(c);
       const sum = await c.imports.importData({
-        content, kind: a.kind,
+        content, kind: a.kind, caseFileId: active.id,
         bankAccountId: a.bankAccountId ?? null,
         filename: a.filename ?? null, sheetName: a.sheetName ?? null,
         subjectSuspectId: a.subjectSuspectId ?? null,
