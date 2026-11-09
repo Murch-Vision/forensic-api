@@ -58,7 +58,7 @@ async function main() {
   const plain = {...input, graph: undefined};
   assert(!(await service.generateVerdictHtml(plain)).toString().includes('data:image/png'));
   assert(!(await service.generateVerdictPdf(plain)).toString('latin1').includes('/Subtype /Image'));
-  const analysisRaw = {version:1, flow:Array.from({length:67},(_,i)=>({
+  const analysisRaw = {version:1, flowImages:[{imageBase64:png.toString('base64')}], flow:Array.from({length:67},(_,i)=>({
     from:`Эх үүсвэр ${i}`,to:`Харилцагч ${i}`,amount:100+i,directed:i!==66,soft:i===66,
     fromRed:false,toRed:i===66})),
     shared:{rows:Array.from({length:67},(_,i)=>[`ДУНДЫН-${i}`,`Хүн А ↔ Хүн Б ${i}`,'1 дамжлага',`${i} гүйлгээ`]),
@@ -68,7 +68,8 @@ async function main() {
   const encoded=Buffer.from(JSON.stringify(analysisRaw)).toString('base64');
   const withAnalysis=await prepareReportGraph({...graphInput,analysisBase64:encoded});
   assert.equal(withAnalysis.analysis?.flow.length,67);
-  for(const bad of [{...analysisRaw,version:2},{...analysisRaw,flow:[{...analysisRaw.flow[0],amount:-1}]},
+  for(const bad of [{...analysisRaw,version:2},{...analysisRaw,flowImages:[]},
+    {...analysisRaw,flowImages:[{imageBase64:'bad PNG'}]},{...analysisRaw,flow:[{...analysisRaw.flow[0],amount:-1}]},
     {...analysisRaw,flow:[{...analysisRaw.flow[0],soft:true}]},
     {...analysisRaw,shared:{rows:[['broken']]}},
     {...analysisRaw,red:{rows:[['a','b','c']],image:{imageBase64:'not PNG'}}}]) {
@@ -80,23 +81,34 @@ async function main() {
   const completeHtml=(await service.generateVerdictHtml(complete)).toString();
   for(const title of ['2.4 МӨНГӨН УРСГАЛ','2.5 ДУНДЫН ХАРИЛЦАА','2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА'])
     assert(completeHtml.includes(title));
-  assert(completeHtml.includes('Харилцагч 66')&&completeHtml.includes('ДУНДЫН-66')&&completeHtml.includes('LAST-NOTE'));
-  assert.equal((completeHtml.match(/class="report-flow-diagram"/g)||[]).length,67,'Every flow gets a diagram, beyond screen page 20 and old report cap 60');
-  const originalText=PDFDocument.prototype.text, printed:string[]=[];
+  assert(completeHtml.includes('ДУНДЫН-66')&&completeHtml.includes('LAST-NOTE'));
+  assert(!completeHtml.includes('Харилцагч 66'),'Money rows are not repeated as a long report list');
+  assert(!completeHtml.includes('report-flow-diagram'),'Per-transfer arrow boxes are replaced by the captured Sankey');
+  const sharedStart=completeHtml.indexOf('2.5 ДУНДЫН ХАРИЛЦАА');
+  const redStart=completeHtml.indexOf('2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА');
+  assert(completeHtml.indexOf('data:image/png',sharedStart)<completeHtml.indexOf('ДУНДЫН-0',sharedStart));
+  assert(completeHtml.indexOf('data:image/png',redStart)<completeHtml.indexOf('ХЭРЭГТЭН · Тест',redStart));
+  const originalText=PDFDocument.prototype.text, originalImage=PDFDocument.prototype.image, printed:string[]=[];
   let completePdf:Buffer;
   try {
+    PDFDocument.prototype.image=function(...args:any[]){printed.push("IMAGE");return (originalImage as any).apply(this,args);} as any;
     PDFDocument.prototype.text=function(value:any,...args:any[]){printed.push(String(value).replace(/\n/g,''));
       return (originalText as any).call(this,value,...args); } as any;
     completePdf=await service.generateVerdictPdf(complete);
-  } finally {PDFDocument.prototype.text=originalText;}
-  assert(printed.includes('ДУНДЫН-66')&&printed.includes('Харилцагч 66'));
+  } finally {PDFDocument.prototype.text=originalText;PDFDocument.prototype.image=originalImage;}
+  assert(printed.includes('ДУНДЫН-66')&&!printed.includes('Харилцагч 66'));
+  for(const [title,first] of [['2.5 ДУНДЫН ХАРИЛЦАА','ДУНДЫН-0'],['2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА','ХЭРЭГТЭН · Тест']]) {
+    const start=printed.findIndex(t=>t===title);
+    assert(printed.indexOf('IMAGE',start)>start&&printed.indexOf('IMAGE',start)<printed.findIndex((t,i)=>i>start&&t.includes(first)),
+      'PDF relation diagram precedes its table');
+  }
   assert(printed.join('').includes('LAST-NOTE'),'Long wrapped notes survive PDF continuation pages');
-  assert.equal((completePdf!.toString('latin1').match(/\/Subtype \/Image/g)||[]).length,3,
-    'PDF includes main, shared and red scene pixels');
+  assert.equal((completePdf!.toString('latin1').match(/\/Subtype \/Image/g)||[]).length,4,
+    'PDF includes main, Sankey, shared and red scene pixels');
   const completeWord=await JSZip.loadAsync(await service.generateVerdictDocx(complete));
   const wordXml=await completeWord.file('word/document.xml')!.async('string');
-  assert(wordXml.includes('ДУНДЫН-66')&&wordXml.includes('LAST-NOTE')&&wordXml.includes('Харилцагч 66'));
-  assert((wordXml.match(/<w:drawing>/g)||[]).length>=3,'Word contains all three diagram images');
+  assert(wordXml.includes('ДУНДЫН-66')&&wordXml.includes('LAST-NOTE')&&!wordXml.includes('Харилцагч 66'));
+  assert((wordXml.match(/<w:drawing>/g)||[]).length>=4,'Word contains main, Sankey, shared and red diagram images');
   if(process.env.REPORT_TEST_OUTPUT){
     const {writeFile}=await import('node:fs/promises');
     await writeFile(`${process.env.REPORT_TEST_OUTPUT}.html`,completeHtml);
@@ -158,6 +170,6 @@ async function main() {
   changeDuringRead=true;
   await assert.rejects(query(), /солигдсон/);
   assert.equal(generated,beforeStale,'Stale active case must not render a mixed report');
-  console.log('PASS: all analysis rows beyond page 20/cap 60, all diagrams in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
+  console.log('PASS: money image only, relation lists below their images, all relation rows beyond page 20/cap 60 in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

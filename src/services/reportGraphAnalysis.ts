@@ -7,6 +7,7 @@ export interface ReportFlow {
 export interface ReportGraphAnalysis {
   version: 1;
   flow: ReportFlow[];
+  flowImages: ReportGraph[];
   shared: {rows: string[][]; image?: ReportGraph};
   red: {rows: string[][]; image?: ReportGraph};
 }
@@ -52,7 +53,12 @@ export async function prepareGraphAnalysis(encoded: string,
     if (!value || typeof value.imageBase64 !== "string") fail();
     return value.imageBase64;
   };
+  const images = list(raw.flowImages);
+  if (images.length > 500 || (flow.length > 0) !== (images.length > 0)) fail();
+  const flowImages: ReportGraph[] = [];
+  // Decode sequentially to bound peak PNG memory for dense cases.
+  for (const image of images) flowImages.push(await prepareImage(textImage(image), "Мөнгөн урсгалын зураглал"));
   const shared = await section(raw.shared, 4, "Дундын харилцааны зураглал");
   const red = await section(raw.red, 3, "Улаанаар тэмдэглэсэн этгээдийн харилцааны зураглал");
-  return {version: 1, flow, shared, red};
+  return {version: 1, flow, flowImages, shared, red};
 }
