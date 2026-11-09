@@ -672,11 +672,11 @@ export class ReportService {
     }
 
     b.push(htmlMajorBar("2. ДАНСНУУДЫН ХОЛБООС", "relations"));
-    b.push(htmlSectionBar("2.1 ДУНДЫН ХАРИЛЦАГЧИД"));
+    b.push(htmlSectionBar("2.1 ДУНДЫН ХАРИЛЦАГЧИД · ДҮНГЭЭР ТОП 20"));
     b.push(htmlDataTable(
       ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
       [120, 102, 48, 82, 82, 81],
-      input.mutualRelations.map((r) => [
+      topSharedRelations(input.mutualRelations).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal),
         mnt(r.debitTotal), mnt(r.netTotal)])));
     b.push(htmlSectionBar("2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ"));
@@ -824,9 +824,9 @@ ${separateTables(b).join("\n")}
     doc.addPage(); doc.y = 48;
     const relationPage = doc.bufferedPageRange().count;
     majorSectionBar(doc, "2. ДАНСНУУДЫН ХОЛБООС");
-    sectionBar(doc, "2.1 ДУНДЫН ХАРИЛЦАГЧИД");
+    sectionBar(doc, "2.1 ДУНДЫН ХАРИЛЦАГЧИД · ДҮНГЭЭР ТОП 20");
     pdfRows(doc, ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
-      [130, 95, 48, 82, 82, 78], input.mutualRelations.map((r) => [
+      [130, 95, 48, 82, 82, 78], topSharedRelations(input.mutualRelations).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
       ]));
     sectionBar(doc, "2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ");
@@ -1213,10 +1213,15 @@ function htmlDataTable(heads: string[], widths: number[],
   return layoutTable([head, ...body]);
 }
 
+function topSharedRelations(rows: RelationRow[]): RelationRow[] {
+  return [...rows].sort((a, b) => (b.creditTotal + b.debitTotal)
+    - (a.creditTotal + a.debitTotal) || a.key.localeCompare(b.key)).slice(0, 20);
+}
+
 function graphAnalysisSections(a: ReportGraphAnalysis) {
   return [
     {id: "report-money-flow", title: "2.4 МӨНГӨН УРСГАЛ", headers: [], widths: [], rows: [], images: a.flowImages},
-    {id: "report-shared-relations", title: "2.5 ДУНДЫН ХАРИЛЦАА", headers: ["Дундын харилцагч", "Холбогдох хүмүүс", "Дамжлага", "Баримт"],
+    {id: "report-shared-relations", title: "2.5 ДУНДЫН ХАРИЛЦАА · ДҮНГЭЭР ТОП 20", headers: ["Дундын харилцагч", "Холбогдох хүмүүс", "Дамжлага", "Баримт"],
       widths: [145, 165, 65, 140], rows: a.shared.rows, images: a.shared.image ? [a.shared.image] : []},
     {id: "report-red-relations", title: "2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА", headers: ["Этгээд", "Харилцагч", "Харилцаа"],
       widths: [175, 175, 165], rows: a.red.rows, images: a.red.image ? [a.red.image] : []},

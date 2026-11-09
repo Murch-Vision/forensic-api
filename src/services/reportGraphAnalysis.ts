@@ -8,7 +8,7 @@ export interface ReportGraphAnalysis {
   version: 1;
   flow: ReportFlow[];
   flowImages: ReportGraph[];
-  shared: {rows: string[][]; image?: ReportGraph};
+  shared: {rows: string[][]; amounts?: number[]; image?: ReportGraph};
   red: {rows: string[][]; image?: ReportGraph};
 }
 
@@ -38,14 +38,14 @@ export async function prepareGraphAnalysis(encoded: string,
     if (result.from.length > 600 || result.to.length > 600 || (result.soft && result.directed)) fail();
     return result;
   });
-  const section = async (value: any, cols: number, title: string) => {
+  const section = async (value: any, cols: number, title: string, allowIsolates = false) => {
     if (!value) fail();
     const rows = list(value.rows).map(row => {
       if (!Array.isArray(row) || row.length !== cols) fail();
       return row.map(text);
     });
     if (rows.length > 0 && !value.image) fail();
-    if (!rows.length && value.image) fail();
+    if (!rows.length && value.image && !allowIsolates) fail();
     return {rows, image: value.image
       ? await prepareImage(textImage(value.image), title) : undefined};
   };
@@ -58,6 +58,16 @@ export async function prepareGraphAnalysis(encoded: string,
   const flowImages: ReportGraph[] = [];
   for (const image of images) flowImages.push(await prepareImage(textImage(image), "Мөнгөн урсгалын нийт зураглал", true));
   const shared = await section(raw.shared, 4, "Дундын харилцааны зураглал");
-  const red = await section(raw.red, 3, "Улаанаар тэмдэглэсэн этгээдийн харилцааны зураглал");
-  return {version: 1, flow, flowImages, shared, red};
+  // Numeric amounts avoid ranking rounded display text. Older captures carry
+  // formatted money in the evidence column, so they can still be ranked.
+  const amounts = raw.shared.amounts === undefined
+    ? shared.rows.map(row => Number((row[3].match(/([\d,]+)\s*₮/)?.[1] ?? "0").replace(/,/g, "")))
+    : list(raw.shared.amounts);
+  if (amounts.length !== shared.rows.length || amounts.some(n =>
+    typeof n !== "number" || !Number.isFinite(n) || n < 0)) fail();
+  const ranked = shared.rows.map((row, i) => ({row, amount: amounts[i], i}))
+    .sort((a, b) => b.amount - a.amount || a.i - b.i).slice(0, 20);
+  shared.rows = ranked.map(r => r.row);
+  const red = await section(raw.red, 3, "Улаанаар тэмдэглэсэн этгээдийн харилцааны зураглал", true);
+  return {version: 1, flow, flowImages, shared: {...shared, amounts: ranked.map(r => r.amount)}, red};
 }

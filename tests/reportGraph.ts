@@ -62,16 +62,29 @@ async function main() {
     from:`Эх үүсвэр ${i}`,to:`Харилцагч ${i}`,amount:100+i,directed:i!==66,soft:i===66,
     fromRed:false,toRed:i===66})),
     shared:{rows:Array.from({length:67},(_,i)=>[`ДУНДЫН-${i}`,`Хүн А ↔ Хүн Б ${i}`,'1 дамжлага',`${i} гүйлгээ`]),
+      amounts:Array.from({length:67},(_,i)=>i*100),
       image:{imageBase64:png.toString('base64')}},
     red:{rows:[['ХЭРЭГТЭН · Тест','Харилцагч',('Урт тэмдэглэл '.repeat(150))+'LAST-NOTE']],
       image:{imageBase64:png.toString('base64')}}};
   const encoded=Buffer.from(JSON.stringify(analysisRaw)).toString('base64');
   const withAnalysis=await prepareReportGraph({...graphInput,analysisBase64:encoded});
   assert.equal(withAnalysis.analysis?.flow.length,67);
+  assert.equal(withAnalysis.analysis?.shared.rows.length,20);
+  assert.deepEqual(withAnalysis.analysis?.shared.amounts,Array.from({length:20},(_,i)=>(66-i)*100));
+  assert.equal(withAnalysis.analysis?.shared.rows[0][0],'ДУНДЫН-66');
+  assert.equal(withAnalysis.analysis?.shared.rows.at(-1)?.[0],'ДУНДЫН-47');
+  const legacyRaw={...analysisRaw,shared:{...analysisRaw.shared,amounts:undefined,
+    rows:analysisRaw.shared.rows.map((r,i)=>[...r.slice(0,3),`${(i*1000).toLocaleString('en-US')}₮ · 2 гүйлгээ`])}};
+  const legacy=await prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(legacyRaw)).toString('base64')});
+  assert.equal(legacy.analysis?.shared.rows[0][0],'ДУНДЫН-66','Old captures rank by formatted money');
+  const isolatedRaw={...analysisRaw,red:{...analysisRaw.red,rows:[]}};
+  const isolated=await prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(isolatedRaw)).toString('base64')});
+  assert(isolated.analysis?.red.image,'Isolated offenders can have a diagram without relationship rows');
   for(const bad of [{...analysisRaw,version:2},{...analysisRaw,flowImages:[]},
     {...analysisRaw,flowImages:[analysisRaw.flowImages[0],analysisRaw.flowImages[0]]},
     {...analysisRaw,flowImages:[{imageBase64:'bad PNG'}]},{...analysisRaw,flow:[{...analysisRaw.flow[0],amount:-1}]},
     {...analysisRaw,flow:[{...analysisRaw.flow[0],soft:true}]},
+    ...[[],[-1],['100'],Array(67).fill(-1)].map(amounts=>({...analysisRaw,shared:{...analysisRaw.shared,amounts}})),
     {...analysisRaw,shared:{rows:[['broken']]}},
     {...analysisRaw,red:{rows:[['a','b','c']],image:{imageBase64:'not PNG'}}}]) {
     await assert.rejects(prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(bad)).toString('base64')}));
@@ -111,7 +124,10 @@ async function main() {
     const {writeFile}=await import('node:fs/promises');
     await writeFile(`${process.env.REPORT_TEST_OUTPUT}-tall.html`,tallHtml);
   }
-  const complete={...input,graph:withAnalysis};
+  const mutualRelations=Array.from({length:37},(_,i)=>({key:`canonical-${i}`,name:`CANONICAL_${i}_END`,
+    account:null,nationalId:null,txnCount:2,creditCount:1,debitCount:1,creditTotal:i*1000,
+    debitTotal:(36-i)*500,netTotal:0,accountIds:[1,2],mutual:true,subjectMatch:false}));
+  const complete={...input,mutualRelations,graph:withAnalysis};
   const completeHtml=(await service.generateVerdictHtml(complete)).toString();
   for(const title of ['2.4 МӨНГӨН УРСГАЛ','2.5 ДУНДЫН ХАРИЛЦАА','2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА'])
     assert(completeHtml.includes(title));
@@ -120,7 +136,7 @@ async function main() {
   assert(!completeHtml.includes('report-flow-diagram'),'Per-transfer arrow boxes are replaced by the captured Sankey');
   const sharedStart=completeHtml.indexOf('2.5 ДУНДЫН ХАРИЛЦАА');
   const redStart=completeHtml.indexOf('2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА');
-  assert(completeHtml.indexOf('data:image/png',sharedStart)<completeHtml.indexOf('ДУНДЫН-0',sharedStart));
+  assert(completeHtml.indexOf('data:image/png',sharedStart)<completeHtml.indexOf('ДУНДЫН-66',sharedStart));
   assert(completeHtml.indexOf('data:image/png',redStart)<completeHtml.indexOf('ХЭРЭГТЭН · Тест',redStart));
   const originalText=PDFDocument.prototype.text, originalImage=PDFDocument.prototype.image, printed:string[]=[];
   let completePdf:Buffer;
@@ -131,7 +147,7 @@ async function main() {
     completePdf=await service.generateVerdictPdf(complete);
   } finally {PDFDocument.prototype.text=originalText;PDFDocument.prototype.image=originalImage;}
   assert(printed.includes('ДУНДЫН-66')&&!printed.includes('Харилцагч 66'));
-  for(const [title,first] of [['2.5 ДУНДЫН ХАРИЛЦАА','ДУНДЫН-0'],['2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА','ХЭРЭГТЭН · Тест']]) {
+  for(const [title,first] of [['2.5 ДУНДЫН ХАРИЛЦАА · ДҮНГЭЭР ТОП 20','ДУНДЫН-66'],['2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА','ХЭРЭГТЭН · Тест']]) {
     const start=printed.findIndex(t=>t===title);
     assert(printed.indexOf('IMAGE',start)>start&&printed.indexOf('IMAGE',start)<printed.findIndex((t,i)=>i>start&&t.includes(first)),
       'PDF relation diagram precedes its table');
@@ -143,6 +159,15 @@ async function main() {
   const wordXml=await completeWord.file('word/document.xml')!.async('string');
   assert(wordXml.includes('ДУНДЫН-66')&&wordXml.includes('LAST-NOTE')&&!wordXml.includes('Харилцагч 66'));
   assert((wordXml.match(/<w:drawing>/g)||[]).length>=4,'Word contains main, Sankey, shared and red diagram images');
+  for(const output of [completeHtml,wordXml,printed.join('')]) {
+    const retained = [...new Set([...output.matchAll(/ДУНДЫН-(\d+)/g)].map(m=>Number(m[1])))].sort((a,b)=>a-b);
+    assert.deepEqual(retained,Array.from({length:20},(_,i)=>47+i),'Exactly the highest20 attached contacts survive');
+    for(let i=0;i<37;i++) assert.equal(output.includes(`CANONICAL_${i}_END`),i>=17,
+      `Canonical shared list ranks credit plus debit: ${i}`);
+    assert(output.includes('37 харилцагч'),'Conclusion still uses the full population');
+  }
+  assert.equal(complete.mutualRelations.length,37,'Rendering never truncates source data');
+  assert.equal(complete.mutualRelations[0].key,'canonical-0','Rendering never reorders source data');
   if(process.env.REPORT_TEST_OUTPUT){
     const {writeFile}=await import('node:fs/promises');
     await writeFile(`${process.env.REPORT_TEST_OUTPUT}.html`,completeHtml);
@@ -195,7 +220,7 @@ async function main() {
   appendGraphUpload(imageStage,1,0,graphInput.imageBase64);
   appendGraphUpload(analysisStage,1,0,encoded);
   await query({...graphInput,imageBase64:'',imageUploadId:imageStage,analysisBase64:'',analysisUploadId:analysisStage} as any);
-  assert.equal(received.at(-1)?.graph?.analysis?.shared.rows.length,67);
+  assert.equal(received.at(-1)?.graph?.analysis?.shared.rows.length,20);
   assert.throws(()=>takeGraphUpload(imageStage,1,1));assert.throws(()=>takeGraphUpload(analysisStage,1,1));
   const foreign=beginGraphUpload(1,2);appendGraphUpload(foreign,1,0,encoded);
   await assert.rejects(query({...graphInput,analysisUploadId:foreign} as any),/өөр хэрэг/);
@@ -204,6 +229,6 @@ async function main() {
   changeDuringRead=true;
   await assert.rejects(query(), /солигдсон/);
   assert.equal(generated,beforeStale,'Stale active case must not render a mixed report');
-  console.log('PASS: one complete money image/tall PDF page, Word page fit, relation lists below their images, all relation rows beyond page 20/cap 60 in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
+  console.log('PASS: one complete money image/tall PDF page, Word page fit, relation lists below their images, shared top20 by money with full conclusions in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
