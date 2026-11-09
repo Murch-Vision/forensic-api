@@ -105,8 +105,18 @@ async function run(foreignKeys: boolean) {
     const sharedOwner = shared.suspectId;
     await db("suspects").where({id: sharedOwner}).update({caseId: "A"});
     active = b; await statement("9999999999", "Shared owner", "1010101010", "Shared CP", "SS12345678");
+    const sharedTxn = await db("bank_transactions").where({bankAccountId: shared.id}).first();
+    await db("case_noise_filters").where({caseFileId: a}).update({ignoredTxns: JSON.stringify([sharedTxn.id]),
+      ignoredPairs: JSON.stringify([`${shared.id}→1010101010`])});
+    await db("case_noise_filters").insert({caseFileId: b, minAmount: 0, ignoredTxns: JSON.stringify([sharedTxn.id]),
+      ignoredPairs: JSON.stringify([`${shared.id}→1010101010`]), descRules: "[]", updatedAt: now});
     active = a; assert.equal((await remove(shared.id)).transactions, 0);
     assert.equal((await db("bank_transactions").where({bankAccountId: shared.id})).length, 1);
+    const detachedFilter = await db("case_noise_filters").where({caseFileId: a}).first();
+    assert.equal(detachedFilter.ignoredTxns, "[]", "Removed statement must not revive old noise on explicit re-import");
+    assert.equal(detachedFilter.ignoredPairs, "[]");
+    assert.equal((await db("case_noise_filters").where({caseFileId: b}).first()).ignoredTxns,
+      JSON.stringify([sharedTxn.id]), "Another case's noise marks stay independent");
     // Simulate a legacy tombstone-only account and an import-owned orphan
     // retained by an earlier version of deletion.
     const [ghost] = await db("suspects").insert({suspectId: "IMP-LEGACY", fullName: "Ghost", createdAt: now, updatedAt: now});

@@ -455,6 +455,20 @@ export class DataService {
               .where({bankAccountId}).select("id")))).del();
       const conclusions = await trx("case_conclusions")
         .where({caseFileId, bankAccountId}).del();
+      // Shared rows remain stored for the other case, but this case's old
+      // noise marks must not silently return when its statement is re-imported.
+      const filter = await trx("case_noise_filters").where({caseFileId}).first();
+      if (filter) {
+        const txnIds = new Set((await trx("bank_transactions").where({bankAccountId})
+          .pluck("id")).map(Number));
+        await trx("case_noise_filters").where({caseFileId}).update({
+          ignoredTxns: JSON.stringify(parseJsonArray<number>(filter.ignoredTxns)
+            .filter(id => !txnIds.has(Number(id)))),
+          ignoredPairs: JSON.stringify(parseJsonArray<string>(filter.ignoredPairs)
+            .filter(pair => !String(pair).startsWith(`${bankAccountId}→`))),
+          updatedAt: new Date().toISOString(),
+        });
+      }
       await this.pruneImportContext(trx, caseFileId);
       return {accountNumber: account.accountNumber, transactions: deleted?.transactions ?? 0,
         analyses: deleted?.analyses ?? 0, conclusions: conclusions + (deleted?.conclusions ?? 0),
