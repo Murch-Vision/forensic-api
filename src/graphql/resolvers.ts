@@ -192,6 +192,7 @@ async function caseScopePair(
   ]);
   const ids = (s: CaseScope): ScopeIds => ({
     suspectIds: [...s.suspectIds], accountIds: [...s.accountIds],
+    statementAccountIds: [...s.statementAccountIds],
     txnIds: [...s.txnIds], callIds: [...s.callIds],
   });
   return {mine: ids(mine), others: ids(others)};

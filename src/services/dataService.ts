@@ -7,6 +7,7 @@
  * Description :
 .-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.*/
 import type {Knex} from "knex";
+import {buildCaseScope} from "./caseScope";
 import type {
   AccessLogEntry,
   AnalysisResult,
@@ -82,6 +83,7 @@ export interface BankAccountCleanupPreview {
 export interface ScopeIds {
   suspectIds : number[];
   accountIds : number[];
+  statementAccountIds: number[];
   txnIds     : number[];
   callIds    : number[];
 }
@@ -431,17 +433,16 @@ export class DataService {
       const account = await trx<BankAccount>("bank_accounts")
         .where({id: bankAccountId}).first();
       if (!account) return null;
-      const shared = await trx("case_bank_accounts")
-        .where({bankAccountId, removed: false})
-        .whereNot({caseFileId}).first();
-      const taggedElsewhere = await trx("evidence_entries")
-        .whereNot({caseFileId}).where(q => q
-          .where({sourceType: "BANK_ACCOUNT", sourceId: bankAccountId})
-          .orWhere(sub => sub.where({sourceType: "TRANSACTION"})
-            .whereIn("sourceId", trx("bank_transactions")
-              .where({bankAccountId}).select("id")))).first();
-      if (!shared && !taggedElsewhere) {
-        return this.deleteAccountRows(trx, bankAccountId);
+      const usage = await this.accountCleanupPreview(trx, bankAccountId);
+      const statements = await this.accountCleanupPreview(trx, bankAccountId, true);
+      let deleted: AccountDeletion | null = null;
+      if (!statements?.cases.some(cf => cf.id !== caseFileId)) {
+        const keepEndpoint = Boolean(usage?.cases.some(cf => cf.id !== caseFileId));
+        deleted = await this.deleteAccountRows(trx, bankAccountId, keepEndpoint);
+        if (!keepEndpoint) {
+          await this.pruneImportContext(trx, caseFileId);
+          return deleted;
+        }
       }
       const key = {caseFileId, bankAccountId};
       await trx("case_bank_accounts").insert({...key, isStatement: false, removed: true})
@@ -454,9 +455,87 @@ export class DataService {
               .where({bankAccountId}).select("id")))).del();
       const conclusions = await trx("case_conclusions")
         .where({caseFileId, bankAccountId}).del();
-      return {accountNumber: account.accountNumber, transactions: 0,
-        analyses: 0, conclusions, evidence, links: 0};
+      await this.pruneImportContext(trx, caseFileId);
+      return {accountNumber: account.accountNumber, transactions: deleted?.transactions ?? 0,
+        analyses: deleted?.analyses ?? 0, conclusions: conclusions + (deleted?.conclusions ?? 0),
+        evidence: evidence + (deleted?.evidence ?? 0), links: deleted?.links ?? 0};
     });
+  }
+
+  // Counterparty endpoints and people are tagged automatically during import.
+  // Once the last statement using them is removed, those tags must not keep
+  // an otherwise empty imported account/owner alive for the next import.
+  private async pruneImportContext(trx: Knex.Transaction, caseFileId: number): Promise<void> {
+    const cf = await trx("case_files").where({id: caseFileId}).first();
+    if (!cf) return;
+    const entries = await trx("evidence_entries").where({caseFileId});
+    const memberships = await trx("case_bank_accounts").where({caseFileId});
+    const scope = buildCaseScope([cf], {entries, memberships, suspects: [],
+      transactions: await trx("bank_transactions").whereIn("id", trx("evidence_entries")
+        .where({caseFileId, sourceType: "TRANSACTION"}).select("sourceId")).select("id", "bankAccountId")});
+    const referenced = new Set<string>();
+    // Both statement rows and individually tagged transactions can support a
+    // counterparty. Use raw rows so noise filtering never destroys evidence.
+    for (const ids of chunked([...scope.statementAccountIds], 400)) {
+      for (const number of await trx("bank_transactions").whereIn("bankAccountId", ids)
+        .whereNotNull("counterpartyAccount").pluck("counterpartyAccount")) referenced.add(String(number).trim());
+    }
+    for (const ids of chunked([...scope.txnIds], 400)) {
+      for (const number of await trx("bank_transactions").whereIn("id", ids)
+        .whereNotNull("counterpartyAccount").pluck("counterpartyAccount")) referenced.add(String(number).trim());
+    }
+    for (const member of memberships) {
+      if (member.removed || member.isStatement) continue;
+      const imported = entries.find(e => e.sourceType === "BANK_ACCOUNT"
+        && e.sourceId === member.bankAccountId && String(e.description ?? "").startsWith("Импорт: "));
+      if (!imported) continue; // Manually tagged evidence is intentional.
+      const account = await trx("bank_accounts").where({id: member.bankAccountId}).first();
+      if (!account || referenced.has(String(account.accountNumber).trim())) continue;
+      if (await trx("case_conclusions").where({caseFileId, bankAccountId: account.id}).first()) continue;
+      if (await trx("bank_transactions").where({bankAccountId: account.id})
+        .whereIn("id", trx("evidence_entries").where({caseFileId, sourceType: "TRANSACTION"})
+          .select("sourceId")).first()) continue;
+      await trx("evidence_entries").where({id: imported.id}).del();
+      await trx("case_bank_accounts").where({caseFileId, bankAccountId: account.id}).del();
+      const usage = await this.accountCleanupPreview(trx, account.id);
+      if (usage && !usage.cases.length) await this.deleteAccountRows(trx, account.id);
+    }
+    await this.pruneImportedPeople(trx, entries.filter(e => e.sourceType === "SUSPECT")
+      .map(e => Number(e.sourceId)), caseFileId);
+  }
+
+  private async pruneImportedPeople(
+    trx: Knex.Transaction, ids: number[], caseFileId?: number
+  ): Promise<void> {
+    for (const id of new Set(ids)) {
+      const person = await trx("suspects").where({id}).first();
+      if (!person) continue;
+      // Phone data and operator annotations are independent of bank imports.
+      if (person.caseId || person.riskLevel !== "UNKNOWN" || person.status !== "ACTIVE"
+        || ["aliases", "passportNumber", "dateOfBirth", "gender", "address", "city", "country",
+          "primaryPhone", "email", "occupation", "organization", "notes", "photoPath", "photoData"]
+          .some(key => person[key])
+        || await trx("access_log_entries").where({suspectId: id}).first()
+        || await trx("phone_numbers").where({suspectId: id}).first()
+        || await trx("call_records").where({suspectId: id}).first()
+        || await trx("suspect_tags").where({suspectId: id}).first()
+        || await trx("case_notes").where({suspectId: id}).first()
+        || await trx("suspect_links").where({sourceSuspectId: id}).orWhere({targetSuspectId: id}).first()) continue;
+      const accounts = await trx("bank_accounts").where({suspectId: id}).pluck("id");
+      const tags = trx("evidence_entries").where({sourceType: "SUSPECT", sourceId: id})
+        .where("description", "like", "Импорт: %");
+      if (!accounts.length) {
+        await tags.del();
+      } else if (caseFileId != null) {
+        const usage = await Promise.all(accounts.map(accountId => this.accountCleanupPreview(trx, Number(accountId))));
+        if (!usage.some(u => u?.cases.some(c => c.id === caseFileId))) await tags.where({caseFileId}).del();
+      }
+      // Only discard bare import-created people. A manually maintained subject
+      // or a registered person with independent evidence must survive.
+      if (accounts.length || !String(person.suspectId).startsWith("IMP-")
+        || await trx("evidence_entries").where({sourceType: "SUSPECT", sourceId: id}).first()) continue;
+      await trx("suspects").where({id}).del();
+    }
   }
 
   // What each of the given accounts actually holds — the RAW row count, first
@@ -521,7 +600,7 @@ export class DataService {
   }
 
   private async accountCleanupPreview(
-    db: Knex, id: number
+    db: Knex, id: number, statementOnly = false
   ): Promise<BankAccountCleanupPreview | null> {
     const account = await db<BankAccount>("bank_accounts").where({id}).first();
     if (!account) return null;
@@ -531,13 +610,21 @@ export class DataService {
     const addCases = (rows: {caseFileId: number}[]) => {
       for (const row of rows) caseIds.add(Number(row.caseFileId));
     };
-    addCases(await db("case_bank_accounts")
-      .where({bankAccountId: id, removed: false}).select("caseFileId"));
-    addCases(await db("evidence_entries").where(q => q
+    const memberships = await db("case_bank_accounts").where({bankAccountId: id});
+    addCases(memberships.filter(m => !m.removed && (!statementOnly || m.isStatement)));
+    const evidence = await db("evidence_entries").where(q => q
       .where({sourceType: "BANK_ACCOUNT", sourceId: id})
       .orWhere(sub => sub.where({sourceType: "TRANSACTION"})
         .whereIn("sourceId", db("bank_transactions")
-          .where({bankAccountId: id}).select("id")))).select("caseFileId"));
+          .where({bankAccountId: id}).select("id"))));
+    addCases(evidence.filter(e => {
+      if (!statementOnly || e.sourceType !== "BANK_ACCOUNT") return true;
+      const membership = memberships.find(m => m.caseFileId === e.caseFileId);
+      // Import tags on an explicitly contextual endpoint are not a statement.
+      // Legacy/unclassified or operator-tagged evidence still protects it.
+      return !membership || (!membership.removed && membership.isStatement)
+        || !String(e.description ?? "").startsWith("Импорт: ");
+    }));
     addCases(await db("case_conclusions").where({bankAccountId: id})
       .select("caseFileId"));
 
@@ -546,9 +633,10 @@ export class DataService {
     if (txnIds.length) {
       const txnSet = new Set(txnIds);
       const links = (await db("suspect_links").whereNotNull("contributingTxnIds")
-        .select("id", "caseGraphId", "contributingTxnIds"))
+        .select("id", "caseGraphId", "caseFileId", "contributingTxnIds"))
         .filter(link => parseJsonArray<number>(link.contributingTxnIds)
           .some(txnId => txnSet.has(Number(txnId))));
+      addCases(links.filter(link => link.caseFileId != null));
       for (const ids of chunked(links.map(link => Number(link.id)), 400)) {
         addCases(await db("evidence_entries").where({sourceType: "SUSPECT_LINK"})
           .whereIn("sourceId", ids).select("caseFileId"));
@@ -585,10 +673,8 @@ export class DataService {
   // SQLite would leave the transactions behind pointing at a dead id — every
   // dependent is therefore removed explicitly, in one transaction.
   //
-  // Not touched, deliberately: the people the import created (they belong to
-  // the субьект list, not to this account) and rows on OTHER accounts that
-  // merely name this one as a counterparty (those are the other account's
-  // statement, not this one's).
+  // Rows on OTHER statements naming this counterparty belong to those
+  // statements. Bare import-created owners are cleaned up with the account.
   async deleteBankAccountDeep(id: number): Promise<AccountDeletion | null> {
     const account = await this.db<BankAccount>("bank_accounts")
       .where({id}).first();
@@ -600,7 +686,7 @@ export class DataService {
   // a whole case stays ONE atomic operation instead of a string of separate
   // ones that can stop half-way.
   private async deleteAccountRows(
-    trx: Knex.Transaction, id: number
+    trx: Knex.Transaction, id: number, keepEndpoint = false
   ): Promise<AccountDeletion | null> {
     const account = await trx<BankAccount>("bank_accounts")
       .where({id}).first();
@@ -618,7 +704,7 @@ export class DataService {
       const conclusions = await trx("case_conclusions")
         .where({bankAccountId: id}).del();
       // Exhibit pointers at the account itself and at any of its transactions.
-      let evidence = await trx("evidence_entries")
+      let evidence = keepEndpoint ? 0 : await trx("evidence_entries")
         .where({sourceType: "BANK_ACCOUNT", sourceId: id}).del();
       if (txnIds.length > 0) {
         for (const chunk of chunked(txnIds, 400)) {
@@ -658,6 +744,8 @@ export class DataService {
           const kept = backing.filter((t) => !txnSet.has(Number(t)));
           if (kept.length === backing.length) continue;
           if (kept.length === 0) {
+            evidence += await trx("evidence_entries")
+              .where({sourceType: "SUSPECT_LINK", sourceId: l.id}).del();
             await trx("suspect_links").where({id: l.id}).del();
             links++;
           } else {
@@ -667,8 +755,11 @@ export class DataService {
         }
       }
 
-      await trx("case_bank_accounts").where({bankAccountId: id}).del();
-      await trx("bank_accounts").where({id}).del();
+      if (!keepEndpoint) {
+        await trx("case_bank_accounts").where({bankAccountId: id}).del();
+        await trx("bank_accounts").where({id}).del();
+      }
+      if (account.suspectId != null) await this.pruneImportedPeople(trx, [account.suspectId]);
 
       return {
         accountNumber: account.accountNumber,
@@ -680,21 +771,45 @@ export class DataService {
   // Хэрэгт хамаарах боловч ӨӨР хэрэгт хамаардаггүй бичлэгүүд. Нэг хүн (эсвэл
   // данс) хоёр хэрэгт бүртгэлтэй байж болно — нэг хэргийг устгахад нөгөө
   // хэргийн мэдээлэл хамт алга болох ёсгүй, тиймээс зөвхөн ЗӨРҮҮГ нь авна.
-  private async casePurgeIds(mine: ScopeIds, others: ScopeIds): Promise<{
+  private async casePurgeIds(caseFileId: number, mine: ScopeIds, others: ScopeIds, db: Knex = this.db): Promise<{
     suspectIds: number[]; accountIds: number[]; callIds: number[];
-    txnIds: number[];
+    txnIds: number[]; statementPayloadIds: number[];
   }> {
     const otherSuspects = new Set(others.suspectIds);
     let suspectIds = mine.suspectIds.filter((id) => !otherSuspects.has(id));
 
     // Membership is explicit per account, never all accounts of a person.
     const otherAccounts = new Set(others.accountIds);
-    const accountIds = mine.accountIds.filter(id => !otherAccounts.has(id));
+    const candidates = new Set(mine.accountIds);
+    // Removed memberships are hidden from the live scope, but must not leave
+    // an orphan account behind when their case itself is deleted.
+    for (const id of await db("case_bank_accounts").where({caseFileId}).pluck("bankAccountId")) candidates.add(Number(id));
+    // Earlier statement deletion left import-owned accounts outside the case
+    // scope. Collect only unreferenced remnants, never an owner's other case.
+    for (const chunk of chunked(mine.suspectIds, 400)) {
+      const imported = db("suspects").whereIn("id", chunk).where("suspectId", "like", "IMP-%").select("id");
+      for (const account of await db("bank_accounts").whereIn("suspectId", imported)) {
+        if (candidates.has(account.id)) continue;
+        const usage = await this.accountCleanupPreview(db, account.id);
+        if (usage && !usage.cases.length) candidates.add(Number(account.id));
+      }
+    }
+    const accountIds: number[] = [], statementPayloadIds: number[] = [];
+    for (const id of candidates) {
+      const usage = await this.accountCleanupPreview(db, id);
+      if (!usage) continue;
+      if (!otherAccounts.has(id) && !usage.cases.some(cf => cf.id !== caseFileId)) {
+        accountIds.push(id);
+      } else if (mine.statementAccountIds.includes(id)) {
+        const statements = await this.accountCleanupPreview(db, id, true);
+        if (!statements?.cases.some(cf => cf.id !== caseFileId)) statementPayloadIds.push(id);
+      }
+    }
 
     const retained = new Set<number>();
     const deleting = new Set(accountIds);
     for (const chunk of chunked(suspectIds, 400)) {
-      const owned = await this.db("bank_accounts").whereIn("suspectId", chunk)
+      const owned = await db("bank_accounts").whereIn("suspectId", chunk)
         .select("id", "suspectId");
       for (const account of owned) {
         if (!deleting.has(account.id)) retained.add(Number(account.suspectId));
@@ -705,7 +820,7 @@ export class DataService {
     const callsOf = async (suspects: number[], tagged: number[]) => {
       const out = new Set<number>(tagged);
       for (const chunk of chunked(suspects, 400)) {
-        for (const id of await this.db("call_records")
+        for (const id of await db("call_records")
           .whereIn("suspectId", chunk).pluck("id")) out.add(Number(id));
       }
       return out;
@@ -717,29 +832,39 @@ export class DataService {
     // Дансаараа дамжин устах гүйлгээнээс ГАДНА, ганцаарчлан баримт болгосон
     // гүйлгээ байж болно.
     const otherTxns = new Set(others.txnIds);
-    const txnIds = mine.txnIds.filter((id) => !otherTxns.has(id));
-    return {suspectIds, accountIds, callIds, txnIds};
+    const txnIds: number[] = [];
+    for (const chunk of chunked(mine.txnIds.filter(id => !otherTxns.has(id)), 400)) {
+      for (const txn of await db("bank_transactions").whereIn("id", chunk).select("id", "bankAccountId")) {
+        if (!others.statementAccountIds.includes(Number(txn.bankAccountId))) txnIds.push(Number(txn.id));
+      }
+    }
+    return {suspectIds, accountIds, callIds, txnIds, statementPayloadIds};
   }
 
   // Устгахаас ӨМНӨ: энэ хэрэгтэй хамт юу алга болохыг тоолно.
   async planCasePurge(
-    caseFileId: number, mine: ScopeIds, others: ScopeIds
+    caseFileId: number, mine: ScopeIds, others: ScopeIds, db: Knex = this.db
   ): Promise<CasePurge | null> {
-    const cf = await this.db<CaseFile>("case_files")
+    const cf = await db<CaseFile>("case_files")
       .where({id: caseFileId}).first();
     if (!cf) return null;
-    const ids = await this.casePurgeIds(mine, others);
+    const ids = await this.casePurgeIds(caseFileId, mine, others, db);
     let transactions = 0;
-    for (const chunk of chunked(ids.accountIds, 400)) {
-      transactions += Number(((await this.db("bank_transactions")
+    for (const chunk of chunked([...ids.accountIds, ...ids.statementPayloadIds], 400)) {
+      transactions += Number(((await db("bank_transactions")
         .whereIn("bankAccountId", chunk).count({c: "*"}).first()))?.c ?? 0);
+    }
+    const deletingAccounts = new Set([...ids.accountIds, ...ids.statementPayloadIds]);
+    for (const chunk of chunked(ids.txnIds, 400)) {
+      const tagged = await db("bank_transactions").whereIn("id", chunk).select("bankAccountId");
+      transactions += tagged.filter(t => !deletingAccounts.has(Number(t.bankAccountId))).length;
     }
     let phones = 0;
     for (const chunk of chunked(ids.suspectIds, 400)) {
-      phones += Number(((await this.db("phone_numbers")
+      phones += Number(((await db("phone_numbers")
         .whereIn("suspectId", chunk).count({c: "*"}).first()))?.c ?? 0);
     }
-    const evidence = Number(((await this.db("evidence_entries")
+    const evidence = Number(((await db("evidence_entries")
       .where({caseFileId}).count({c: "*"}).first()))?.c ?? 0);
     return {
       caseId: cf.caseId, caseName: cf.caseName,
@@ -755,13 +880,28 @@ export class DataService {
   async deleteCaseDeep(
     caseFileId: number, mine: ScopeIds, others: ScopeIds
   ): Promise<CasePurge | null> {
-    const plan = await this.planCasePurge(caseFileId, mine, others);
-    if (!plan) return null;
-    const ids = await this.casePurgeIds(mine, others);
-
-    await this.db.transaction(async (trx) => {
+    return this.db.transaction(async (trx) => {
+      // Resolve the write's scope and references in the same transaction as
+      // deletion; a stale confirmation must never authorize more data.
+      const cases = await trx<CaseFile>("case_files");
+      const target = cases.find(cf => cf.id === caseFileId);
+      if (!target) return null;
+      const snapshot = {suspects: await trx<Suspect>("suspects"),
+        entries: await trx("evidence_entries"), memberships: await trx("case_bank_accounts"),
+        transactions: await trx("bank_transactions").whereIn("id", trx("evidence_entries")
+          .where({sourceType: "TRANSACTION"}).select("sourceId")).select("id", "bankAccountId")};
+      const toIds = (scope: ReturnType<typeof buildCaseScope>): ScopeIds => ({
+        suspectIds: [...scope.suspectIds], accountIds: [...scope.accountIds],
+        statementAccountIds: [...scope.statementAccountIds], txnIds: [...scope.txnIds], callIds: [...scope.callIds]});
+      mine = toIds(buildCaseScope([target], snapshot));
+      others = toIds(buildCaseScope(cases.filter(cf => cf.id !== caseFileId), snapshot));
+      const plan = await this.planCasePurge(caseFileId, mine, others, trx);
+      const ids = await this.casePurgeIds(caseFileId, mine, others, trx);
       for (const id of ids.accountIds) {
         await this.deleteAccountRows(trx, id);
+      }
+      for (const id of ids.statementPayloadIds) {
+        await this.deleteAccountRows(trx, id, true);
       }
       // Дансгүйгээр ганцаарчлан баримт болгосон гүйлгээ.
       for (const chunk of chunked(ids.txnIds, 400)) {
@@ -775,6 +915,9 @@ export class DataService {
         await trx("phone_numbers").whereIn("suspectId", chunk).del();
         // Холбоосыг ЭХЛЭЭД — suspect_links нь хүн рүү RESTRICT-ээр заадаг тул
         // үлдээвэл хүний мөрийг устгах үед бүхэл гүйлгээ унана.
+        await trx("evidence_entries").where({sourceType: "SUSPECT_LINK"})
+          .whereIn("sourceId", trx("suspect_links").whereIn("sourceSuspectId", chunk)
+            .orWhereIn("targetSuspectId", chunk).select("id")).del();
         await trx("suspect_links").whereIn("sourceSuspectId", chunk).del();
         await trx("suspect_links").whereIn("targetSuspectId", chunk).del();
         await trx("suspect_tags").whereIn("suspectId", chunk).del();
@@ -787,8 +930,13 @@ export class DataService {
       const graphIds = (await trx("case_graphs")
         .where({caseFileId}).pluck("id")) as number[];
       for (const chunk of chunked(graphIds, 400)) {
+        await trx("evidence_entries").where({sourceType: "SUSPECT_LINK"})
+          .whereIn("sourceId", trx("suspect_links").whereIn("caseGraphId", chunk).select("id")).del();
         await trx("suspect_links").whereIn("caseGraphId", chunk).del();
       }
+      await trx("evidence_entries").where({sourceType: "SUSPECT_LINK"})
+        .whereIn("sourceId", trx("suspect_links").where({caseFileId}).select("id")).del();
+      await trx("suspect_links").where({caseFileId}).del();
       await trx("case_graphs").where({caseFileId}).del();
       await trx("case_conclusions").where({caseFileId}).del();
       await trx("case_noise_filters").where({caseFileId}).del();
@@ -803,9 +951,12 @@ export class DataService {
       for (const chunk of chunked(ids.suspectIds, 400)) {
         await trx("suspects").whereIn("id", chunk).del();
       }
+      // A retained shared owner must not silently join a later case that
+      // happens to reuse the deleted human-readable case number.
+      await trx("suspects").where({caseId: target.caseId}).update({caseId: null});
       await trx("case_files").where({id: caseFileId}).del();
+      return plan;
     });
-    return plan;
   }
 
   async createPhoneNumber(input: Partial<PhoneNumber>): Promise<PhoneNumber> {
