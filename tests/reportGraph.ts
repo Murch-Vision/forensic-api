@@ -69,6 +69,7 @@ async function main() {
   const withAnalysis=await prepareReportGraph({...graphInput,analysisBase64:encoded});
   assert.equal(withAnalysis.analysis?.flow.length,67);
   for(const bad of [{...analysisRaw,version:2},{...analysisRaw,flowImages:[]},
+    {...analysisRaw,flowImages:[analysisRaw.flowImages[0],analysisRaw.flowImages[0]]},
     {...analysisRaw,flowImages:[{imageBase64:'bad PNG'}]},{...analysisRaw,flow:[{...analysisRaw.flow[0],amount:-1}]},
     {...analysisRaw,flow:[{...analysisRaw.flow[0],soft:true}]},
     {...analysisRaw,shared:{rows:[['broken']]}},
@@ -77,6 +78,39 @@ async function main() {
   }
   for(const invalid of ['not base64','e30=','A'.repeat(12000000)])
     await assert.rejects(prepareReportGraph({...graphInput,analysisBase64:invalid}));
+  // A complete chart can be much taller than the main graph. Its pixels are
+  // bounded independently, and it occupies ONE proportional PDF page.
+  const tallPng=await sharp({create:{width:1000,height:6000,channels:3,background:'#122538'}}).png().toBuffer();
+  const tallRaw={...analysisRaw,flowImages:[{imageBase64:tallPng.toString('base64')}]};
+  const tallGraph=await prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(tallRaw)).toString('base64')});
+  assert.equal(tallGraph.analysis?.flowImages.length,1);
+  assert.equal(tallGraph.analysis?.flowImages[0].height,6000);
+  await assert.rejects(prepareReportGraph({...graphInput,imageBase64:tallPng.toString('base64')}),
+    /PNG/, 'The main chart retains its original dimension limits');
+  const tooTall=await sharp({create:{width:8,height:16001,channels:3,background:'#123456'}}).png().toBuffer();
+  for(const bad of [{...tallRaw,flowImages:[{imageBase64:tooTall.toString('base64')}]},
+    {...analysisRaw,shared:{...analysisRaw.shared,image:{imageBase64:tallPng.toString('base64')}}}]) {
+    await assert.rejects(prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(bad)).toString('base64')}),
+      /PNG/, 'Tall overview allowances do not bypass height limits or widen relation image limits');
+  }
+  const tallHtml=(await service.generateVerdictHtml({...input,graph:tallGraph})).toString();
+  const moneyHtml=tallHtml.slice(tallHtml.indexOf('id="report-money-flow"'),tallHtml.indexOf('id="report-shared-relations"'));
+  assert.equal((moneyHtml.match(/<img /g)||[]).length,1,'One full money image in HTML');
+  const tallPdf=await service.generateVerdictPdf({...input,graph:tallGraph});
+  const boxes=[...tallPdf.toString('latin1').matchAll(/\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/g)];
+  assert.equal(boxes.filter(box=>Number(box[2])>2000).length,1,'One large PDF overview page');
+  const tallWord=await JSZip.loadAsync(await service.generateVerdictDocx({...input,graph:tallGraph}));
+  const tallXml=await tallWord.file('word/document.xml')!.async('string');
+  const extents=[...tallXml.matchAll(/<wp:extent cx="(\d+)" cy="(\d+)"/g)];
+  assert.equal(extents.length,4,'Word keeps exactly one money image plus the three relation/main images');
+  assert(extents.every(e=>Number(e[2])<=650*12700),'The complete image fits on a Word page without cropping');
+  const media=await Promise.all(Object.values(tallWord.files).filter(f=>/^word\/media\/.*\.png$/.test(f.name))
+    .map(async f=>sharp(await f.async('nodebuffer')).metadata()));
+  assert(media.some(m=>m.width===1000&&m.height===6000),'Word retains the full PNG pixels for enlargement');
+  if(process.env.REPORT_TEST_OUTPUT){
+    const {writeFile}=await import('node:fs/promises');
+    await writeFile(`${process.env.REPORT_TEST_OUTPUT}-tall.html`,tallHtml);
+  }
   const complete={...input,graph:withAnalysis};
   const completeHtml=(await service.generateVerdictHtml(complete)).toString();
   for(const title of ['2.4 МӨНГӨН УРСГАЛ','2.5 ДУНДЫН ХАРИЛЦАА','2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА'])
@@ -170,6 +204,6 @@ async function main() {
   changeDuringRead=true;
   await assert.rejects(query(), /солигдсон/);
   assert.equal(generated,beforeStale,'Stale active case must not render a mixed report');
-  console.log('PASS: money image only, relation lists below their images, all relation rows beyond page 20/cap 60 in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
+  console.log('PASS: one complete money image/tall PDF page, Word page fit, relation lists below their images, all relation rows beyond page 20/cap 60 in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

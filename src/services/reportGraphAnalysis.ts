@@ -16,7 +16,7 @@ export interface ReportGraphAnalysis {
 // Canonical case totals continue to come from the authorized server snapshot.
 // No HTML, remote image URLs, executable content or durable storage is accepted.
 export async function prepareGraphAnalysis(encoded: string,
-  prepareImage: (base64: string, title: string) => Promise<ReportGraph>): Promise<ReportGraphAnalysis> {
+  prepareImage: (base64: string, title: string, tall?: boolean) => Promise<ReportGraph>): Promise<ReportGraphAnalysis> {
   const fail = (): never => {throw Error("Зураглалын шинжилгээний хавсралт буруу эсвэл хэт том байна.");};
   if (!encoded || encoded.length > Math.ceil(8 * 1024 * 1024 / 3) * 4
     || encoded.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(encoded)) fail();
@@ -54,10 +54,9 @@ export async function prepareGraphAnalysis(encoded: string,
     return value.imageBase64;
   };
   const images = list(raw.flowImages);
-  if (images.length > 500 || (flow.length > 0) !== (images.length > 0)) fail();
+  if (images.length !== (flow.length ? 1 : 0)) fail();
   const flowImages: ReportGraph[] = [];
-  // Decode sequentially to bound peak PNG memory for dense cases.
-  for (const image of images) flowImages.push(await prepareImage(textImage(image), "Мөнгөн урсгалын зураглал"));
+  for (const image of images) flowImages.push(await prepareImage(textImage(image), "Мөнгөн урсгалын нийт зураглал", true));
   const shared = await section(raw.shared, 4, "Дундын харилцааны зураглал");
   const red = await section(raw.red, 3, "Улаанаар тэмдэглэсэн этгээдийн харилцааны зураглал");
   return {version: 1, flow, flowImages, shared, red};

@@ -559,7 +559,7 @@ export class ReportService {
   // нь ЯГ ТЭР HTML-ээс хөрвөдөг. Тийм болохоор гурав нь хоорондоо загвараар
   // зөрөх боломжгүй — нэг газар засвал гурвуулаа өөрчлөгдөнө.
   async generateVerdictDocx(input: VerdictInput): Promise<Buffer> {
-    const html = (await this.generateVerdictHtml(input)).toString("utf8");
+    const html = (await this.generateVerdictHtml(input, true)).toString("utf8");
     const out = await htmlToDocx(html, null, {
       // A4, PDF-ийн 40pt захтай ижил (40pt = 800 twip) ⇒ агуулгын өргөн 515pt.
       pageSize: {width: 11906, height: 16838},
@@ -582,7 +582,7 @@ export class ReportService {
   // ашиглахгүй ганц файл: Word ч, PDF уншигч ч байхгүй компьютер дээр
   // нээгдэнэ. Word нь энэ HTML-ээс хөрвөдөг тул хэв маягийг ЗААВАЛ мөр дотор
   // (inline style) бичнэ — хөрвүүлэгч <style> блокийг уншдаггүй.
-  async generateVerdictHtml(input: VerdictInput): Promise<Buffer> {
+  async generateVerdictHtml(input: VerdictInput, forWord = false): Promise<Buffer> {
     const {analyses, transfers, conclusions} = input;
     const conclusionFor = (accountId: number | null): string =>
       conclusions.find((c) => c.bankAccountId === accountId)?.text?.trim()
@@ -703,9 +703,15 @@ export class ReportService {
           b.push(`<div id="${section.id}" style="page-break-before:always">`);
           b.push(htmlSectionBar(section.title));
           for (const image of section.images) {
+            // HTML keeps the full-size overview for scrolling/zooming. Word
+            // needs the single image to fit its page without cutting the tail.
+            const ratio = image.height / image.width;
+            const imageWidth = forWord && !section.headers.length
+              ? Math.min(HTML_CW, 620 / ratio) : HTML_CW;
+            const imageHeight = imageWidth * ratio;
             b.push(`<p style="page-break-inside:avoid;margin:8pt 0"><img alt="${htmlEscape(image.title)}" src="data:image/png;base64,${image.imageBase64}" `
-              + `width="${w}" height="${Math.round(w * image.height / image.width)}" `
-              + `style="display:block;width:${HTML_CW}pt;height:${HTML_CW * image.height / image.width}pt" /></p>`);
+              + `width="${Math.round(imageWidth * 96 / 72)}" height="${Math.round(imageHeight * 96 / 72)}" `
+              + `style="display:block;width:${imageWidth}pt;height:${imageHeight}pt" /></p>`);
           }
           if (section.headers.length) b.push(htmlDataTable(section.headers, section.widths, section.rows, true));
           if (!section.images.length && !section.headers.length) b.push(htmlNote("Харагдаж буй мөнгөн урсгал алга"));
@@ -842,13 +848,18 @@ ${separateTables(b).join("\n")}
         for (const section of graphAnalysisSections(graph.analysis)) {
           // Money is a Sankey image only. Relation tables follow their own
           // image on the same page, continuing naturally when they are long.
-          doc.addPage({size: "A4", layout: section.headers.length ? "portrait" : "landscape"}); doc.y = 48;
+          const overview = !section.headers.length ? section.images[0] : undefined;
+          if (overview) {
+            // One large PDF page preserves the complete overview and its
+            // aspect ratio instead of shrinking a tall chart onto A4.
+            const pageWidth = 841.89;
+            const pageHeight = Math.min(14_400, Math.max(595.28,
+              (pageWidth - ML * 2) * overview.height / overview.width + 144));
+            doc.addPage({size: [pageWidth, pageHeight], layout: "portrait"});
+          } else doc.addPage({size: "A4", layout: "portrait"});
+          doc.y = 48;
           sectionBar(doc, section.title);
-          for (const [index, image] of section.images.entries()) {
-            if (index) {
-              doc.addPage({size: "A4", layout: "landscape"}); doc.y = 48;
-              sectionBar(doc, section.title);
-            }
+          for (const image of section.images) {
             const width = doc.page.width - ML * 2;
             const height = Math.min(width * image.height / image.width,
               section.headers.length ? 280 : doc.page.height - doc.y - 80);
@@ -1287,6 +1298,8 @@ function verdictScreenCss(): string {
     body { background: #FFFFFF; }
     .sheet { width: auto; margin: 0; padding: 0; }
     table, img, li { break-inside: avoid; }
+    #report-money-flow img { max-width: 100%; max-height: 620pt;
+      width: auto !important; height: auto !important; }
   }
 `;
 }
