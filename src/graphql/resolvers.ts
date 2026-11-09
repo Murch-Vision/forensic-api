@@ -949,13 +949,13 @@ export const resolvers = {
   },
 
   Mutation: {
-    beginReportGraphUpload: async (_p: unknown, a: {caseFileId: number}, c: GraphQLContext) => {
+    beginReportGraphUpload: async (_p: unknown, a: {caseFileId: number; kind?: "IMAGE" | "ANALYSIS"}, c: GraphQLContext) => {
       const user = requireUser(c);
       await caseScopeById(c, a.caseFileId);
       if ((await c.session.getCurrentCase())?.id !== a.caseFileId) {
         throw new Error("Идэвхтэй хэрэг солигдсон байна. Дахин оролдоно уу.");
       }
-      return beginGraphUpload(user.id, a.caseFileId);
+      return beginGraphUpload(user.id, a.caseFileId, a.kind);
     },
     appendReportGraphUpload: (_p: unknown, a: {uploadId:string;offset:number;chunk:string}, c: GraphQLContext) =>
       appendGraphUpload(a.uploadId, requireUser(c).id, a.offset, a.chunk),

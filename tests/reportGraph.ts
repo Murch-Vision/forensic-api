@@ -3,6 +3,8 @@
 // all files stay in memory and no application database is changed.
 import assert from "node:assert/strict";
 import sharp from "sharp";
+import {randomBytes} from "node:crypto";
+import {REPORT_ANALYSIS_BYTES, REPORT_IMAGE_BYTES, base64Length} from "../src/services/reportGraphLimits";
 import JSZip from "jszip";
 import {buildSchema, parse, validate} from "graphql";
 import {prepareReportGraph} from "../src/services/reportGraph";
@@ -53,8 +55,13 @@ async function main() {
   assert.equal(images.length, 1, 'Word must embed pixels, not a remote link');
   assert.equal((await sharp(await images[0].async('nodebuffer')).metadata()).width, graph.width);
   assert((await docx.file('word/document.xml')!.async('string')).includes('2.3 ХОЛБООСЫН ЗУРАГЛАЛ'));
-  assert((await docx.file('word/document.xml')!.async('string')).includes('<wp:extent cx="6540500" cy="3270250"'),
-    'Word image fits the report content width and preserves aspect ratio');
+  const mainXml = await docx.file('word/document.xml')!.async('string');
+  assert(mainXml.includes('<wp:extent cx="9664700" cy="4832350"'),
+    'Word image fits the landscape body and preserves aspect ratio');
+  assert(mainXml.includes('w:w="16838" w:h="11906" w:orient="landscape"'));
+  assert(!mainXml.includes('FORENSIC_GRAPH_PAGE_'));
+  assert(/<w:sectPr>\s*<w:pgSz[^>]*w:orient="portrait"[\s\S]*?<\/w:sectPr><\/w:body>/.test(mainXml),
+    'The final portrait section properties are last in the Word body');
   const plain = {...input, graph: undefined};
   assert(!(await service.generateVerdictHtml(plain)).toString().includes('data:image/png'));
   assert(!(await service.generateVerdictPdf(plain)).toString('latin1').includes('/Subtype /Image'));
@@ -89,10 +96,32 @@ async function main() {
     {...analysisRaw,red:{rows:[['a','b','c']],image:{imageBase64:'not PNG'}}}]) {
     await assert.rejects(prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(bad)).toString('base64')}));
   }
+  const noisy = await sharp(randomBytes(1450*1450*3),{raw:{width:1450,height:1450,channels:3}}).png().toBuffer();
+  assert(noisy.length < REPORT_IMAGE_BYTES);
+  const bigRaw={...analysisRaw,flowImages:[{imageBase64:noisy.toString('base64')}],
+    shared:{...analysisRaw.shared,image:{imageBase64:noisy.toString('base64')}},
+    red:{...analysisRaw.red,image:{imageBase64:noisy.toString('base64')}}};
+  const bigBytes=Buffer.from(JSON.stringify(bigRaw)), bigEncoded=bigBytes.toString('base64');
+  assert(bigBytes.length>REPORT_IMAGE_BYTES && bigBytes.length<REPORT_ANALYSIS_BYTES);
+  const bigStage=beginGraphUpload(1,1,"ANALYSIS");
+  for(let offset=0;offset<bigEncoded.length;offset+=480000)
+    appendGraphUpload(bigStage,1,offset,bigEncoded.slice(offset,offset+480000));
+  const bigGraph=await prepareReportGraph({...graphInput,analysisBase64:takeGraphUpload(bigStage,1,1)});
+  assert.equal(bigGraph.analysis?.flowImages[0].width,1450,
+    'Multi-image JSON above the old single-PNG quota is transported and validated');
+  assert.throws(()=>takeGraphUpload(bigStage,1,1));
+  for(const [kind,limit] of [["IMAGE",REPORT_IMAGE_BYTES],["ANALYSIS",REPORT_ANALYSIS_BYTES]] as const) {
+    const id=beginGraphUpload(1,1,kind);
+    const cap=base64Length(limit);
+    let offset=0;
+    while(offset<cap){const chunk='A'.repeat(Math.min(512000,cap-offset));appendGraphUpload(id,1,offset,chunk);offset+=chunk.length;}
+    assert.throws(()=>appendGraphUpload(id,1,offset,'AAAA'),/том/, `${kind} remains bounded`);
+    releaseGraphUpload(id,1);
+  }
   for(const invalid of ['not base64','e30=','A'.repeat(12000000)])
     await assert.rejects(prepareReportGraph({...graphInput,analysisBase64:invalid}));
   // A complete chart can be much taller than the main graph. Its pixels are
-  // bounded independently, and it occupies ONE proportional PDF page.
+  // bounded independently, and the full image fits ONE landscape A4 page.
   const tallPng=await sharp({create:{width:1000,height:6000,channels:3,background:'#122538'}}).png().toBuffer();
   const tallRaw={...analysisRaw,flowImages:[{imageBase64:tallPng.toString('base64')}]};
   const tallGraph=await prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(tallRaw)).toString('base64')});
@@ -111,18 +140,26 @@ async function main() {
   assert.equal((moneyHtml.match(/<img /g)||[]).length,1,'One full money image in HTML');
   const tallPdf=await service.generateVerdictPdf({...input,graph:tallGraph});
   const boxes=[...tallPdf.toString('latin1').matchAll(/\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/g)];
-  assert.equal(boxes.filter(box=>Number(box[2])>2000).length,1,'One large PDF overview page');
+  assert.equal(boxes.filter(box=>Number(box[1])>Number(box[2])).length,4,'Each image has one landscape page');
+  assert(boxes.every(box=>Number(box[1])<=842&&Number(box[2])<=842),'Only ordinary A4 pages, no oversized money page');
   const tallWord=await JSZip.loadAsync(await service.generateVerdictDocx({...input,graph:tallGraph}));
   const tallXml=await tallWord.file('word/document.xml')!.async('string');
   const extents=[...tallXml.matchAll(/<wp:extent cx="(\d+)" cy="(\d+)"/g)];
   assert.equal(extents.length,4,'Word keeps exactly one money image plus the three relation/main images');
-  assert(extents.every(e=>Number(e[2])<=650*12700),'The complete image fits on a Word page without cropping');
+  assert(extents.every(e=>Number(e[2])<=415*12700),'The complete image fits on a Word page without cropping');
+  assert.equal((tallXml.match(/w:orient="landscape"/g)||[]).length,4);
+  assert.equal((tallXml.match(/w:type w:val="nextPage"/g)||[]).length,6,
+    'Adjacent landscape images have no empty portrait section between them');
+  assert(extents.every(e=>Number(e[1])<=761*12700));
+  assert(tallHtml.includes('@page graph { size: A4 landscape;'));
+  assert.equal((tallHtml.match(/class="report-graph-page"/g)||[]).length,4);
   const media=await Promise.all(Object.values(tallWord.files).filter(f=>/^word\/media\/.*\.png$/.test(f.name))
     .map(async f=>sharp(await f.async('nodebuffer')).metadata()));
   assert(media.some(m=>m.width===1000&&m.height===6000),'Word retains the full PNG pixels for enlargement');
   if(process.env.REPORT_TEST_OUTPUT){
     const {writeFile}=await import('node:fs/promises');
     await writeFile(`${process.env.REPORT_TEST_OUTPUT}-tall.html`,tallHtml);
+    await writeFile(`${process.env.REPORT_TEST_OUTPUT}-tall.docx`,await service.generateVerdictDocx({...input,graph:tallGraph}));
   }
   const mutualRelations=Array.from({length:37},(_,i)=>({key:`canonical-${i}`,name:`CANONICAL_${i}_END`,
     account:null,nationalId:null,txnCount:2,creditCount:1,debitCount:1,creditTotal:i*1000,
@@ -139,9 +176,19 @@ async function main() {
   assert(completeHtml.indexOf('data:image/png',sharedStart)<completeHtml.indexOf('ДУНДЫН-66',sharedStart));
   assert(completeHtml.indexOf('data:image/png',redStart)<completeHtml.indexOf('ХЭРЭГТЭН · Тест',redStart));
   const originalText=PDFDocument.prototype.text, originalImage=PDFDocument.prototype.image, printed:string[]=[];
+  const imagePages = new Set<unknown>();
   let completePdf:Buffer;
   try {
-    PDFDocument.prototype.image=function(...args:any[]){printed.push("IMAGE");return (originalImage as any).apply(this,args);} as any;
+    PDFDocument.prototype.image=function(...args:any[]){
+      printed.push("IMAGE");
+      assert(!imagePages.has(this.page),'Each graph occupies its own page');
+      imagePages.add(this.page);
+      assert(this.page.width>this.page.height,'Every graph page is landscape');
+      const [,x,y,options]=args;
+      assert(x>=40 && y>=40 && x+options.fit[0]<=this.page.width-40+0.01
+        && y+options.fit[1]<=this.page.height-40+0.01,'The complete image fit box stays inside page margins');
+      return (originalImage as any).apply(this,args);
+    } as any;
     PDFDocument.prototype.text=function(value:any,...args:any[]){printed.push(String(value).replace(/\n/g,''));
       return (originalText as any).call(this,value,...args); } as any;
     completePdf=await service.generateVerdictPdf(complete);
@@ -229,6 +276,6 @@ async function main() {
   changeDuringRead=true;
   await assert.rejects(query(), /солигдсон/);
   assert.equal(generated,beforeStale,'Stale active case must not render a mixed report');
-  console.log('PASS: one complete money image/tall PDF page, Word page fit, relation lists below their images, shared top20 by money with full conclusions in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
+  console.log('PASS: one complete money image, one A4 landscape page per image in PDF/Word/HTML, relation lists below their images, shared top20 by money with full conclusions in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

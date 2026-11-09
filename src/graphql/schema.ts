@@ -1384,8 +1384,10 @@ export const typeDefs = /* GraphQL */ `
     client: String
   }
 
+  enum ReportGraphUploadKind { IMAGE ANALYSIS }
+
   type Mutation {
-    beginReportGraphUpload(caseFileId: Int!): String!
+    beginReportGraphUpload(caseFileId: Int!, kind: ReportGraphUploadKind = IMAGE): String!
     appendReportGraphUpload(uploadId: String!, offset: Int!, chunk: String!): Int!
     releaseReportGraphUpload(uploadId: String!): Boolean!
     "Pull the latest code from git; restarts the server when new commits arrive (ADMIN only)."

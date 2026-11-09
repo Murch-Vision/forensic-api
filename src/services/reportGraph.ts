@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import {REPORT_IMAGE_BYTES} from "./reportGraphLimits";
 import {prepareGraphAnalysis, type ReportGraphAnalysis} from "./reportGraphAnalysis";
 
 export interface ReportGraphInput {
@@ -27,7 +28,7 @@ export async function prepareReportGraph(input: ReportGraphInput): Promise<Repor
 }
 
 async function prepareReportImage(input: ReportGraphInput, tall = false): Promise<ReportGraph> {
-  const maxBytes = 8 * 1024 * 1024;
+  const maxBytes = REPORT_IMAGE_BYTES;
   if (!input.imageBase64 || input.imageBase64.length > Math.ceil(maxBytes / 3) * 4
     || input.imageBase64.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(input.imageBase64)) {
     throw new Error("Зураглалын PNG зураг буруу эсвэл хэт том байна.");

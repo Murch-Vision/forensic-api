@@ -575,7 +575,7 @@ export class ReportService {
       ? out
       : Buffer.from(out instanceof ArrayBuffer
         ? out : await (out as Blob).arrayBuffer());
-    return fixDocxTableGrids(buf);
+    return fixDocxGraphPages(await fixDocxTableGrids(buf), input.graph);
   }
 
   // ТАЙЛАН-ы HTML хувилбар — PDF-ийн хуулбар. Гадаад фонт, скрипт, файл
@@ -687,34 +687,19 @@ export class ReportService {
 
     if (input.graph) {
       const graph = input.graph;
-      b.push(`<div style="page-break-before:always;page-break-inside:avoid">`);
-      b.push(htmlSectionBar("2.3 ХОЛБООСЫН ЗУРАГЛАЛ"));
-      b.push(htmlNote(graph.title));
-      const w = Math.round(HTML_CW * 96 / 72);
-      const h = Math.round(w * graph.height / graph.width);
-      b.push(`<p style="margin:8pt 0"><img alt="${htmlEscape(graph.title)}" `
-        + `src="data:image/png;base64,${graph.imageBase64}" width="${w}" height="${h}" `
-        + `style="display:block;width:${HTML_CW}pt;height:${HTML_CW * graph.height / graph.width}pt" /></p>`);
-      b.push(htmlNote(GRAPH_LEGEND));
-      b.push(`</div>`);
+      b.push(htmlGraphPage(graph, "2.3 ХОЛБООСЫН ЗУРАГЛАЛ", forWord, true));
       if (graph.analysis) {
-        b.push(htmlNote("Сонгосон зураглалын шүүлтүүртэй үеийн бүх мөр, зураглал."));
         for (const section of graphAnalysisSections(graph.analysis)) {
-          b.push(`<div id="${section.id}" style="page-break-before:always">`);
-          b.push(htmlSectionBar(section.title));
-          for (const image of section.images) {
-            // HTML keeps the full-size overview for scrolling/zooming. Word
-            // needs the single image to fit its page without cutting the tail.
-            const ratio = image.height / image.width;
-            const imageWidth = forWord && !section.headers.length
-              ? Math.min(HTML_CW, 620 / ratio) : HTML_CW;
-            const imageHeight = imageWidth * ratio;
-            b.push(`<p style="page-break-inside:avoid;margin:8pt 0"><img alt="${htmlEscape(image.title)}" src="data:image/png;base64,${image.imageBase64}" `
-              + `width="${Math.round(imageWidth * 96 / 72)}" height="${Math.round(imageHeight * 96 / 72)}" `
-              + `style="display:block;width:${imageWidth}pt;height:${imageHeight}pt" /></p>`);
+          b.push(`<div id="${section.id}">`);
+          for (const image of section.images) b.push(htmlGraphPage(image, section.title, forWord));
+          if (section.headers.length) {
+            b.push(`<div style="page-break-before:always">${htmlSectionBar(section.title)}`);
+            b.push(htmlDataTable(section.headers, section.widths, section.rows, true));
+            b.push(`</div>`);
           }
-          if (section.headers.length) b.push(htmlDataTable(section.headers, section.widths, section.rows, true));
-          if (!section.images.length && !section.headers.length) b.push(htmlNote("Харагдаж буй мөнгөн урсгал алга"));
+          if (!section.images.length && !section.headers.length) {
+            b.push(htmlSectionBar(section.title), htmlNote("Харагдаж буй мөнгөн урсгал алга"));
+          }
           b.push(`</div>`);
         }
       }
@@ -834,48 +819,34 @@ ${separateTables(b).join("\n")}
       input.transfers.map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
 
     if (input.graph) {
-      doc.addPage({size: "A4", layout: "landscape"}); doc.y = 48;
-      const graph = input.graph;
-      const width = doc.page.width - ML * 2;
-      doc.fontSize(14).fillColor(DARK_BLUE).text("2.3 ХОЛБООСЫН ЗУРАГЛАЛ", ML, doc.y, {width});
-      doc.fontSize(9).fillColor(MUTED).text(graph.title, ML, doc.y + 7, {width});
-      const top = doc.y + 12;
-      doc.image(Buffer.from(graph.imageBase64, "base64"), ML, top,
-        {fit: [width, doc.page.height - top - 90], align: "center", valign: "center"});
-      doc.fontSize(8).fillColor(MUTED).text(GRAPH_LEGEND,
-        ML, doc.page.height - 65, {width});
-      if (graph.analysis) {
-        for (const section of graphAnalysisSections(graph.analysis)) {
-          // Money is a Sankey image only. Relation tables follow their own
-          // image on the same page, continuing naturally when they are long.
-          const overview = !section.headers.length ? section.images[0] : undefined;
-          if (overview) {
-            // One large PDF page preserves the complete overview and its
-            // aspect ratio instead of shrinking a tall chart onto A4.
-            const pageWidth = 841.89;
-            const pageHeight = Math.min(14_400, Math.max(595.28,
-              (pageWidth - ML * 2) * overview.height / overview.width + 144));
-            doc.addPage({size: [pageWidth, pageHeight], layout: "portrait"});
-          } else doc.addPage({size: "A4", layout: "portrait"});
-          doc.y = 48;
-          sectionBar(doc, section.title);
-          for (const image of section.images) {
-            const width = doc.page.width - ML * 2;
-            const height = Math.min(width * image.height / image.width,
-              section.headers.length ? 280 : doc.page.height - doc.y - 80);
-            doc.image(Buffer.from(image.imageBase64, "base64"), ML, doc.y + 8,
-              {fit: [width, height], align: "center", valign: "center"});
-            doc.y += height + 24;
-          }
-          if (section.headers.length) pdfAnalysisRows(doc, section.headers, section.widths, section.rows);
-          if (!section.images.length && !section.headers.length) {
-            doc.fontSize(9).fillColor(MUTED).text("Харагдаж буй мөнгөн урсгал алга", ML, doc.y);
+      const graphPage = (image: ReportGraph, title: string, main = false) => {
+        doc.addPage({size: "A4", layout: "landscape", margin: ML}); doc.y = 48;
+        const width = doc.page.width - ML * 2;
+        doc.fontSize(14).fillColor(DARK_BLUE).text(title, ML, doc.y, {width});
+        if (main) doc.fontSize(9).fillColor(MUTED).text(image.title, ML, doc.y + 7, {width});
+        const top = doc.y + 12;
+        doc.image(Buffer.from(image.imageBase64, "base64"), ML, top,
+          {fit: [width, doc.page.height - top - 90], align: "center", valign: "center"});
+        if (main) doc.fontSize(8).fillColor(MUTED).text(GRAPH_LEGEND,
+          ML, doc.page.height - 65, {width});
+      };
+      graphPage(input.graph, "2.3 ХОЛБООСЫН ЗУРАГЛАЛ", true);
+      if (input.graph.analysis) {
+        for (const section of graphAnalysisSections(input.graph.analysis)) {
+          for (const image of section.images) graphPage(image, section.title);
+          // Tables have their own portrait pages; they cannot push part of an
+          // image to a second page or shrink the space reserved for the graph.
+          if (section.headers.length || !section.images.length) {
+            doc.addPage({size: "A4", layout: "portrait", margin: ML}); doc.y = 48;
+            sectionBar(doc, section.title);
+            if (section.headers.length) pdfAnalysisRows(doc, section.headers, section.widths, section.rows);
+            else doc.fontSize(9).fillColor(MUTED).text("Харагдаж буй мөнгөн урсгал алга", ML, doc.y);
           }
         }
       }
     }
 
-    doc.addPage({size: "A4", layout: "portrait"}); doc.y = 48;
+    doc.addPage({size: "A4", layout: "portrait", margin: ML}); doc.y = 48;
     const conclusionPage = doc.bufferedPageRange().count;
     majorSectionBar(doc, "3. ДҮГНЭЛТ");
     const conclusionFor = (id: number | null) => input.conclusions
@@ -1299,14 +1270,79 @@ function verdictScreenCss(): string {
     text-overflow: ellipsis; }
   ol { margin-top: 6pt; }
   @page { size: A4; margin: 40pt; }
+  .report-graph-page img { max-width: 100%; height: auto !important; }
+  @page graph { size: A4 landscape; margin: 40pt; }
   @media print {
     body { background: #FFFFFF; }
     .sheet { width: auto; margin: 0; padding: 0; }
     table, img, li { break-inside: avoid; }
-    #report-money-flow img { max-width: 100%; max-height: 620pt;
-      width: auto !important; height: auto !important; }
+    .report-graph-page { page: graph; break-before: page; break-after: page; break-inside: avoid; }
+    .report-graph-page img { max-width: 761pt; max-height: 415pt; object-fit: contain; }
+    .report-graph-page p { break-inside: avoid; }
   }
 `;
+}
+
+// Images use the same bounded landscape body in HTML print and Word. The
+// original PNG stays embedded so it can still be enlarged on screen.
+const GRAPH_PAGE_WIDTH = 761;
+const GRAPH_PAGE_HEIGHT = 415;
+function graphImageSize(image: ReportGraph) {
+  const scale = Math.min(GRAPH_PAGE_WIDTH / image.width, GRAPH_PAGE_HEIGHT / image.height);
+  return {width: image.width * scale, height: image.height * scale};
+}
+function htmlGraphPage(image: ReportGraph, heading: string, forWord: boolean, main = false): string {
+  const {width, height} = graphImageSize(image);
+  return (forWord ? "<p>FORENSIC_GRAPH_PAGE_BEGIN</p>" : "")
+    + `<div class="report-graph-page">${htmlSectionBar(heading)}`
+    + (main ? htmlNote(image.title) : "")
+    + `<p style="margin:8pt 0;text-align:center;line-height:1"><img alt="${htmlEscape(image.title)}" `
+    + `src="data:image/png;base64,${image.imageBase64}" `
+    + `width="${Math.floor(width * 96 / 72)}" height="${Math.floor(height * 96 / 72)}" `
+    + `style="display:block;width:${width}pt;height:${height}pt;margin:0 auto" /></p>`
+    + (main ? htmlNote(GRAPH_LEGEND) : "") + `</div>`
+    + (forWord ? "<p>FORENSIC_GRAPH_PAGE_END</p>" : "");
+}
+
+// html-to-docx has one document-wide orientation. Real Word section breaks
+// select landscape ONLY for each image page and restore portrait for tables.
+async function fixDocxGraphPages(buf: Buffer, graph?: ReportGraph): Promise<Buffer> {
+  if (!graph) return buf;
+  const images = [graph, ...(graph.analysis ? graphAnalysisSections(graph.analysis).flatMap(s => s.images) : [])];
+  const zip = await JSZip.loadAsync(buf);
+  const entry = zip.file("word/document.xml");
+  if (!entry) return buf;
+  const section = (landscape: boolean) => `<w:p><w:pPr><w:spacing w:before="0" w:after="0"/>`
+    + `<w:sectPr><w:type w:val="nextPage"/><w:pgSz w:w="${landscape ? 16838 : 11906}" `
+    + `w:h="${landscape ? 11906 : 16838}" w:orient="${landscape ? "landscape" : "portrait"}"/>`
+    + `<w:pgMar w:top="800" w:right="800" w:bottom="800" w:left="800" w:header="400" w:footer="400" w:gutter="0"/>`
+    + `</w:sectPr></w:pPr></w:p>`;
+  let index = 0;
+  // The converter emits the document's default sectPr first in the body.
+  // OOXML requires it last, where it defines the final portrait section.
+  let source = await entry.async("string");
+  const defaultSection = /<w:body>\s*(<w:sectPr>[\s\S]*?<\/w:sectPr>)/.exec(source)?.[1];
+  if (defaultSection) source = source.replace(defaultSection, "").replace("</w:body>", `${defaultSection}</w:body>`);
+  const marked = source.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, paragraph => {
+    if (/<w:t(?:\s[^>]*)?>FORENSIC_GRAPH_PAGE_BEGIN<\/w:t>/.test(paragraph)) return "FORENSIC_GRAPH_PAGE_BEGIN";
+    if (/<w:t(?:\s[^>]*)?>FORENSIC_GRAPH_PAGE_END<\/w:t>/.test(paragraph)) return "FORENSIC_GRAPH_PAGE_END";
+    if (!paragraph.includes("<w:drawing>")) return paragraph;
+    const image = images[index++];
+    if (!image) throw Error("Тайлангийн зургийн хуудас буруу байна.");
+    const {width, height} = graphImageSize(image);
+    const cx = Math.floor(width * 12700), cy = Math.floor(height * 12700);
+    return paragraph.replace(/<wp:extent[^>]*\/>/g, `<wp:extent cx="${cx}" cy="${cy}"/>`)
+      .replace(/<a:ext cx="\d+" cy="\d+"\/>/g, `<a:ext cx="${cx}" cy="${cy}"/>`)
+      .replace(/<w:jc[^>]*\/>/g, '<w:jc w:val="center"/>');
+  });
+  // Adjacent image pages need a landscape-to-landscape break, without an
+  // intervening empty portrait section (Word would render a blank page).
+  const xml = marked.replace(/FORENSIC_GRAPH_PAGE_END\s*FORENSIC_GRAPH_PAGE_BEGIN/g, "FORENSIC_GRAPH_PAGE_END")
+    .replace(/FORENSIC_GRAPH_PAGE_BEGIN/g, section(false))
+    .replace(/FORENSIC_GRAPH_PAGE_END/g, section(true));
+  if (index !== images.length || xml.includes("FORENSIC_GRAPH_PAGE_")) throw Error("Тайлангийн зургийн хуудас буруу байна.");
+  zip.file("word/document.xml", xml);
+  return zip.generateAsync({type: "nodebuffer", compression: "DEFLATE"});
 }
 
 // html-to-docx нь хүснэгтийн БҮХ баганыг ижил өргөнтэй бичээд, нүд бүрийн
@@ -1565,7 +1601,7 @@ function pdfAnalysisRows(doc: PDFKit.PDFDocument, heads: string[], widths: numbe
     x += widths[i]; return col;
   });
   const head = () => {drawTableHead(doc, cols); doc.fontSize(8.5);};
-  const next = () => {doc.addPage({size: "A4", layout: "portrait"}); doc.y = 48; head();};
+  const next = () => {doc.addPage({size: "A4", layout: "portrait", margin: ML}); doc.y = 48; head();};
   head();
   if (!rows.length) {doc.fillColor(MUTED).text("Мэдээлэл алга", ML, doc.y); return;}
   rows.forEach((row, index) => {

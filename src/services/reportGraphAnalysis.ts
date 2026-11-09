@@ -1,3 +1,4 @@
+import {REPORT_ANALYSIS_BYTES, base64Length} from "./reportGraphLimits";
 import type {ReportGraph} from "./reportGraph";
 
 export interface ReportFlow {
@@ -18,10 +19,10 @@ export interface ReportGraphAnalysis {
 export async function prepareGraphAnalysis(encoded: string,
   prepareImage: (base64: string, title: string, tall?: boolean) => Promise<ReportGraph>): Promise<ReportGraphAnalysis> {
   const fail = (): never => {throw Error("Зураглалын шинжилгээний хавсралт буруу эсвэл хэт том байна.");};
-  if (!encoded || encoded.length > Math.ceil(8 * 1024 * 1024 / 3) * 4
+  if (!encoded || encoded.length > base64Length(REPORT_ANALYSIS_BYTES)
     || encoded.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(encoded)) fail();
   const bytes = Buffer.from(encoded, "base64");
-  if (bytes.length > 8 * 1024 * 1024 || bytes.toString("base64") !== encoded) fail();
+  if (bytes.length > REPORT_ANALYSIS_BYTES || bytes.toString("base64") !== encoded) fail();
   let raw: any;
   try {raw = JSON.parse(bytes.toString("utf8"));} catch {fail();}
   const text = (v: unknown): string => {
