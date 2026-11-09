@@ -1,0 +1,109 @@
+// npx tsx tests/reportGraph.ts
+// Real PNG validation and PDF/Word/HTML generation. Resolver service doubles;
+// all files stay in memory and no application database is changed.
+import assert from "node:assert/strict";
+import sharp from "sharp";
+import JSZip from "jszip";
+import {buildSchema, parse, validate} from "graphql";
+import {prepareReportGraph} from "../src/services/reportGraph";
+import {ReportService, type VerdictInput} from "../src/services/reportService";
+import {resolvers, type GraphQLContext} from "../src/graphql/resolvers";
+import {typeDefs} from "../src/graphql/schema";
+import {beginGraphUpload, appendGraphUpload, takeGraphUpload, releaseGraphUpload}
+  from "../src/services/reportGraphUpload";
+
+async function main() {
+  const png = await sharp(Buffer.from('<svg width="160" height="80"><rect width="160" height="80" fill="#0b0e1a"/><path d="M20 40H140" stroke="#00e676"/><circle cx="20" cy="40" r="9" fill="red"/><circle cx="140" cy="40" r="9" fill="green"/></svg>')).png().toBuffer();
+  const graphInput = {caseFileId: 1, title: 'Холбоос <script> & "тест"', imageBase64: png.toString('base64')};
+  const graph = await prepareReportGraph(graphInput);
+  const staged = beginGraphUpload(1,1);
+  appendGraphUpload(staged,1,0,'AAAA');
+  assert.throws(()=>appendGraphUpload(staged,2,4,'AAAA'));
+  assert.throws(()=>appendGraphUpload(staged,1,0,'AAAA'), /буруу/);
+  assert.throws(()=>appendGraphUpload(staged,1,4,'A'.repeat(512001)), /том/);
+  assert.throws(()=>takeGraphUpload(staged,1,2), /өөр хэрэг/);
+  assert.throws(()=>releaseGraphUpload(staged,2), /эрхгүй/);
+  assert.equal(takeGraphUpload(staged,1,1),'AAAA');
+  assert.throws(()=>takeGraphUpload(staged,1,1));
+  const abandoned=beginGraphUpload(1,1), clock=Date.now;
+  try {Date.now=()=>clock()+121000;assert.throws(()=>takeGraphUpload(abandoned,1,1));}
+  finally {Date.now=clock;}
+  assert.equal(graph.width, 160); assert.equal(graph.height, 80);
+  for (const imageBase64 of ['', 'data:image/png;base64,abc', 'not PNG!', png.subarray(0, 40).toString('base64'), 'A'.repeat(12_000_000)]) {
+    await assert.rejects(prepareReportGraph({...graphInput, imageBase64}));
+  }
+  const large = await sharp({create:{width: 4097,height: 1,channels: 3,background: 'white'}}).png().toBuffer();
+  await assert.rejects(prepareReportGraph({...graphInput, imageBase64: large.toString('base64')}), /PNG/);
+  const input: VerdictInput = {caseId: 'QA', caseName: 'Тест', period: {from: null, to: null},
+    analyses: [], mutualRelations: [], transfers: [], conclusions: [], graph};
+  const service = new ReportService({} as any);
+  const html = (await service.generateVerdictHtml(input)).toString('utf8');
+  assert(html.includes('2.3 ХОЛБООСЫН ЗУРАГЛАЛ'));
+  assert(html.includes(`data:image/png;base64,${graph.imageBase64}`));
+  assert(!html.includes('<script>')); assert(html.includes('&lt;script&gt;'));
+  const pdf = (await service.generateVerdictPdf(input)).toString('latin1');
+  assert(pdf.startsWith('%PDF-'));
+  assert.equal((pdf.match(/\/Subtype \/Image/g) ?? []).length, 1);
+  const pages = [...pdf.matchAll(/\/MediaBox \[([^\]]+)\]/g)].map(m => m[1].split(' ').map(Number));
+  assert(pages.some(p => p[2] > p[3]), 'Graph must have a landscape page');
+  assert(pages.at(-1)![2] < pages.at(-1)![3], 'Conclusions must return to portrait');
+  const docx = await JSZip.loadAsync(await service.generateVerdictDocx(input));
+  const images = Object.values(docx.files).filter(f => /^word\/media\//.test(f.name) && !f.dir);
+  assert.equal(images.length, 1, 'Word must embed pixels, not a remote link');
+  assert.equal((await sharp(await images[0].async('nodebuffer')).metadata()).width, graph.width);
+  assert((await docx.file('word/document.xml')!.async('string')).includes('2.3 ХОЛБООСЫН ЗУРАГЛАЛ'));
+  assert((await docx.file('word/document.xml')!.async('string')).includes('<wp:extent cx="6540500" cy="3270250"'),
+    'Word image fits the report content width and preserves aspect ratio');
+  const plain = {...input, graph: undefined};
+  assert(!(await service.generateVerdictHtml(plain)).toString().includes('data:image/png'));
+  assert(!(await service.generateVerdictPdf(plain)).toString('latin1').includes('/Subtype /Image'));
+  const schema = buildSchema(typeDefs);
+  for (const name of ['Pdf','Docx','Html']) assert.deepEqual(validate(schema, parse(`query($graph:ReportGraphInput){reportVerdict${name}(graph:$graph){filename base64}}`)), []);
+
+  const cases = [{id: 1, caseId: 'A', caseName: 'A'}, {id: 2, caseId: 'B', caseName: 'B'}];
+  const accounts = [10,20,30].map((id, i) => ({id, suspectId: 1, accountNumber: String(id), bankName: null, accountHolderName: null}));
+  const transactions = [[1,10],[2,20],[3,30],[4,10]].map(([id,bankAccountId]) => ({id,bankAccountId,
+    timestamp: '2026-11-01T10:00:00Z', amount: 100, type: 'credit', description: null,
+    counterpartyAccount: '20', counterpartyName: null, counterpartyNationalId: null}));
+  let active = 1, changeDuringRead = false, generated = 0;
+  const received: VerdictInput[] = [];
+  const generate = async (value: VerdictInput) => {received.push(value); generated++; return Buffer.from('report');};
+  const ctx = {
+    user: {id: 1, role: 'DETECTIVE'}, auth: {accessibleCaseIds: async () => new Set([1])},
+    session: {getCurrentCase: async () => cases.find(c=>c.id === active)},
+    suspects: {getAllSuspects: async () => [{id:1, caseId:'A', nationalId:null}]},
+    evidence: {getForCase: async () => []}, conclusions: {getForCase: async () => []},
+    data: {getAllCaseFiles: async () => cases, getAllBankAccounts: async () => accounts,
+      getCaseBankAccounts: async () => [{caseFileId:1,bankAccountId:10,isStatement:true,removed:false},
+        {caseFileId:1,bankAccountId:20,isStatement:false,removed:false}],
+      getAllTransactions: async () => {if (changeDuringRead) active = 2; return transactions;}},
+    noise: {getForCase: async () => ({minAmount:0,ignoredPairs:[],ignoredTxns:[4],descRules:[]})},
+    reports: {generateVerdictPdf: generate, generateVerdictDocx: generate, generateVerdictHtml: generate},
+    audit: {record: async () => undefined},
+  } as unknown as GraphQLContext;
+  const query = (g: typeof graphInput | null = graphInput, c = ctx) => resolvers.Query.reportVerdictPdf(null, {graph:g}, c);
+  await assert.rejects(query(graphInput,{...ctx,user:null}), /Нэвтрэх/);
+  await assert.rejects(query({...graphInput,caseFileId:2}), /өөр хэрэг/);
+  await assert.rejects(query(graphInput,{...ctx,auth:{accessibleCaseIds:async()=>new Set([2])}} as any), /эрхгүй/);
+  assert.equal(generated,0);
+  await query();
+  assert.equal(received[0].graph?.width,160);
+  assert.deepEqual(received[0].analyses.map(a=>[a.accountId,a.txnCount]), [[10,1]],
+    'Counterparty-only and unselected owner statements plus removed transactions stay out');
+  await resolvers.Query.reportVerdictDocx(null,{graph:graphInput},ctx);
+  await resolvers.Query.reportVerdictHtml(null,{graph:graphInput},ctx);
+  assert(received.every(r=>r.graph?.imageBase64===graph.imageBase64));
+  await query(null); assert.equal(received.at(-1)?.graph,undefined);
+  const uploadId=await resolvers.Mutation.beginReportGraphUpload(null,{caseFileId:1},ctx);
+  const text=graphInput.imageBase64;
+  assert.equal(await resolvers.Mutation.appendReportGraphUpload(null,{uploadId,offset:0,chunk:text},ctx),text.length);
+  await query({...graphInput,imageBase64:'',imageUploadId:uploadId} as any);
+  assert.equal(received.at(-1)?.graph?.imageBase64,graph.imageBase64);
+  assert.throws(()=>takeGraphUpload(uploadId,1,1),'Consumed upload is immediately reclaimed');
+  const beforeStale=generated;
+  changeDuringRead=true;
+  await assert.rejects(query(), /солигдсон/);
+  assert.equal(generated,beforeStale,'Stale active case must not render a mixed report');
+  console.log('PASS: validated bounded PNG, embedded HTML/Word pixels, landscape PDF/portrait conclusions, legacy no-image reports, authorization, exact case/noise scope and stale-case rejection');
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

@@ -18,6 +18,9 @@ import {
 } from "../services/import/uploadBuffer";
 import type {ReportService, VerdictInput}
   from "../services/reportService";
+import {prepareReportGraph, type ReportGraphInput} from "../services/reportGraph";
+import {beginGraphUpload, appendGraphUpload, takeGraphUpload, releaseGraphUpload}
+  from "../services/reportGraphUpload";
 import type {AuditLogService} from "../services/auditLogService";
 import type {EvidenceService} from "../services/evidenceService";
 import type {PeopleService} from "../services/peopleService";
@@ -361,16 +364,38 @@ function accountsForSuspect(c: GraphQLContext): Promise<BankAccount[]> {
 // Word, HTML). One builder is the only way the three files can never disagree
 // about a figure — or disagree with the analysis screen, which reads the same
 // scoped helpers.
-async function verdictReportInput(c: GraphQLContext): Promise<{
+async function verdictReportInput(c: GraphQLContext, graph?: ReportGraphInput | null): Promise<{
   active: CaseFile;
   input: VerdictInput;
 }> {
+  requireUser(c);
   const active = await c.session.getCurrentCase();
   if (!active) throw new Error("Хэрэг сонгоогүй байна");
-  const [txns, accounts, subjects, conclusions] = await Promise.all([
-    scopedTransactions(c, false), scopedAccounts(c),
-    caseSubjectNationalIds(c), c.conclusions.getForCase(active.id),
+  if (graph && graph.caseFileId !== active.id) {
+    throw new Error("Зураглал өөр хэрэгт хамаарч байна. Зургаа дахин сонгоно уу.");
+  }
+  // Pin the report's data and attachment to one authorized case even if a
+  // second tab changes the session's active case during this request.
+  const scope = await caseScopeById(c, active.id);
+  if (graph?.imageUploadId) {
+    if (graph.imageBase64) throw new Error("Зураглалын нэг эх сурвалж сонгоно уу.");
+    graph = {...graph, imageBase64: takeGraphUpload(graph.imageUploadId, c.user!.id, active.id)};
+  }
+  const [allTxns, allAccounts, allSuspects, conclusions, ignored, reportGraph] = await Promise.all([
+    c.data.getAllTransactions(), c.data.getAllBankAccounts(),
+    c.suspects.getAllSuspects(), c.conclusions.getForCase(active.id),
+    ignoredTxnIds(c, active.id), graph ? prepareReportGraph(graph) : undefined,
   ]);
+  const accounts = allAccounts.filter(a => scope.accountIds.has(a.id));
+  const owners = accountNameLookup(accounts);
+  const txns = allTxns.filter(t => !ignored.has(t.id)
+    && (scope.statementAccountIds.has(t.bankAccountId) || scope.txnIds.has(t.id)))
+    .map(t => ({...t, counterpartyName: owners(t.counterpartyAccount) ?? t.counterpartyName}));
+  const subjects = allSuspects.filter(s => scope.suspectIds.has(s.id))
+    .flatMap(s => s.nationalId ? [s.nationalId] : []);
+  if ((await c.session.getCurrentCase())?.id !== active.id) {
+    throw new Error("Идэвхтэй хэрэг солигдсон байна. Дахин оролдоно уу.");
+  }
   const aml = AmlThresholds.current;
   // No top-N cut: the frequent-counterparty table prints every party rated
   // Их давтамж, so a cap would silently drop rows from one edition only.
@@ -394,6 +419,7 @@ async function verdictReportInput(c: GraphQLContext): Promise<{
       mutualRelations: rel.relations.filter((r) => r.mutual),
       transfers: directTransfers(accounts, txns),
       conclusions,
+      graph: reportGraph,
     },
   };
 }
@@ -708,8 +734,8 @@ export const resolvers = {
     },
     // The verdict document. Built from the SAME aggregates the analysis tab
     // shows, so the document cannot state a figure the screen disagrees with.
-    reportVerdictDocx: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const {active, input} = await verdictReportInput(c);
+    reportVerdictDocx: async (_p: unknown, a: {graph?: ReportGraphInput | null}, c: GraphQLContext) => {
+      const {active, input} = await verdictReportInput(c, a.graph);
       const buf = await c.reports.generateVerdictDocx(input);
       const filename = `Tailan-${active.caseId}.docx`
         .replace(/[^A-Za-z0-9._-]/g, "-");
@@ -721,8 +747,8 @@ export const resolvers = {
         base64: buf.toString("base64"),
       };
     },
-    reportVerdictPdf: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const {active, input} = await verdictReportInput(c);
+    reportVerdictPdf: async (_p: unknown, a: {graph?: ReportGraphInput | null}, c: GraphQLContext) => {
+      const {active, input} = await verdictReportInput(c, a.graph);
       const buf = await c.reports.generateVerdictPdf(input);
       const filename = `Tailan-${active.caseId}.pdf`
         .replace(/[^A-Za-z0-9._-]/g, "-");
@@ -733,8 +759,8 @@ export const resolvers = {
         base64: buf.toString("base64"),
       };
     },
-    reportVerdictHtml: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
-      const {active, input} = await verdictReportInput(c);
+    reportVerdictHtml: async (_p: unknown, a: {graph?: ReportGraphInput | null}, c: GraphQLContext) => {
+      const {active, input} = await verdictReportInput(c, a.graph);
       const buf = await c.reports.generateVerdictHtml(input);
       const filename = `Tailan-${active.caseId}.html`
         .replace(/[^A-Za-z0-9._-]/g, "-");
@@ -918,6 +944,18 @@ export const resolvers = {
   },
 
   Mutation: {
+    beginReportGraphUpload: async (_p: unknown, a: {caseFileId: number}, c: GraphQLContext) => {
+      const user = requireUser(c);
+      await caseScopeById(c, a.caseFileId);
+      if ((await c.session.getCurrentCase())?.id !== a.caseFileId) {
+        throw new Error("Идэвхтэй хэрэг солигдсон байна. Дахин оролдоно уу.");
+      }
+      return beginGraphUpload(user.id, a.caseFileId);
+    },
+    appendReportGraphUpload: (_p: unknown, a: {uploadId:string;offset:number;chunk:string}, c: GraphQLContext) =>
+      appendGraphUpload(a.uploadId, requireUser(c).id, a.offset, a.chunk),
+    releaseReportGraphUpload: (_p: unknown, a: {uploadId:string}, c: GraphQLContext) =>
+      releaseGraphUpload(a.uploadId, requireUser(c).id),
     selfUpdate: async (_p: unknown, _a: unknown, c: GraphQLContext) => {
       requireAdmin(c);
       const r = await c.update.selfUpdate();

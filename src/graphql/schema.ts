@@ -1200,6 +1200,15 @@ export const typeDefs = /* GraphQL */ `
     repos: [RepoUpdate!]!
   }
 
+  input ReportGraphInput {
+    caseFileId: Int!
+    title: String!
+    "PNG pixels; empty when a temporary imageUploadId is supplied."
+    imageBase64: String!
+    "Temporary upload bound to the signed-in user and selected case."
+    imageUploadId: String
+  }
+
   type MultiCaseAccount {
     account: BankAccount!
     caseFileIds: [Int!]!
@@ -1312,15 +1321,15 @@ export const typeDefs = /* GraphQL */ `
     ДАНСНЫ ДҮН ШИНЖИЛГЭЭ — the verdict document for the active case, in the shape
     of the client's template. Figures are tables, not screenshots.
     """
-    reportVerdictDocx: ReportFile!
+    reportVerdictDocx(graph: ReportGraphInput): ReportFile!
     """Дансны дүн шинжилгээ — active case data rendered as an official PDF."""
-    reportVerdictPdf: ReportFile!
+    reportVerdictPdf(graph: ReportGraphInput): ReportFile!
     """
     Дансны дүн шинжилгээ — the same report as a single self-contained HTML file
     (no external font, script or image), for a workstation with no Word and no
     PDF reader. Opens in a browser and prints to A4.
     """
-    reportVerdictHtml: ReportFile!
+    reportVerdictHtml(graph: ReportGraphInput): ReportFile!
     screenSuspect(id: Int!): [SanctionsHit!]!
     sanctionsStatus: SanctionsStatus!
     sanctionsRefreshLogs(take: Int): [SanctionsRefreshLog!]!
@@ -1372,6 +1381,9 @@ export const typeDefs = /* GraphQL */ `
   }
 
   type Mutation {
+    beginReportGraphUpload(caseFileId: Int!): String!
+    appendReportGraphUpload(uploadId: String!, offset: Int!, chunk: String!): Int!
+    releaseReportGraphUpload(uploadId: String!): Boolean!
     "Pull the latest code from git; restarts the server when new commits arrive (ADMIN only)."
     selfUpdate: UpdateResult!
     createSuspect(input: SuspectInput!): Suspect!

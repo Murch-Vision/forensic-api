@@ -29,6 +29,9 @@ import {formatDateLike} from "./reportFormat";
 import type {AccountAnalysis, DirectTransfer} from "./accountAnalysisService";
 import type {RelationRow} from "./relationService";
 import type {CaseConclusion} from "./conclusionService";
+import type {ReportGraph} from "./reportGraph";
+
+const GRAPH_LEGEND = "Ногоон: гүйлгээ · Цэнхэр: дуудлага · Шар тасархай: гар холбоос · Улаан хүрээ: хэрэгтэн";
 
 // Ported from Services/ReportService.cs — the PDF (was QuestPDF) and Excel
 // (was ClosedXML) exporters. Output is returned as an in-memory Buffer so the
@@ -681,6 +684,20 @@ export class ReportService {
       transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel,
         num(t.txnCount), mnt(t.total)])));
 
+    if (input.graph) {
+      const graph = input.graph;
+      b.push(`<div style="page-break-before:always;page-break-inside:avoid">`);
+      b.push(htmlSectionBar("2.3 ХОЛБООСЫН ЗУРАГЛАЛ"));
+      b.push(htmlNote(graph.title));
+      const w = Math.round(HTML_CW * 96 / 72);
+      const h = Math.round(w * graph.height / graph.width);
+      b.push(`<p style="margin:8pt 0"><img alt="${htmlEscape(graph.title)}" `
+        + `src="data:image/png;base64,${graph.imageBase64}" width="${w}" height="${h}" `
+        + `style="display:block;width:${HTML_CW}pt;height:${HTML_CW * graph.height / graph.width}pt" /></p>`);
+      b.push(htmlNote(GRAPH_LEGEND));
+      b.push(`</div>`);
+    }
+
     b.push(htmlMajorBar("3. ДҮГНЭЛТ", "conclusions"));
     for (const [index, a] of analyses.entries()) {
       b.push(htmlAccountBar(`3.${index + 1}`,
@@ -794,7 +811,20 @@ ${separateTables(b).join("\n")}
     pdfRows(doc, ["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"], [185, 185, 55, 90],
       input.transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
 
-    doc.addPage(); doc.y = 48;
+    if (input.graph) {
+      doc.addPage({size: "A4", layout: "landscape"}); doc.y = 48;
+      const graph = input.graph;
+      const width = doc.page.width - ML * 2;
+      doc.fontSize(14).fillColor(DARK_BLUE).text("2.3 ХОЛБООСЫН ЗУРАГЛАЛ", ML, doc.y, {width});
+      doc.fontSize(9).fillColor(MUTED).text(graph.title, ML, doc.y + 7, {width});
+      const top = doc.y + 12;
+      doc.image(Buffer.from(graph.imageBase64, "base64"), ML, top,
+        {fit: [width, doc.page.height - top - 90], align: "center", valign: "center"});
+      doc.fontSize(8).fillColor(MUTED).text(GRAPH_LEGEND,
+        ML, doc.page.height - 65, {width});
+    }
+
+    doc.addPage({size: "A4", layout: "portrait"}); doc.y = 48;
     const conclusionPage = doc.bufferedPageRange().count;
     majorSectionBar(doc, "3. ДҮГНЭЛТ");
     const conclusionFor = (id: number | null) => input.conclusions
@@ -877,6 +907,7 @@ export interface VerdictInput {
   mutualRelations: RelationRow[];
   transfers: DirectTransfer[];
   conclusions: CaseConclusion[];
+  graph?: ReportGraph;
 }
 
 // PDF-ийн агуулгын өргөн (A4, 40pt зах). HTML болон Word-ын багана бүр яг
@@ -1843,17 +1874,18 @@ function drawFooters(doc: PDFKit.PDFDocument): void {
   const ts = formatDateLike(new Date().toISOString(), true);
   for (let i = range.start; i < range.start + range.count; i++) {
     doc.switchToPage(i);
+    const contentWidth = doc.page.width - ML * 2;
     const savedBottom = doc.page.margins.bottom;
     doc.page.margins.bottom = 0;
     const y = doc.page.height - 30;
-    doc.moveTo(ML, y - 6).lineTo(ML + CW, y - 6).lineWidth(0.5)
+    doc.moveTo(ML, y - 6).lineTo(ML + contentWidth, y - 6).lineWidth(0.5)
       .strokeColor("#E2E8F0").stroke();
     doc.fontSize(7).fillColor(MUTED).text(
       `Forensic Analyst Workstation  ·  НУУЦ  ·  ${ts}`, ML, y,
       {width: 360, align: "left", lineBreak: false});
     doc.fontSize(7).fillColor(MUTED).text(
       `Хуудас ${i + 1} / ${range.count}`, ML, y,
-      {width: CW, align: "right", lineBreak: false});
+      {width: contentWidth, align: "right", lineBreak: false});
     doc.page.margins.bottom = savedBottom;
   }
 }
