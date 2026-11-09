@@ -1,21 +1,32 @@
 import sharp from "sharp";
+import {prepareGraphAnalysis, type ReportGraphAnalysis} from "./reportGraphAnalysis";
 
 export interface ReportGraphInput {
   caseFileId: number;
   title: string;
   imageBase64: string;
   imageUploadId?: string | null;
+  analysisBase64?: string | null;
+  analysisUploadId?: string | null;
 }
 export interface ReportGraph {
   title: string;
   imageBase64: string;
   width: number;
   height: number;
+  analysis?: ReportGraphAnalysis;
 }
 
 // A request-scoped attachment, never a persisted file or a remotely fetched URL.
 // Decode and re-encode so only bounded, real PNG pixels reach PDF/Word/HTML.
 export async function prepareReportGraph(input: ReportGraphInput): Promise<ReportGraph> {
+  const graph = await prepareReportImage(input);
+  if (input.analysisBase64) graph.analysis = await prepareGraphAnalysis(input.analysisBase64,
+    (imageBase64, title) => prepareReportImage({caseFileId: input.caseFileId, title, imageBase64}));
+  return graph;
+}
+
+async function prepareReportImage(input: ReportGraphInput): Promise<ReportGraph> {
   const maxBytes = 8 * 1024 * 1024;
   if (!input.imageBase64 || input.imageBase64.length > Math.ceil(maxBytes / 3) * 4
     || input.imageBase64.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(input.imageBase64)) {

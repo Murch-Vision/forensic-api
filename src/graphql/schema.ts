@@ -1207,6 +1207,10 @@ export const typeDefs = /* GraphQL */ `
     imageBase64: String!
     "Temporary upload bound to the signed-in user and selected case."
     imageUploadId: String
+    "UTF-8 JSON snapshot encoded as base64; all rows, independent of paging."
+    analysisBase64: String
+    "Temporary user/case-bound upload for the complete analysis attachment."
+    analysisUploadId: String
   }
 
   type MultiCaseAccount {

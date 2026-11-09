@@ -381,6 +381,10 @@ async function verdictReportInput(c: GraphQLContext, graph?: ReportGraphInput | 
     if (graph.imageBase64) throw new Error("Зураглалын нэг эх сурвалж сонгоно уу.");
     graph = {...graph, imageBase64: takeGraphUpload(graph.imageUploadId, c.user!.id, active.id)};
   }
+  if (graph?.analysisUploadId) {
+    if (graph.analysisBase64) throw new Error("Шинжилгээний хавсралтын нэг эх сурвалж сонгоно уу.");
+    graph = {...graph, analysisBase64: takeGraphUpload(graph.analysisUploadId, c.user!.id, active.id)};
+  }
   const [allTxns, allAccounts, allSuspects, conclusions, ignored, reportGraph] = await Promise.all([
     c.data.getAllTransactions(), c.data.getAllBankAccounts(),
     c.suspects.getAllSuspects(), c.conclusions.getForCase(active.id),

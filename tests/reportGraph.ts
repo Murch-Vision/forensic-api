@@ -11,6 +11,7 @@ import {resolvers, type GraphQLContext} from "../src/graphql/resolvers";
 import {typeDefs} from "../src/graphql/schema";
 import {beginGraphUpload, appendGraphUpload, takeGraphUpload, releaseGraphUpload}
   from "../src/services/reportGraphUpload";
+import PDFDocument from "pdfkit";
 
 async function main() {
   const png = await sharp(Buffer.from('<svg width="160" height="80"><rect width="160" height="80" fill="#0b0e1a"/><path d="M20 40H140" stroke="#00e676"/><circle cx="20" cy="40" r="9" fill="red"/><circle cx="140" cy="40" r="9" fill="green"/></svg>')).png().toBuffer();
@@ -57,6 +58,50 @@ async function main() {
   const plain = {...input, graph: undefined};
   assert(!(await service.generateVerdictHtml(plain)).toString().includes('data:image/png'));
   assert(!(await service.generateVerdictPdf(plain)).toString('latin1').includes('/Subtype /Image'));
+  const analysisRaw = {version:1, flow:Array.from({length:67},(_,i)=>({
+    from:`Эх үүсвэр ${i}`,to:`Харилцагч ${i}`,amount:100+i,directed:i!==66,soft:i===66,
+    fromRed:false,toRed:i===66})),
+    shared:{rows:Array.from({length:67},(_,i)=>[`ДУНДЫН-${i}`,`Хүн А ↔ Хүн Б ${i}`,'1 дамжлага',`${i} гүйлгээ`]),
+      image:{imageBase64:png.toString('base64')}},
+    red:{rows:[['ХЭРЭГТЭН · Тест','Харилцагч',('Урт тэмдэглэл '.repeat(150))+'LAST-NOTE']],
+      image:{imageBase64:png.toString('base64')}}};
+  const encoded=Buffer.from(JSON.stringify(analysisRaw)).toString('base64');
+  const withAnalysis=await prepareReportGraph({...graphInput,analysisBase64:encoded});
+  assert.equal(withAnalysis.analysis?.flow.length,67);
+  for(const bad of [{...analysisRaw,version:2},{...analysisRaw,flow:[{...analysisRaw.flow[0],amount:-1}]},
+    {...analysisRaw,flow:[{...analysisRaw.flow[0],soft:true}]},
+    {...analysisRaw,shared:{rows:[['broken']]}},
+    {...analysisRaw,red:{rows:[['a','b','c']],image:{imageBase64:'not PNG'}}}]) {
+    await assert.rejects(prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(bad)).toString('base64')}));
+  }
+  for(const invalid of ['not base64','e30=','A'.repeat(12000000)])
+    await assert.rejects(prepareReportGraph({...graphInput,analysisBase64:invalid}));
+  const complete={...input,graph:withAnalysis};
+  const completeHtml=(await service.generateVerdictHtml(complete)).toString();
+  for(const title of ['2.4 МӨНГӨН УРСГАЛ','2.5 ДУНДЫН ХАРИЛЦАА','2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА'])
+    assert(completeHtml.includes(title));
+  assert(completeHtml.includes('Харилцагч 66')&&completeHtml.includes('ДУНДЫН-66')&&completeHtml.includes('LAST-NOTE'));
+  assert.equal((completeHtml.match(/class="report-flow-diagram"/g)||[]).length,67,'Every flow gets a diagram, beyond screen page 20 and old report cap 60');
+  const originalText=PDFDocument.prototype.text, printed:string[]=[];
+  let completePdf:Buffer;
+  try {
+    PDFDocument.prototype.text=function(value:any,...args:any[]){printed.push(String(value).replace(/\n/g,''));
+      return (originalText as any).call(this,value,...args); } as any;
+    completePdf=await service.generateVerdictPdf(complete);
+  } finally {PDFDocument.prototype.text=originalText;}
+  assert(printed.includes('ДУНДЫН-66')&&printed.includes('Харилцагч 66'));
+  assert(printed.join('').includes('LAST-NOTE'),'Long wrapped notes survive PDF continuation pages');
+  assert.equal((completePdf!.toString('latin1').match(/\/Subtype \/Image/g)||[]).length,3,
+    'PDF includes main, shared and red scene pixels');
+  const completeWord=await JSZip.loadAsync(await service.generateVerdictDocx(complete));
+  const wordXml=await completeWord.file('word/document.xml')!.async('string');
+  assert(wordXml.includes('ДУНДЫН-66')&&wordXml.includes('LAST-NOTE')&&wordXml.includes('Харилцагч 66'));
+  assert((wordXml.match(/<w:drawing>/g)||[]).length>=3,'Word contains all three diagram images');
+  if(process.env.REPORT_TEST_OUTPUT){
+    const {writeFile}=await import('node:fs/promises');
+    await writeFile(`${process.env.REPORT_TEST_OUTPUT}.html`,completeHtml);
+    await writeFile(`${process.env.REPORT_TEST_OUTPUT}.pdf`,completePdf!);
+  }
   const schema = buildSchema(typeDefs);
   for (const name of ['Pdf','Docx','Html']) assert.deepEqual(validate(schema, parse(`query($graph:ReportGraphInput){reportVerdict${name}(graph:$graph){filename base64}}`)), []);
 
@@ -100,10 +145,19 @@ async function main() {
   await query({...graphInput,imageBase64:'',imageUploadId:uploadId} as any);
   assert.equal(received.at(-1)?.graph?.imageBase64,graph.imageBase64);
   assert.throws(()=>takeGraphUpload(uploadId,1,1),'Consumed upload is immediately reclaimed');
+  const imageStage=beginGraphUpload(1,1),analysisStage=beginGraphUpload(1,1);
+  appendGraphUpload(imageStage,1,0,graphInput.imageBase64);
+  appendGraphUpload(analysisStage,1,0,encoded);
+  await query({...graphInput,imageBase64:'',imageUploadId:imageStage,analysisBase64:'',analysisUploadId:analysisStage} as any);
+  assert.equal(received.at(-1)?.graph?.analysis?.shared.rows.length,67);
+  assert.throws(()=>takeGraphUpload(imageStage,1,1));assert.throws(()=>takeGraphUpload(analysisStage,1,1));
+  const foreign=beginGraphUpload(1,2);appendGraphUpload(foreign,1,0,encoded);
+  await assert.rejects(query({...graphInput,analysisUploadId:foreign} as any),/өөр хэрэг/);
+  releaseGraphUpload(foreign,1);
   const beforeStale=generated;
   changeDuringRead=true;
   await assert.rejects(query(), /солигдсон/);
   assert.equal(generated,beforeStale,'Stale active case must not render a mixed report');
-  console.log('PASS: validated bounded PNG, embedded HTML/Word pixels, landscape PDF/portrait conclusions, legacy no-image reports, authorization, exact case/noise scope and stale-case rejection');
+  console.log('PASS: all analysis rows beyond page 20/cap 60, all diagrams in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

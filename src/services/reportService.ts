@@ -30,6 +30,7 @@ import type {AccountAnalysis, DirectTransfer} from "./accountAnalysisService";
 import type {RelationRow} from "./relationService";
 import type {CaseConclusion} from "./conclusionService";
 import type {ReportGraph} from "./reportGraph";
+import type {ReportFlow, ReportGraphAnalysis} from "./reportGraphAnalysis";
 
 const GRAPH_LEGEND = "Ногоон: гүйлгээ · Цэнхэр: дуудлага · Шар тасархай: гар холбоос · Улаан хүрээ: хэрэгтэн";
 
@@ -675,13 +676,13 @@ export class ReportService {
     b.push(htmlDataTable(
       ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
       [120, 102, 48, 82, 82, 81],
-      input.mutualRelations.slice(0, 60).map((r) => [
+      input.mutualRelations.map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal),
         mnt(r.debitTotal), mnt(r.netTotal)])));
     b.push(htmlSectionBar("2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ"));
     b.push(htmlDataTable(["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"],
       [200, 200, 45, 70],
-      transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel,
+      transfers.map((t) => [t.fromLabel, t.toLabel,
         num(t.txnCount), mnt(t.total)])));
 
     if (input.graph) {
@@ -696,6 +697,27 @@ export class ReportService {
         + `style="display:block;width:${HTML_CW}pt;height:${HTML_CW * graph.height / graph.width}pt" /></p>`);
       b.push(htmlNote(GRAPH_LEGEND));
       b.push(`</div>`);
+      if (graph.analysis) {
+        b.push(htmlNote("Сонгосон зураглалын шүүлтүүртэй үеийн бүх мөр, зураглал."));
+        for (const section of graphAnalysisSections(graph.analysis)) {
+          b.push(`<div style="page-break-before:always">`);
+          b.push(htmlSectionBar(section.title));
+          b.push(htmlDataTable(section.headers, section.widths, section.rows, true));
+          b.push(`</div>`);
+          if (section.image) {
+            const image = section.image;
+            b.push(`<div style="page-break-before:always;page-break-inside:avoid">`);
+            b.push(htmlSectionBar(`${section.title} · ЗУРАГЛАЛ`));
+            b.push(`<p><img alt="${htmlEscape(image.title)}" src="data:image/png;base64,${image.imageBase64}" `
+              + `width="${w}" height="${Math.round(w * image.height / image.width)}" `
+              + `style="display:block;width:${HTML_CW}pt;height:${HTML_CW * image.height / image.width}pt" /></p></div>`);
+          }
+          if (section.flow?.length) {
+            b.push(`<div id="graph-flow-diagrams" style="page-break-before:always">${htmlSectionBar("2.4 МӨНГӨН УРСГАЛ · ЗУРАГЛАЛ")}</div>`);
+            for (const row of section.flow) b.push(htmlFlowDiagram(row));
+          }
+        }
+      }
     }
 
     b.push(htmlMajorBar("3. ДҮГНЭЛТ", "conclusions"));
@@ -804,12 +826,12 @@ ${separateTables(b).join("\n")}
     majorSectionBar(doc, "2. ДАНСНУУДЫН ХОЛБООС");
     sectionBar(doc, "2.1 ДУНДЫН ХАРИЛЦАГЧИД");
     pdfRows(doc, ["Дундын харилцагч", "Данс", "Гүйлгээ", "Орлого", "Зарлага", "Зөрүү"],
-      [130, 95, 48, 82, 82, 78], input.mutualRelations.slice(0, 60).map((r) => [
+      [130, 95, 48, 82, 82, 78], input.mutualRelations.map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
       ]));
     sectionBar(doc, "2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ");
     pdfRows(doc, ["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"], [185, 185, 55, 90],
-      input.transfers.slice(0, 60).map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
+      input.transfers.map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
 
     if (input.graph) {
       doc.addPage({size: "A4", layout: "landscape"}); doc.y = 48;
@@ -822,6 +844,25 @@ ${separateTables(b).join("\n")}
         {fit: [width, doc.page.height - top - 90], align: "center", valign: "center"});
       doc.fontSize(8).fillColor(MUTED).text(GRAPH_LEGEND,
         ML, doc.page.height - 65, {width});
+      if (graph.analysis) {
+        for (const section of graphAnalysisSections(graph.analysis)) {
+          doc.addPage({size: "A4", layout: "portrait"}); doc.y = 48;
+          sectionBar(doc, section.title);
+          doc.fontSize(8).fillColor(MUTED).text("Сонгосон зураглалын шүүлтүүртэй үеийн бүх мөр.", ML, doc.y);
+          doc.y += 8;
+          pdfAnalysisRows(doc, section.headers, section.widths, section.rows);
+          if (section.image) {
+            const image = section.image;
+            doc.addPage({size: "A4", layout: "landscape"}); doc.y = 48;
+            const width = doc.page.width - ML * 2;
+            doc.fontSize(12).fillColor(DARK_BLUE).text(`${section.title} · ЗУРАГЛАЛ`, ML, doc.y, {width});
+            const top = doc.y + 16;
+            doc.image(Buffer.from(image.imageBase64, "base64"), ML, top,
+              {fit: [width, doc.page.height - top - 60], align: "center", valign: "center"});
+          }
+          if (section.flow?.length) pdfFlowDiagrams(doc, section.flow);
+        }
+      }
     }
 
     doc.addPage({size: "A4", layout: "portrait"}); doc.y = 48;
@@ -1137,7 +1178,7 @@ function fit(text: string, widthPt: number, fontPt: number): string {
 // PDF-ийн pdfRows: хар хөх толгой, сондгой мөрөнд цайвар дэвсгэр, 3 дахь
 // баганаас эхлэн саарал бичвэр. Багана бүр PDF-ийн ЯГ ТЭР өргөнтэй.
 function htmlDataTable(heads: string[], widths: number[],
-  rows: string[][]): string {
+  rows: string[][], wrap = false): string {
   const isRight = (label: string, index: number): boolean =>
     index > 1 && /Гүйлгээ|Орлого|Зарлага|Дүн|Зөрүү/.test(label);
   const head = `<tr>${heads.map((label, i) => htmlCell(
@@ -1153,14 +1194,41 @@ function htmlDataTable(heads: string[], widths: number[],
       + `</tr>`]);
   }
   const body = rows.map((row, index) => `<tr>${row.map((value, i) =>
-    htmlCell(`<span class="clip">${htmlEscape(fit(value, widths[i], 7.6))}`
-      + `</span>`, {
+    htmlCell(wrap ? htmlEscape(value) : `<span class="clip">${htmlEscape(fit(value, widths[i], 7.6))}</span>`, {
       w: widths[i], align: isRight(heads[i], i) ? "right" : "left",
       style: `font-size:7.6pt;color:${i >= 2 ? MUTED : INK};`
         + `padding:2.5pt 6pt;`
         + (index % 2 ? `background-color:${ZEBRA};` : ""),
     })).join("")}</tr>`);
   return layoutTable([head, ...body]);
+}
+
+function graphAnalysisSections(a: ReportGraphAnalysis) {
+  return [
+    {title: "2.4 МӨНГӨН УРСГАЛ", headers: ["Этгээд / данс", "Чиглэл", "Харилцагч", "Дүн"],
+      widths: [160, 75, 180, 100], rows: a.flow.map(r => [r.from,
+        r.directed ? "→" : "↔ Тодорхойгүй", r.to, mnt(r.amount) + (r.soft ? " · Нэрээр холбосон" : "")]),
+      flow: a.flow, image: undefined},
+    {title: "2.5 ДУНДЫН ХАРИЛЦАА", headers: ["Дундын харилцагч", "Холбогдох хүмүүс", "Дамжлага", "Баримт"],
+      widths: [145, 165, 65, 140], rows: a.shared.rows, image: a.shared.image, flow: undefined},
+    {title: "2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА", headers: ["Этгээд", "Харилцагч", "Харилцаа"],
+      widths: [175, 175, 165], rows: a.red.rows, image: a.red.image, flow: undefined},
+  ];
+}
+
+// Native document text preserves Cyrillic in both Word and HTML; the server
+// image renderer has no guaranteed Cyrillic fonts. Every transfer gets a
+// labelled diagram, so paging and cycles cannot hide a flow from the report.
+function htmlFlowDiagram(row: ReportFlow): string {
+  const box = (name: string, red: boolean) => htmlCell(htmlEscape(name), {w: 195,
+    style: `font-size:9pt;padding:8pt;color:${red ? RED : INK};background-color:${red ? RED_TINT : GREEN_TINT};border:1pt solid ${red ? RED : GREEN}`});
+  return `<div class="report-flow-diagram" style="page-break-inside:avoid;margin:8pt 0">`
+    + layoutTable([`<tr>${box(row.from, row.fromRed)}`
+      + htmlCell(`<p style="font-size:8pt;text-align:center;margin:0">${htmlEscape(mnt(row.amount))}</p>`
+        + `<p style="font-size:18pt;text-align:center;color:${GREEN};margin:0">${row.directed ? "━━→" : "←━━→"}</p>`
+        + (!row.directed ? `<p style="font-size:7pt;text-align:center;margin:0">Чиглэл тодорхойгүй</p>` : "")
+        + (row.soft ? `<p style="font-size:7pt;text-align:center;margin:0">Нэрээр холбосон</p>` : ""), {w: 125})
+      + `${box(row.to, row.toRed)}</tr>`]) + `</div>`;
 }
 
 function htmlNote(text: string): string {
@@ -1487,6 +1555,77 @@ function pdfRows(
   drawTableHead(doc, cols);
   if (!rows.length) { doc.fontSize(8.5).fillColor(MUTED).text("Мэдээлэл алга", ML + 6, doc.y); doc.y += 16; return; }
   rows.forEach((row, i) => { const y = ensureRow(doc, cols); if (i % 2) doc.rect(ML, y - 2, CW, 13).fill(ZEBRA); row.forEach((v, n) => cell(doc, v, cols[n], y, n >= mutedFrom ? MUTED : INK)); doc.y = y + 13; });
+}
+
+// Wrapped rows with repeated headers and continuation pages. No ellipsis or
+// fixed row height: even a long manual note/root list stays in the document.
+function pdfAnalysisRows(doc: PDFKit.PDFDocument, heads: string[], widths: number[], rows: string[][]): void {
+  let x = ML;
+  const cols: LedgerCol[] = heads.map((label, i) => {
+    const col: LedgerCol = {label, x, w: widths[i], align: label === "Дүн" ? "right" : "left"};
+    x += widths[i]; return col;
+  });
+  const head = () => {drawTableHead(doc, cols); doc.fontSize(8.5);};
+  const next = () => {doc.addPage({size: "A4", layout: "portrait"}); doc.y = 48; head();};
+  head();
+  if (!rows.length) {doc.fillColor(MUTED).text("Мэдээлэл алга", ML, doc.y); return;}
+  rows.forEach((row, index) => {
+    const lines = row.map((value, i) => {
+      const result: string[] = []; let line = "";
+      for (const char of value) {
+        if (char === "\n" || doc.widthOfString(line + char) > widths[i] - 12) {
+          result.push(line); line = char === "\n" ? "" : char;
+        } else line += char;
+      }
+      result.push(line); return result;
+    });
+    const total = Math.max(...lines.map(l => l.length));
+    const lineHeight = doc.currentLineHeight(true) + 1;
+    let offset = 0;
+    while (offset < total) {
+      const fit = Math.floor((doc.page.height - 65 - doc.y - 8) / lineHeight);
+      if (fit < 1) {next(); continue;}
+      const take = Math.min(fit, total - offset), height = take * lineHeight + 8, top = doc.y;
+      if (index % 2) doc.rect(ML, top, CW, height).fill(ZEBRA);
+      cols.forEach((col, i) => {
+        const text = lines[i].slice(offset, offset + take).join("\n");
+        if (text) doc.fontSize(8.5).fillColor(INK).text(text, col.x + 6, top + 4,
+          {width: col.w - 12, align: col.align, lineGap: 1});
+      });
+      doc.y = top + height; offset += take;
+      if (offset < total) next();
+    }
+  });
+}
+
+function pdfFlowDiagrams(doc: PDFKit.PDFDocument, rows: ReportFlow[]): void {
+  const next = () => {
+    doc.addPage({size: "A4", layout: "landscape"}); doc.y = 48;
+    doc.fontSize(12).fillColor(DARK_BLUE).text("2.4 МӨНГӨН УРСГАЛ · ЗУРАГЛАЛ", ML, doc.y);
+    doc.y += 16;
+  };
+  next();
+  for (const row of rows) {
+    const width = doc.page.width - ML * 2, middle = 135, box = (width - middle) / 2;
+    doc.fontSize(9);
+    const height = Math.max(46, doc.heightOfString(row.from, {width: box - 16}) + 16,
+      doc.heightOfString(row.to, {width: box - 16}) + 16);
+    if (doc.y + height > doc.page.height - 65) next();
+    const y = doc.y, center = y + height / 2, from = ML + box + 8, to = from + middle - 16;
+    const node = (name: string, red: boolean, x: number) => {
+      doc.roundedRect(x, y, box, height, 4).fillAndStroke(red ? RED_TINT : GREEN_TINT, red ? RED : GREEN);
+      doc.fontSize(9).fillColor(red ? RED : INK).text(name, x + 8, y + 8, {width: box - 16});
+    };
+    node(row.from, row.fromRed, ML); node(row.to, row.toRed, ML + box + middle);
+    doc.moveTo(from, center).lineTo(to, center).lineWidth(2).strokeColor(GREEN).stroke();
+    const arrow = (x: number, dir: number) => doc.moveTo(x - dir * 7, center - 5)
+      .lineTo(x, center).lineTo(x - dir * 7, center + 5).stroke();
+    arrow(to, 1); if (!row.directed) arrow(from, -1);
+    doc.fontSize(8).fillColor(INK).text(mnt(row.amount), from, center - 18, {width: to - from, align: "center"});
+    const note = [!row.directed && "Чиглэл тодорхойгүй", row.soft && "Нэрээр холбосон"].filter(Boolean).join("\n");
+    if (note) doc.fontSize(7).fillColor(MUTED).text(note, from, center + 6, {width: to - from, align: "center"});
+    doc.y = y + height + 10;
+  }
 }
 
 function pdfBuckets(doc: PDFKit.PDFDocument, title: string, buckets: import("./accountAnalysisService").ActivityBucket[]): void {
