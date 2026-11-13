@@ -41,7 +41,7 @@ async function main() {
     analyses: [], mutualRelations: [], transfers: [], conclusions: [], graph};
   const service = new ReportService({} as any);
   const html = (await service.generateVerdictHtml(input)).toString('utf8');
-  assert(html.includes('2.3 ХОЛБООСЫН ЗУРАГЛАЛ'));
+  assert(html.includes('2.2 ХОЛБООСЫН ЗУРАГЛАЛ'));
   assert(html.includes(`data:image/png;base64,${graph.imageBase64}`));
   assert(!html.includes('<script>')); assert(html.includes('&lt;script&gt;'));
   const pdf = (await service.generateVerdictPdf(input)).toString('latin1');
@@ -54,7 +54,7 @@ async function main() {
   const images = Object.values(docx.files).filter(f => /^word\/media\//.test(f.name) && !f.dir);
   assert.equal(images.length, 1, 'Word must embed pixels, not a remote link');
   assert.equal((await sharp(await images[0].async('nodebuffer')).metadata()).width, graph.width);
-  assert((await docx.file('word/document.xml')!.async('string')).includes('2.3 ХОЛБООСЫН ЗУРАГЛАЛ'));
+  assert((await docx.file('word/document.xml')!.async('string')).includes('2.2 ХОЛБООСЫН ЗУРАГЛАЛ'));
   const mainXml = await docx.file('word/document.xml')!.async('string');
   assert(mainXml.includes('<wp:extent cx="9664700" cy="4832350"'),
     'Word image fits the landscape body and preserves aspect ratio');
@@ -80,6 +80,9 @@ async function main() {
   assert.deepEqual(withAnalysis.analysis?.shared.amounts,Array.from({length:20},(_,i)=>(66-i)*100));
   assert.equal(withAnalysis.analysis?.shared.rows[0][0],'ДУНДЫН-66');
   assert.equal(withAnalysis.analysis?.shared.rows.at(-1)?.[0],'ДУНДЫН-47');
+  const noMoneyImage=await prepareReportGraph({...graphInput,
+    analysisBase64:Buffer.from(JSON.stringify({...analysisRaw,flowImages:[]})).toString('base64')});
+  assert.equal(noMoneyImage.analysis?.flowImages.length,0,'New captures need no money PNG');
   const legacyRaw={...analysisRaw,shared:{...analysisRaw.shared,amounts:undefined,
     rows:analysisRaw.shared.rows.map((r,i)=>[...r.slice(0,3),`${(i*1000).toLocaleString('en-US')}₮ · 2 гүйлгээ`])}};
   const legacy=await prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(legacyRaw)).toString('base64')});
@@ -87,7 +90,7 @@ async function main() {
   const isolatedRaw={...analysisRaw,red:{...analysisRaw.red,rows:[]}};
   const isolated=await prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(isolatedRaw)).toString('base64')});
   assert(isolated.analysis?.red.image,'Isolated offenders can have a diagram without relationship rows');
-  for(const bad of [{...analysisRaw,version:2},{...analysisRaw,flowImages:[]},
+  for(const bad of [{...analysisRaw,version:2},
     {...analysisRaw,flowImages:[analysisRaw.flowImages[0],analysisRaw.flowImages[0]]},
     {...analysisRaw,flowImages:[{imageBase64:'bad PNG'}]},{...analysisRaw,flow:[{...analysisRaw.flow[0],amount:-1}]},
     {...analysisRaw,flow:[{...analysisRaw.flow[0],soft:true}]},
@@ -120,8 +123,8 @@ async function main() {
   }
   for(const invalid of ['not base64','e30=','A'.repeat(12000000)])
     await assert.rejects(prepareReportGraph({...graphInput,analysisBase64:invalid}));
-  // A complete chart can be much taller than the main graph. Its pixels are
-  // bounded independently, and the full image fits ONE landscape A4 page.
+  // Older captures may include a tall money image. Validate it for v1
+  // compatibility, but never embed it or allocate a page for it.
   const tallPng=await sharp({create:{width:1000,height:6000,channels:3,background:'#122538'}}).png().toBuffer();
   const tallRaw={...analysisRaw,flowImages:[{imageBase64:tallPng.toString('base64')}]};
   const tallGraph=await prepareReportGraph({...graphInput,analysisBase64:Buffer.from(JSON.stringify(tallRaw)).toString('base64')});
@@ -136,26 +139,27 @@ async function main() {
       /PNG/, 'Tall overview allowances do not bypass height limits or widen relation image limits');
   }
   const tallHtml=(await service.generateVerdictHtml({...input,graph:tallGraph})).toString();
-  const moneyHtml=tallHtml.slice(tallHtml.indexOf('id="report-money-flow"'),tallHtml.indexOf('id="report-shared-relations"'));
-  assert.equal((moneyHtml.match(/<img /g)||[]).length,1,'One full money image in HTML');
+  assert(!tallHtml.includes('report-money-flow'),'Money section is omitted even for old captures');
+  assert(!tallHtml.includes(tallGraph.analysis!.flowImages[0].imageBase64),
+    'Legacy money PNG bytes are excluded from the HTML');
   const tallPdf=await service.generateVerdictPdf({...input,graph:tallGraph});
   const boxes=[...tallPdf.toString('latin1').matchAll(/\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/g)];
-  assert.equal(boxes.filter(box=>Number(box[1])>Number(box[2])).length,4,'Each image has one landscape page');
+  assert.equal(boxes.filter(box=>Number(box[1])>Number(box[2])).length,3,'Main/shared/offender images each have one landscape page');
   assert(boxes.every(box=>Number(box[1])<=842&&Number(box[2])<=842),'Only ordinary A4 pages, no oversized money page');
   const tallWord=await JSZip.loadAsync(await service.generateVerdictDocx({...input,graph:tallGraph}));
   const tallXml=await tallWord.file('word/document.xml')!.async('string');
   const extents=[...tallXml.matchAll(/<wp:extent cx="(\d+)" cy="(\d+)"/g)];
-  assert.equal(extents.length,4,'Word keeps exactly one money image plus the three relation/main images');
+  assert.equal(extents.length,3,'Word keeps main/shared/offender images only');
   assert(extents.every(e=>Number(e[2])<=415*12700),'The complete image fits on a Word page without cropping');
-  assert.equal((tallXml.match(/w:orient="landscape"/g)||[]).length,4);
-  assert.equal((tallXml.match(/w:type w:val="nextPage"/g)||[]).length,6,
+  assert.equal((tallXml.match(/w:orient="landscape"/g)||[]).length,3);
+  assert.equal((tallXml.match(/w:type w:val="nextPage"/g)||[]).length,5,
     'Adjacent landscape images have no empty portrait section between them');
   assert(extents.every(e=>Number(e[1])<=761*12700));
   assert(tallHtml.includes('@page graph { size: A4 landscape;'));
-  assert.equal((tallHtml.match(/class="report-graph-page"/g)||[]).length,4);
+  assert.equal((tallHtml.match(/class="report-graph-page"/g)||[]).length,3);
   const media=await Promise.all(Object.values(tallWord.files).filter(f=>/^word\/media\/.*\.png$/.test(f.name))
     .map(async f=>sharp(await f.async('nodebuffer')).metadata()));
-  assert(media.some(m=>m.width===1000&&m.height===6000),'Word retains the full PNG pixels for enlargement');
+  assert(!media.some(m=>m.width===1000&&m.height===6000),'Legacy money PNG is not embedded in Word');
   if(process.env.REPORT_TEST_OUTPUT){
     const {writeFile}=await import('node:fs/promises');
     await writeFile(`${process.env.REPORT_TEST_OUTPUT}-tall.html`,tallHtml);
@@ -164,15 +168,17 @@ async function main() {
   const mutualRelations=Array.from({length:37},(_,i)=>({key:`canonical-${i}`,name:`CANONICAL_${i}_END`,
     account:null,nationalId:null,txnCount:2,creditCount:1,debitCount:1,creditTotal:i*1000,
     debitTotal:(36-i)*500,netTotal:0,accountIds:[1,2],mutual:true,subjectMatch:false}));
-  const complete={...input,mutualRelations,graph:withAnalysis};
+  const complete={...input,mutualRelations,graph:withAnalysis,transfers:[{
+    fromAccountId:1,toAccountId:2,fromLabel:'FROM-ACCOUNT',toLabel:'TO-ACCOUNT',txnCount:5,total:123456,
+  }]};
   const completeHtml=(await service.generateVerdictHtml(complete)).toString();
-  for(const title of ['2.4 МӨНГӨН УРСГАЛ','2.5 ДУНДЫН ХАРИЛЦАА','2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА'])
+  for(const title of ['2.2 ХОЛБООСЫН ЗУРАГЛАЛ','2.3 ДУНДЫН ХАРИЛЦАА','2.4 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА'])
     assert(completeHtml.includes(title));
   assert(completeHtml.includes('ДУНДЫН-66')&&completeHtml.includes('LAST-NOTE'));
   assert(!completeHtml.includes('Харилцагч 66'),'Money rows are not repeated as a long report list');
-  assert(!completeHtml.includes('report-flow-diagram'),'Per-transfer arrow boxes are replaced by the captured Sankey');
-  const sharedStart=completeHtml.indexOf('2.5 ДУНДЫН ХАРИЛЦАА');
-  const redStart=completeHtml.indexOf('2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА');
+  assert(!completeHtml.includes('report-flow-diagram'),'No native money-flow diagrams are rendered');
+  const sharedStart=completeHtml.indexOf('2.3 ДУНДЫН ХАРИЛЦАА');
+  const redStart=completeHtml.indexOf('2.4 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА');
   assert(completeHtml.indexOf('data:image/png',sharedStart)<completeHtml.indexOf('ДУНДЫН-66',sharedStart));
   assert(completeHtml.indexOf('data:image/png',redStart)<completeHtml.indexOf('ХЭРЭГТЭН · Тест',redStart));
   const originalText=PDFDocument.prototype.text, originalImage=PDFDocument.prototype.image, printed:string[]=[];
@@ -194,19 +200,23 @@ async function main() {
     completePdf=await service.generateVerdictPdf(complete);
   } finally {PDFDocument.prototype.text=originalText;PDFDocument.prototype.image=originalImage;}
   assert(printed.includes('ДУНДЫН-66')&&!printed.includes('Харилцагч 66'));
-  for(const [title,first] of [['2.5 ДУНДЫН ХАРИЛЦАА · ДҮНГЭЭР ТОП 20','ДУНДЫН-66'],['2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА','ХЭРЭГТЭН · Тест']]) {
+  for(const [title,first] of [['2.3 ДУНДЫН ХАРИЛЦАА · ДҮНГЭЭР ТОП 20','ДУНДЫН-66'],['2.4 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА','ХЭРЭГТЭН · Тест']]) {
     const start=printed.findIndex(t=>t===title);
     assert(printed.indexOf('IMAGE',start)>start&&printed.indexOf('IMAGE',start)<printed.findIndex((t,i)=>i>start&&t.includes(first)),
       'PDF relation diagram precedes its table');
   }
   assert(printed.join('').includes('LAST-NOTE'),'Long wrapped notes survive PDF continuation pages');
-  assert.equal((completePdf!.toString('latin1').match(/\/Subtype \/Image/g)||[]).length,4,
-    'PDF includes main, Sankey, shared and red scene pixels');
+  assert.equal((completePdf!.toString('latin1').match(/\/Subtype \/Image/g)||[]).length,3,
+    'PDF includes main, shared and red scene pixels only');
   const completeWord=await JSZip.loadAsync(await service.generateVerdictDocx(complete));
   const wordXml=await completeWord.file('word/document.xml')!.async('string');
   assert(wordXml.includes('ДУНДЫН-66')&&wordXml.includes('LAST-NOTE')&&!wordXml.includes('Харилцагч 66'));
-  assert((wordXml.match(/<w:drawing>/g)||[]).length>=4,'Word contains main, Sankey, shared and red diagram images');
+  assert.equal((wordXml.match(/<w:drawing>/g)||[]).length,3,'Word contains main, shared and red diagram images only');
   for(const output of [completeHtml,wordXml,printed.join('')]) {
+    assert(!output.includes('МӨНГӨН УРСГАЛ'),'Money graph heading is absent');
+    assert(!output.includes('ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ'),
+      'Direct transfer table and heading are absent');
+    assert(!output.includes('Хаанаас'),'Direct transfer table columns are absent');
     const retained = [...new Set([...output.matchAll(/ДУНДЫН-(\d+)/g)].map(m=>Number(m[1])))].sort((a,b)=>a-b);
     assert.deepEqual(retained,Array.from({length:20},(_,i)=>47+i),'Exactly the highest20 attached contacts survive');
     for(let i=0;i<37;i++) assert.equal(output.includes(`CANONICAL_${i}_END`),i>=17,
@@ -276,6 +286,6 @@ async function main() {
   changeDuringRead=true;
   await assert.rejects(query(), /солигдсон/);
   assert.equal(generated,beforeStale,'Stale active case must not render a mixed report');
-  console.log('PASS: one complete money image, one A4 landscape page per image in PDF/Word/HTML, relation lists below their images, shared top20 by money with full conclusions in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
+  console.log('PASS: no money PNG or direct-transfer table in PDF/Word/HTML; three retained A4 landscape graphs, relation lists below their images, shared top20 by money with full conclusions in PDF/Word/HTML, wrapped PDF notes, bounded image/JSON validation, chunk cleanup, authorization, exact case/noise scope and stale-case rejection');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

@@ -55,7 +55,9 @@ export async function prepareGraphAnalysis(encoded: string,
     return value.imageBase64;
   };
   const images = list(raw.flowImages);
-  if (images.length !== (flow.length ? 1 : 0)) fail();
+  // New captures omit money images. Validate old v1 captures too, but report
+  // renderers only include the main, shared and offender graphs.
+  if (images.length > (flow.length ? 1 : 0)) fail();
   const flowImages: ReportGraph[] = [];
   for (const image of images) flowImages.push(await prepareImage(textImage(image), "Мөнгөн урсгалын нийт зураглал", true));
   const shared = await section(raw.shared, 4, "Дундын харилцааны зураглал");

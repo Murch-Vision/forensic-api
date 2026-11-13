@@ -583,7 +583,7 @@ export class ReportService {
   // нээгдэнэ. Word нь энэ HTML-ээс хөрвөдөг тул хэв маягийг ЗААВАЛ мөр дотор
   // (inline style) бичнэ — хөрвүүлэгч <style> блокийг уншдаггүй.
   async generateVerdictHtml(input: VerdictInput, forWord = false): Promise<Buffer> {
-    const {analyses, transfers, conclusions} = input;
+    const {analyses, conclusions} = input;
     const conclusionFor = (accountId: number | null): string =>
       conclusions.find((c) => c.bankAccountId === accountId)?.text?.trim()
         ?? "";
@@ -679,15 +679,10 @@ export class ReportService {
       topSharedRelations(input.mutualRelations).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal),
         mnt(r.debitTotal), mnt(r.netTotal)])));
-    b.push(htmlSectionBar("2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ"));
-    b.push(htmlDataTable(["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"],
-      [200, 200, 45, 70],
-      transfers.map((t) => [t.fromLabel, t.toLabel,
-        num(t.txnCount), mnt(t.total)])));
 
     if (input.graph) {
       const graph = input.graph;
-      b.push(htmlGraphPage(graph, "2.3 ХОЛБООСЫН ЗУРАГЛАЛ", forWord, true));
+      b.push(htmlGraphPage(graph, "2.2 ХОЛБООСЫН ЗУРАГЛАЛ", forWord, true));
       if (graph.analysis) {
         for (const section of graphAnalysisSections(graph.analysis)) {
           b.push(`<div id="${section.id}">`);
@@ -814,9 +809,6 @@ ${separateTables(b).join("\n")}
       [130, 95, 48, 82, 82, 78], topSharedRelations(input.mutualRelations).map((r) => [
         r.name, r.account ?? "—", num(r.txnCount), mnt(r.creditTotal), mnt(r.debitTotal), mnt(r.netTotal),
       ]));
-    sectionBar(doc, "2.2 ШИНЖИЛСЭН ДАНСНУУДЫН ХООРОНДЫН ШУУД ГҮЙЛГЭЭ");
-    pdfRows(doc, ["Хаанаас", "Хаана", "Гүйлгээ", "Нийт дүн"], [185, 185, 55, 90],
-      input.transfers.map((t) => [t.fromLabel, t.toLabel, num(t.txnCount), mnt(t.total)]));
 
     if (input.graph) {
       const graphPage = (image: ReportGraph, title: string, main = false) => {
@@ -830,7 +822,7 @@ ${separateTables(b).join("\n")}
         if (main) doc.fontSize(8).fillColor(MUTED).text(GRAPH_LEGEND,
           ML, doc.page.height - 65, {width});
       };
-      graphPage(input.graph, "2.3 ХОЛБООСЫН ЗУРАГЛАЛ", true);
+      graphPage(input.graph, "2.2 ХОЛБООСЫН ЗУРАГЛАЛ", true);
       if (input.graph.analysis) {
         for (const section of graphAnalysisSections(input.graph.analysis)) {
           for (const image of section.images) graphPage(image, section.title);
@@ -1191,10 +1183,9 @@ function topSharedRelations(rows: RelationRow[]): RelationRow[] {
 
 function graphAnalysisSections(a: ReportGraphAnalysis) {
   return [
-    {id: "report-money-flow", title: "2.4 МӨНГӨН УРСГАЛ", headers: [], widths: [], rows: [], images: a.flowImages},
-    {id: "report-shared-relations", title: "2.5 ДУНДЫН ХАРИЛЦАА · ДҮНГЭЭР ТОП 20", headers: ["Дундын харилцагч", "Холбогдох хүмүүс", "Дамжлага", "Баримт"],
+    {id: "report-shared-relations", title: "2.3 ДУНДЫН ХАРИЛЦАА · ДҮНГЭЭР ТОП 20", headers: ["Дундын харилцагч", "Холбогдох хүмүүс", "Дамжлага", "Баримт"],
       widths: [145, 165, 65, 140], rows: a.shared.rows, images: a.shared.image ? [a.shared.image] : []},
-    {id: "report-red-relations", title: "2.6 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА", headers: ["Этгээд", "Харилцагч", "Харилцаа"],
+    {id: "report-red-relations", title: "2.4 УЛААНААР ТЭМДЭГЛЭСЭН ЭТГЭЭДИЙН ХАРИЛЦАА", headers: ["Этгээд", "Харилцагч", "Харилцаа"],
       widths: [175, 175, 165], rows: a.red.rows, images: a.red.image ? [a.red.image] : []},
   ];
 }
